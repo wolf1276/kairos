@@ -5,15 +5,17 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[url('/bg.png')] bg-cover bg-center bg-fixed">
       <div className="absolute top-8 left-10 flex items-center gap-1 z-20">
-        <Image
-          src="/logo.png"
-          alt="Kairos Logo"
-          width={96}
-          height={96}
-          className="object-contain"
-        />
+        <div className="relative w-10 h-10 md:w-12 md:h-12 lg:w-14 lg:h-14">
+          <Image
+            src="/logo.png"
+            alt="Kairos Logo"
+            fill
+            className="object-contain"
+            sizes="(max-width: 768px) 40px, (max-width: 1024px) 48px, 56px"
+          />
+        </div>
 
-        <span className="font-inter text-3xl font-semibold text-white tracking-tight">
+        <span className="font-inter text-2xl md:text-3xl font-semibold text-white tracking-tight">
           Kairos
         </span>
       </div>
