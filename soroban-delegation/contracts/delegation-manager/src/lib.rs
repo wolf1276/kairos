@@ -1,0 +1,418 @@
+#![no_std]
+use soroban_sdk::{
+    contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN, Env, Symbol, Val, Vec,
+    panic_with_error, log, IntoVal, xdr::ToXdr,
+};
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Caveat {
+    pub enforcer: Address,
+    pub terms: Bytes,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Delegation {
+    pub delegate: Address,
+    pub delegator: Address,
+    pub authority: BytesN<32>, // Parent delegation hash or ROOT_AUTHORITY
+    pub caveats: Vec<Caveat>,
+    pub salt: u64,
+    pub nonce: u64, // Added for native replay protection
+    pub signature: BytesN<64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Execution {
+    pub target: Address,
+    pub function: Symbol,
+    pub args: Vec<Val>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExecutionContext {
+    pub target: Address,
+    pub function: Symbol,
+    pub args: Vec<Val>,
+    pub redeemer: Address,
+    pub delegate: Address,
+    pub delegator: Address,
+    pub ledger_sequence: u32,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+pub enum DataKey {
+    Disabled(BytesN<32>),
+    Nonce(Address),
+    Owner,
+    Paused,
+}
+
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum ManagerError {
+    NotAuthorized = 1,
+    AlreadyDisabled = 2,
+    AlreadyEnabled = 3,
+    BatchLengthMismatch = 4,
+    InvalidDelegate = 5,
+    InvalidSignature = 6,
+    CannotUseDisabled = 7,
+    InvalidAuthority = 8,
+    ExecutionFailed = 9,
+    Paused = 10,
+    InvalidNonce = 11,
+}
+
+const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
+const BUMP_THRESHOLD: u32 = 10000;
+const BUMP_LIMIT: u32 = 100000;
+
+#[contract]
+pub struct DelegationManager;
+
+#[contractimpl]
+impl DelegationManager {
+    // Initialize the contract setting the owner
+    pub fn init(env: Env, owner: Address) {
+        if env.storage().instance().has(&DataKey::Owner) {
+            panic_with_error!(&env, ManagerError::NotAuthorized);
+        }
+        env.storage().instance().set(&DataKey::Owner, &owner);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+    }
+
+    pub fn pause(env: Env) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+    }
+
+    pub fn unpause(env: Env) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+    }
+
+    pub fn is_paused(env: Env) -> bool {
+        env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+        env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    // Disable a delegation on-chain
+    pub fn disable_delegation(env: Env, delegator: Address, delegation: Delegation) {
+        delegator.require_auth();
+        if delegation.delegator != delegator {
+            panic_with_error!(&env, ManagerError::NotAuthorized);
+        }
+        let hash = Self::get_delegation_hash(env.clone(), delegation);
+        let key = DataKey::Disabled(hash.clone());
+        
+        if env.storage().persistent().has(&key) {
+            panic_with_error!(&env, ManagerError::AlreadyDisabled);
+        }
+        env.storage().persistent().set(&key, &true);
+        env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+        
+        // Emit Event
+        env.events().publish(
+            (symbol_short!("disabled"), delegator),
+            hash,
+        );
+    }
+
+    // Re-enable a delegation
+    pub fn enable_delegation(env: Env, delegator: Address, delegation: Delegation) {
+        delegator.require_auth();
+        if delegation.delegator != delegator {
+            panic_with_error!(&env, ManagerError::NotAuthorized);
+        }
+        let hash = Self::get_delegation_hash(env.clone(), delegation);
+        let key = DataKey::Disabled(hash.clone());
+        
+        if !env.storage().persistent().has(&key) {
+            panic_with_error!(&env, ManagerError::AlreadyEnabled);
+        }
+        env.storage().persistent().remove(&key);
+        
+        // Emit Event
+        env.events().publish(
+            (symbol_short!("enabled"), delegator),
+            hash,
+        );
+    }
+
+    // Check if delegation is disabled
+    pub fn is_delegation_disabled(env: Env, delegation_hash: BytesN<32>) -> bool {
+        let key = DataKey::Disabled(delegation_hash);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+            env.storage().persistent().get(&key).unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    // Get current nonce for a delegator
+    pub fn get_nonce(env: Env, delegator: Address) -> u64 {
+        let key = DataKey::Nonce(delegator);
+        if env.storage().persistent().has(&key) {
+            env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+            env.storage().persistent().get(&key).unwrap_or(0)
+        } else {
+            0
+        }
+    }
+
+    // Helper to calculate Delegation hash using SHA-256
+    pub fn get_delegation_hash(env: Env, delegation: Delegation) -> BytesN<32> {
+        let mut bin = Bytes::new(&env);
+        
+        bin.append(&delegation.delegate.to_xdr(&env));
+        bin.append(&delegation.delegator.to_xdr(&env));
+        bin.append(&Bytes::from_array(&env, &delegation.authority.to_array()));
+        bin.append(&delegation.salt.to_xdr(&env));
+        bin.append(&delegation.nonce.to_xdr(&env));
+        
+        for caveat in delegation.caveats.iter() {
+            bin.append(&caveat.enforcer.to_xdr(&env));
+            bin.append(&caveat.terms);
+        }
+        
+        env.crypto().sha256(&bin).into()
+    }
+
+    // Redeem delegation chains and execute actions
+    pub fn redeem_delegations(
+        env: Env,
+        redeemer: Address,
+        permission_contexts: Vec<Vec<Delegation>>,
+        executions: Vec<Execution>,
+    ) {
+        redeemer.require_auth();
+
+        if Self::is_paused(env.clone()) {
+            panic_with_error!(&env, ManagerError::Paused);
+        }
+
+        let batch_size = permission_contexts.len();
+        if batch_size != executions.len() {
+            panic_with_error!(&env, ManagerError::BatchLengthMismatch);
+        }
+
+        let mut delegation_hashes_batch: Vec<Vec<BytesN<32>>> = Vec::new(&env);
+
+        // 1. Signature, Nonce, & Chain Validation
+        for i in 0..batch_size {
+            let chain = permission_contexts.get(i).unwrap();
+            let mut hashes = Vec::new(&env);
+
+            if chain.len() == 0 {
+                delegation_hashes_batch.push_back(hashes);
+                continue;
+            }
+
+            // Verify delegation leaf specifies the redeemer
+            let leaf = chain.get(0).unwrap();
+            if leaf.delegate != redeemer {
+                panic_with_error!(&env, ManagerError::InvalidDelegate);
+            }
+
+            // Verify signatures and disabled status from leaf to root
+            for j in 0..chain.len() {
+                let delegation = chain.get(j).unwrap();
+                let hash = Self::get_delegation_hash(env.clone(), delegation.clone());
+                hashes.push_back(hash.clone());
+
+                if Self::is_delegation_disabled(env.clone(), hash.clone()) {
+                    panic_with_error!(&env, ManagerError::CannotUseDisabled);
+                }
+
+                // Nonce Validation (Replay Protection)
+                let current_nonce = Self::get_nonce(env.clone(), delegation.delegator.clone());
+                if delegation.nonce != current_nonce {
+                    panic_with_error!(&env, ManagerError::InvalidNonce);
+                }
+
+                // Verify Signature (Standard EOA Account vs Smart Custom Contract)
+                let bytes = delegation.delegator.clone().to_xdr(&env);
+                let is_contract = bytes.get(7).unwrap_or(0) == 1;
+
+                if is_contract {
+                    let is_valid: bool = env.invoke_contract(
+                        &delegation.delegator,
+                        &Symbol::new(&env, "is_valid_signature"),
+                        (hash.clone(), delegation.signature.clone()).into_val(&env),
+                    );
+                    if !is_valid {
+                        panic_with_error!(&env, ManagerError::InvalidSignature);
+                    }
+                } else {
+                    let pubkey = Self::address_to_public_key(&env, &delegation.delegator);
+                    let message = Bytes::from_array(&env, &hash.to_array());
+                    env.crypto().ed25519_verify(
+                        &pubkey,
+                        &message,
+                        &delegation.signature
+                    );
+                }
+            }
+
+            // Verify authority linking: chain[j].authority == hash(chain[j+1])
+            for j in 0..chain.len() {
+                let delegation = chain.get(j).unwrap();
+                if j != chain.len() - 1 {
+                    let parent_hash = hashes.get(j + 1).unwrap();
+                    if delegation.authority != parent_hash {
+                        panic_with_error!(&env, ManagerError::InvalidAuthority);
+                    }
+                    
+                    let parent_delegation = chain.get(j + 1).unwrap();
+                    if delegation.delegator != parent_delegation.delegate {
+                        panic_with_error!(&env, ManagerError::InvalidDelegate);
+                    }
+                } else {
+                    if delegation.authority != BytesN::from_array(&env, &ROOT_AUTHORITY) {
+                        panic_with_error!(&env, ManagerError::InvalidAuthority);
+                    }
+                }
+            }
+
+            delegation_hashes_batch.push_back(hashes);
+        }
+
+        // 2. Hook Execution & Execution Pipeline
+        for i in 0..batch_size {
+            let chain = permission_contexts.get(i).unwrap();
+            let execution = executions.get(i).unwrap();
+            let hashes = delegation_hashes_batch.get(i).unwrap();
+
+            if chain.len() == 0 {
+                // Self authorized execution directly from redeemer
+                env.invoke_contract::<Val>(
+                    &execution.target,
+                    &execution.function,
+                    execution.args.clone(),
+                );
+                continue;
+            }
+
+            let leaf_delegation = chain.get(0).unwrap();
+            let context = ExecutionContext {
+                target: execution.target.clone(),
+                function: execution.function.clone(),
+                args: execution.args.clone(),
+                redeemer: redeemer.clone(),
+                delegate: leaf_delegation.delegate.clone(),
+                delegator: leaf_delegation.delegator.clone(),
+                ledger_sequence: env.ledger().sequence(),
+                timestamp: env.ledger().timestamp(),
+            };
+
+            // execute before_all Hooks
+            for j in 0..chain.len() {
+                let delegation = chain.get(j).unwrap();
+                let hash = hashes.get(j).unwrap();
+                
+                for caveat in delegation.caveats.iter() {
+                    env.invoke_contract::<Val>(
+                        &caveat.enforcer,
+                        &Symbol::new(&env, "before_all"),
+                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                    );
+                }
+            }
+
+            // execute before_hooks
+            for j in 0..chain.len() {
+                let delegation = chain.get(j).unwrap();
+                let hash = hashes.get(j).unwrap();
+                
+                for caveat in delegation.caveats.iter() {
+                    env.invoke_contract::<Val>(
+                        &caveat.enforcer,
+                        &Symbol::new(&env, "before_hook"),
+                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                    );
+                }
+            }
+
+            // Perform execution
+            let root_delegator = chain.get(chain.len() - 1).unwrap().delegator.clone();
+            env.invoke_contract::<Val>(
+                &root_delegator,
+                &Symbol::new(&env, "execute_from_executor"),
+                (
+                    execution.target.clone(),
+                    execution.function.clone(),
+                    execution.args.clone(),
+                ).into_val(&env),
+            );
+
+            // execute after_hooks (root to leaf)
+            for j in (0..chain.len()).rev() {
+                let delegation = chain.get(j).unwrap();
+                let hash = hashes.get(j).unwrap();
+                
+                for caveat in delegation.caveats.iter() {
+                    env.invoke_contract::<Val>(
+                        &caveat.enforcer,
+                        &Symbol::new(&env, "after_hook"),
+                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                    );
+                }
+            }
+
+            // execute after_all hooks (root to leaf)
+            for j in (0..chain.len()).rev() {
+                let delegation = chain.get(j).unwrap();
+                let hash = hashes.get(j).unwrap();
+                
+                for caveat in delegation.caveats.iter() {
+                    env.invoke_contract::<Val>(
+                        &caveat.enforcer,
+                        &Symbol::new(&env, "after_all"),
+                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                    );
+                }
+            }
+        }
+
+        // 3. Emit Event & Nonce Update (Only increment on success)
+        for i in 0..batch_size {
+            let chain = permission_contexts.get(i).unwrap();
+            if chain.len() > 0 {
+                let root_delegator = chain.get(chain.len() - 1).unwrap().delegator.clone();
+                let key = DataKey::Nonce(root_delegator.clone());
+                
+                let nonce = Self::get_nonce(env.clone(), root_delegator.clone());
+                env.storage().persistent().set(&key, &(nonce + 1));
+                env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+
+                env.events().publish(
+                    (symbol_short!("redeemed"), redeemer.clone()),
+                    root_delegator,
+                );
+            }
+        }
+    }
+
+    // Helper to get raw Ed25519 public key bytes from Address (assuming standard Account)
+    fn address_to_public_key(env: &Env, address: &Address) -> BytesN<32> {
+        let xdr = address.to_xdr(env);
+        let mut key_bytes = [0u8; 32];
+        for i in 0..32 {
+            key_bytes[i] = xdr.get(xdr.len() - 32 + i as u32).unwrap();
+        }
+        BytesN::from_array(env, &key_bytes)
+    }
+}
+mod test;

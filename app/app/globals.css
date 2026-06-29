@@ -1,0 +1,117 @@
+@import "tailwindcss";
+
+/* ── Design Tokens ── */
+:root {
+  --bg-primary: #0e0e10;
+  --bg-card: #16161a;
+  --bg-elevated: #1e1e24;
+  --accent: #7851e9;
+  --accent-hover: #8b6ef0;
+  --accent-muted: rgba(120, 81, 233, 0.15);
+  --accent-glow: rgba(120, 81, 233, 0.25);
+  --text-primary: #f8f6f1;
+  --text-secondary: #a8a6a2;
+  --text-muted: #6b6a66;
+  --border: #2a2a2e;
+  --border-subtle: #1e1e22;
+  --success: #34d399;
+  --error: #ef4444;
+
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@theme inline {
+  --color-bg-primary: #0e0e10;
+  --color-bg-card: #16161a;
+  --color-bg-elevated: #1e1e24;
+  --color-accent: #7851e9;
+  --color-accent-hover: #8b6ef0;
+  --color-accent-muted: rgba(120, 81, 233, 0.15);
+  --color-text-primary: #f8f6f1;
+  --color-text-secondary: #a8a6a2;
+  --color-text-muted: #6b6a66;
+  --color-border: #2a2a2e;
+  --color-success: #34d399;
+  --color-error: #ef4444;
+  --font-display: "Space Grotesk", sans-serif;
+  --font-body: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+/* ── Base ── */
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ── Animations ── */
+@keyframes ticker-scroll {
+  0% {
+    transform: translateX(0);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 20px rgba(120, 81, 233, 0.1), 0 0 40px rgba(120, 81, 233, 0.05);
+  }
+  50% {
+    box-shadow: 0 0 30px rgba(120, 81, 233, 0.2), 0 0 60px rgba(120, 81, 233, 0.1);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-ticker {
+  animation: ticker-scroll 40s linear infinite;
+}
+
+.animate-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 0.3s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.3s ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-ticker,
+  .animate-glow,
+  .animate-fade-in-up,
+  .animate-slide-in-right {
+    animation: none;
+  }
+}

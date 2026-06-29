@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.next/
+target/
+*.tgz
+*.tsbuildinfo
+bun.lock
+.DS_Store

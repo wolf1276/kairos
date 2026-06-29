@@ -1,0 +1,16 @@
+{
+  "name": "kairos-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "app"
+  ],
+  "scripts": {
+    "build": "npm run build -w @kairos/sdk",
+    "test": "npm run test -w @kairos/sdk"
+  },
+  "dependencies": {
+    "@wolf1276/kairos-sdk": "^1.0.0"
+  }
+}
