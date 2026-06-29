@@ -23,7 +23,6 @@
     "@stellar/stellar-sdk": "^13.3.0"
   },
   "devDependencies": {
-    "@rollup/rollup-darwin-arm64": "^4.62.2",
     "pathe": "^2.0.3",
     "tsup": "^8.0.2",
     "typescript": "^5.0.0",
