@@ -18,7 +18,7 @@ export interface TradingProfile {
 
 export interface StrategyConfiguration {
     strategyName: string;
-    parameters?: Record<string, any>;
+    parameters?: Record<string, unknown>;
 }
 
 export interface AgentConfiguration {
@@ -40,6 +40,8 @@ export interface DelegationContext {
     tradingProfile?: TradingProfile;
     strategyConfiguration?: StrategyConfiguration;
     agentConfiguration?: AgentConfiguration;
+    intentText?: string;
+    text?: string;
 }
 
 export interface TradingContext {

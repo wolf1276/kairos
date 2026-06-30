@@ -49,9 +49,10 @@ export async function POST(request: Request) {
             ...proposal,
             display
         });
-    } catch (error: any) {
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         return NextResponse.json(
-            { error: error.message || 'Failed to analyze market context' },
+            { error: errorMessage || 'Failed to analyze market context' },
             { status: 500 }
         );
     }

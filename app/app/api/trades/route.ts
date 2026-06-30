@@ -6,9 +6,10 @@ export async function GET() {
         const engine = new PaperTradingEngine();
         const trades = engine.getTradeHistory();
         return NextResponse.json(trades);
-    } catch (error: any) {
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         return NextResponse.json(
-            { error: error.message || 'Failed to fetch trade history' },
+            { error: errorMessage || 'Failed to fetch trade history' },
             { status: 500 }
         );
     }

@@ -28,7 +28,7 @@ export async function POST(request: Request) {
         // Map internal statuses to user-friendly UI terminology
         const status = parseResult.status === 'COMPLETE' ? 'READY' : 'MORE_INFORMATION_REQUIRED';
         
-        const responseData: any = {
+        const responseData: Record<string, unknown> = {
             status,
             extracted: parseResult.extracted,
         };
@@ -42,13 +42,14 @@ export async function POST(request: Request) {
         }
 
         // Build presentation data object for frontend direct rendering
-        const configToDisplay = parseResult.profile || parseResult.extracted;
+        const configToDisplay = (parseResult.profile || parseResult.extracted) as Record<string, unknown>;
         responseData.display = getDisplayForMode('AI_MANAGED', configToDisplay);
 
         return NextResponse.json(responseData);
-    } catch (error: any) {
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         return NextResponse.json(
-            { error: error.message || 'Failed to parse investment intent' },
+            { error: errorMessage || 'Failed to parse investment intent' },
             { status: 500 }
         );
     }

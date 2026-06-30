@@ -8,7 +8,7 @@ export interface DisplayData {
     summary: DisplayItem[];
 }
 
-export function formatValue(key: string, val: any): string {
+export function formatValue(key: string, val: unknown): string {
     if (val === undefined || val === null) return '';
     if (typeof val === 'boolean') {
         if (key === 'emergencyStop') {
@@ -52,8 +52,14 @@ export function formatValue(key: string, val: any): string {
 
 export function getDisplayForMode(
     mode: 'AI_MANAGED' | 'STRATEGY_MANAGED' | 'AUTONOMOUS_AI' | string,
-    config: any
+    config: Record<string, unknown> | null | undefined
 ): DisplayData {
+    if (!config) {
+        return {
+            title: 'Automation Setup',
+            summary: [],
+        };
+    }
     if (mode === 'AI_MANAGED') {
         const summary: DisplayItem[] = [];
         const mappings: { key: string; label: string }[] = [
@@ -87,11 +93,13 @@ export function getDisplayForMode(
         };
     } else if (mode === 'STRATEGY_MANAGED') {
         const summary: DisplayItem[] = [];
-        if (config.strategyName) {
-            summary.push({ label: 'Strategy Setup', value: config.strategyName });
+        const strategyName = config['strategyName'];
+        if (strategyName) {
+            summary.push({ label: 'Strategy Setup', value: String(strategyName) });
         }
-        if (config.parameters) {
-            for (const [k, v] of Object.entries(config.parameters)) {
+        const parameters = config['parameters'];
+        if (parameters && typeof parameters === 'object') {
+            for (const [k, v] of Object.entries(parameters)) {
                 summary.push({ label: k, value: formatValue(k, v) });
             }
         }

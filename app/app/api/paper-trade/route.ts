@@ -40,8 +40,9 @@ export async function POST(request: Request) {
                 const oracle = new BinanceOracle();
                 const priceRes = await oracle.getPrice(uSymbol);
                 price = parseFloat(priceRes.price);
-            } catch (err: any) {
-                return NextResponse.json({ error: `Failed to fetch price for ${uSymbol}: ${err.message}` }, { status: 400 });
+            } catch (err) {
+                const errMsg = err instanceof Error ? err.message : String(err);
+                return NextResponse.json({ error: `Failed to fetch price for ${uSymbol}: ${errMsg}` }, { status: 400 });
             }
         }
 
@@ -67,9 +68,10 @@ export async function POST(request: Request) {
             trade,
             portfolio: engine.getPortfolio()
         });
-    } catch (error: any) {
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         return NextResponse.json(
-            { error: error.message || 'Execution failed' },
+            { error: errorMessage || 'Execution failed' },
             { status: 500 }
         );
     }

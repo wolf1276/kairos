@@ -11,7 +11,7 @@
   --accent: oklch(0.97 0 0);
   --accent-hover: #8b6ef0;
   --accent-muted: rgba(120, 81, 233, 0.15);
-  --accent-glow: rgba(120, 81, 233, 0.25);
+  --accent-glow: rgba(120, 81, 233, 0.12);
   --text-primary: #f8f6f1;
   --text-secondary: #a8a6a2;
   --text-muted: #6b6a66;
@@ -133,10 +133,10 @@ body {
 @keyframes pulse-glow {
   0%,
   100% {
-    box-shadow: 0 0 20px rgba(120, 81, 233, 0.1), 0 0 40px rgba(120, 81, 233, 0.05);
+    box-shadow: 0 0 30px rgba(120, 81, 233, 0.06), 0 0 60px rgba(120, 81, 233, 0.03);
   }
   50% {
-    box-shadow: 0 0 30px rgba(120, 81, 233, 0.2), 0 0 60px rgba(120, 81, 233, 0.1);
+    box-shadow: 0 0 40px rgba(120, 81, 233, 0.1), 0 0 80px rgba(120, 81, 233, 0.05);
   }
 }
 

@@ -107,8 +107,9 @@ export default function DelegationKit() {
       // Refresh balance
       const refresh = await connectWallet();
       if (refresh.success && refresh.wallet) setWallet(refresh.wallet);
-    } catch (e: any) {
-      setTxError(e?.message ?? "Transaction failed");
+    } catch (e) {
+      const errMsg = e instanceof Error ? e.message : String(e);
+      setTxError(errMsg || "Transaction failed");
       setTxStatus("error");
     }
   };

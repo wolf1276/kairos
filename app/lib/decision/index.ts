@@ -17,7 +17,7 @@ export class LLMDecisionProvider implements DecisionProvider {
         let profile = delegationContext?.tradingProfile;
         if (!profile) {
             // For backward compatibility or fallback, try to parse from context/defaults
-            const text = (delegationContext as any)?.intentText || (delegationContext as any)?.text || "Grow funds with moderate risk and allow all assets";
+            const text = delegationContext?.intentText || delegationContext?.text || "Grow funds with moderate risk and allow all assets";
             const parsed = parseIntent({ text });
             profile = parsed.profile || {
                 goal: "Autonomous Management",
@@ -186,7 +186,7 @@ export class StrategyDecisionProvider implements DecisionProvider {
 
 export class AutonomousAIDecisionProvider implements DecisionProvider {
     async decide(context: TradingContext): Promise<TradeProposal> {
-        const { marketSnapshot, delegationContext, walletContext } = context;
+        const { marketSnapshot, delegationContext } = context;
         const price = marketSnapshot.price;
         const symbol = marketSnapshot.symbol;
         const indicators = marketSnapshot.indicators;

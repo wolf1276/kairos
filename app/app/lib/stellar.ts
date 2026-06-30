@@ -49,7 +49,8 @@ function isBrowser(): boolean {
 /** Check if the Freighter extension is installed at all. */
 function freighterInstalled(): boolean {
   if (!isBrowser()) return false;
-  return !!((window as any).freighter || (window as any).stellar);
+  const win = window as typeof window & { freighter?: unknown; stellar?: unknown };
+  return !!(win.freighter || win.stellar);
 }
 
 /** Safely read the address from a freighter-api response. */
@@ -185,8 +186,8 @@ export async function connectWallet(): Promise<ConnectResult> {
   let address: string;
   try {
     address = await requestAccessFromFreighter();
-  } catch (e: any) {
-    const msg = e?.message ?? "";
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     // User closed the popup or denied access
     if (
       msg.includes("cancel") ||
@@ -209,12 +210,13 @@ export async function connectWallet(): Promise<ConnectResult> {
   let net: Awaited<ReturnType<typeof getFreighterNetwork>>;
   try {
     net = await getFreighterNetwork();
-  } catch (e: any) {
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
     return {
       success: false,
       error: {
         kind: "network-error",
-        message: e?.message ?? "Failed to get network details",
+        message: msg || "Failed to get network details",
       },
     };
   }

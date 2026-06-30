@@ -24,9 +24,10 @@ export async function GET() {
 
         const updatedPortfolio = engine.getPortfolio(currentPrices);
         return NextResponse.json(updatedPortfolio);
-    } catch (error: any) {
+    } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
         return NextResponse.json(
-            { error: error.message || 'Failed to fetch portfolio' },
+            { error: errorMessage || 'Failed to fetch portfolio' },
             { status: 500 }
         );
     }
