@@ -1,12 +1,10 @@
 import {
-  Keypair,
   Horizon,
   Networks,
   Asset,
   Operation,
   TransactionBuilder,
   BASE_FEE,
-  StrKey,
 } from "@stellar/stellar-sdk";
 import {
   requestAccess,

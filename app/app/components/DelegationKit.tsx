@@ -5,7 +5,6 @@ import {
   connectWallet,
   delegateXLM,
   type WalletState,
-  type DelegationResult,
   tryCheckConnection,
 } from "@/app/lib/stellar";
 
@@ -48,16 +47,6 @@ export default function DelegationKit() {
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
 
-  // ── Auto-reconnect on mount if Freighter already authorized ──
-  useEffect(() => {
-    let cancelled = false;
-    tryCheckConnection().then((ok) => {
-      if (ok && !cancelled) handleConnect();
-    });
-    return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // ── Connect ──
   const handleConnect = useCallback(async () => {
     setConnecting(true);
@@ -82,6 +71,15 @@ export default function DelegationKit() {
 
     setConnecting(false);
   }, []);
+
+  // ── Auto-reconnect on mount if Freighter already authorized ──
+  useEffect(() => {
+    let cancelled = false;
+    tryCheckConnection().then((ok) => {
+      if (ok && !cancelled) handleConnect();
+    });
+    return () => { cancelled = true; };
+  }, [handleConnect]);
 
   // ── Disconnect ──
   const handleDisconnect = () => {

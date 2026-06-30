@@ -7,10 +7,12 @@
     "app"
   ],
   "scripts": {
-    "build": "npm run build -w @kairos/sdk",
-    "test": "npm run test -w @kairos/sdk"
+    "build": "npm run build -w @wolf1276/kairos-sdk",
+    "test": "npm run test -w @wolf1276/kairos-sdk"
   },
   "dependencies": {
-    "@wolf1276/kairos-sdk": "^1.0.0"
+    "@wolf1276/kairos-sdk": "^1.0.0",
+    "axios": "^1.18.1",
+    "technicalindicators": "^3.1.0"
   }
 }

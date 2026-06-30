@@ -3,30 +3,27 @@
   "version": "1.0.0",
   "description": "Official TypeScript SDK for the Kairos Soroban Delegation Framework",
   "main": "./dist/index.js",
-  "module": "./dist/index.mjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.mjs",
-      "require": "./dist/index.js"
+      "require": "./dist/index.js",
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
     }
   },
   "files": [
     "dist"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "bun build src/index.ts --outdir dist --sourcemap --external @stellar/stellar-sdk --external crypto && tsc --emitDeclarationOnly --declaration --outDir dist",
     "test": "bun test"
   },
   "peerDependencies": {
     "@stellar/stellar-sdk": "^13.3.0"
   },
   "devDependencies": {
-<<<<<<< HEAD
-=======
     "@stellar/stellar-sdk": "^13.3.0",
->>>>>>> 9ed80f0 (backend infra)
     "pathe": "^2.0.3",
     "tsup": "^8.0.2",
     "typescript": "^5.0.0",
