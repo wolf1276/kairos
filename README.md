@@ -291,6 +291,17 @@ pnpm run dev
 
 The dashboard will be available at `http://localhost:3000`.
 
+### Deploying to Vercel
+
+This is a pnpm monorepo — the Next.js app lives in `app/`. To deploy on Vercel:
+
+1. **Import the repo** into Vercel.
+2. **Set Root Directory** to `app/` in project settings (Settings → General → Root Directory).
+3. **Add environment variables** listed in `.env.example` to your Vercel project.
+4. **Deploy** — Vercel will install from root (resolving workspace deps) and build both the SDK and app.
+
+The `vercel.json` at the repo root handles the build pipeline automatically.
+
 ### Running the Demo
 
 ```bash
