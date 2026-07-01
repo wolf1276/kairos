@@ -14,6 +14,13 @@
     "integration": "npx tsx scripts/test-integration.ts",
     "deploy": "npx tsx scripts/deploy-testnet.ts"
   },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "sharp",
+      "unrs-resolver"
+    ]
+  },
   "dependencies": {
     "@wolf1276/kairos-sdk": "workspace:^",
     "axios": "^1.18.1",

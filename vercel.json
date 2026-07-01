@@ -2,5 +2,5 @@
   "framework": "nextjs",
   "installCommand": "pnpm install",
   "buildCommand": "pnpm --filter @wolf1276/kairos-sdk build && pnpm --filter app build",
-  "outputDirectory": "app/.next"
+  "outputDirectory": ".next"
 }
