@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "postinstall": "node scripts/patch-tw-animate-css.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",
