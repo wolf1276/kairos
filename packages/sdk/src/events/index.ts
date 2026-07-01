@@ -1,26 +1,43 @@
 import { Address, rpc, xdr } from '@stellar/stellar-sdk';
+import type { Contract } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
+import { RpcError } from '../errors';
 
 export interface KairosEvent {
   type: 'DelegationRevoked' | 'DelegationEnabled' | 'DelegationExecuted' | 'PolicyViolation' | 'ExecutionFailed' | 'ExecutionSucceeded';
   contractId: string;
   id: string;
   ledger: number;
-  data: any;
+  data: Record<string, unknown>;
+}
+
+interface RawEventInput {
+  contractId: string;
+  topic: string[];
+  value: string;
+  id: string;
+  ledger: number;
+}
+
+function parseEventResponse(e: rpc.Api.EventResponse): RawEventInput {
+  return {
+    contractId: e.contractId?.toString() ?? '',
+    topic: e.topic.map(t => t.toXDR('base64')),
+    value: e.value.toXDR('base64'),
+    id: e.id,
+    ledger: e.ledger,
+  };
 }
 
 export class EventsModule {
-  private activeSubscriptions: Map<string, { interval: NodeJS.Timeout }> = new Map();
+  private activeSubscriptions: Map<string, { interval: ReturnType<typeof setInterval> }> = new Map();
 
   constructor(private client: KairosClient) {}
 
-  /**
-   * Decodes a raw Soroban event.
-   */
-  decode(rawEvent: any): KairosEvent | null {
+  decode(rawEvent: RawEventInput): KairosEvent | null {
     try {
       const contractId = rawEvent.contractId;
-      const topics = rawEvent.topic.map((t: any) => xdr.ScVal.fromXDR(Buffer.from(t, 'base64')));
+      const topics = rawEvent.topic.map((t: string) => xdr.ScVal.fromXDR(Buffer.from(t, 'base64')));
       const value = xdr.ScVal.fromXDR(Buffer.from(rawEvent.value, 'base64'));
 
       if (topics.length === 0) return null;
@@ -53,19 +70,38 @@ export class EventsModule {
 
       if (eventTypeSymbol === 'redeemed') {
         const redeemer = Address.fromScVal(topics[1]).toString();
-        const rootDelegator = Address.fromScVal(value).toString();
+        const vec = value.vec();
+        if (!vec) return null;
+        
+        const rootDelegator = Address.fromScVal(vec[0]).toString();
+        const delegationHash = vec[1].bytes().toString('hex');
+        
+        // Decode execution details
+        const execMap = vec[2].map();
+        if (!execMap) return null;
+        
+        let target = '';
+        let functionName = '';
+        for (const entry of execMap) {
+          const key = entry.key().sym().toString();
+          if (key === 'target') {
+            target = Address.fromScVal(entry.val()).toString();
+          } else if (key === 'function') {
+            functionName = entry.val().sym().toString();
+          }
+        }
+
         return {
           type: 'DelegationExecuted',
           contractId,
           id: rawEvent.id,
           ledger: rawEvent.ledger,
-          data: { redeemer, rootDelegator },
+          data: { redeemer, rootDelegator, delegationHash, target, function: functionName },
         };
       }
 
       return null;
     } catch (e) {
-      // Return raw representation or null on fail
       return null;
     }
   }
@@ -80,26 +116,25 @@ export class EventsModule {
       topics: string[];
     }>;
   }): Promise<KairosEvent[]> {
-    const rpcFilters: any = {
+    const rawFilters: rpc.Server.GetEventsRequest = {
       startLedger: filters.startLedger || 1,
       filters: (filters.topicFilters || []).map(f => ({
         contractIds: [this.client.contracts.delegationManager],
         topics: f.topics.map(t => {
-          if (t === '*') return '*';
-          // If it is a valid hex hash, convert it to XDR BytesN
+          if (t === '*') return ['*'];
           if (/^[0-9a-fA-F]{64}$/.test(t)) {
-            return this.client.hexToBytesN32ScVal(t).toXDR('base64');
+            return [this.client.hexToBytesN32ScVal(t).toXDR('base64')];
           }
-          return xdr.ScVal.scvSymbol(t).toXDR('base64');
+          return [xdr.ScVal.scvSymbol(t).toXDR('base64')];
         }),
       })),
       limit: filters.limit,
     };
 
-    const res = (await this.client.rpcProvider.getEvents(rpcFilters)) as any;
-    return res.events
-      .map((e: any) => this.decode(e))
-      .filter((e: any): e is KairosEvent => e !== null);
+    const res = await this.client.rpcProvider.getEvents(rawFilters);
+    return (res.events || [])
+      .map(e => this.decode(parseEventResponse(e)))
+      .filter((e): e is KairosEvent => e !== null);
   }
 
   /**
@@ -111,7 +146,7 @@ export class EventsModule {
     options?: { pollIntervalMs?: number }
   ): void {
     if (this.activeSubscriptions.has(subscriptionId)) {
-      throw new Error(`Subscription with ID ${subscriptionId} already exists`);
+      throw new RpcError(`Subscription with ID ${subscriptionId} already exists`);
     }
 
     let lastLedger = 0;
@@ -137,7 +172,7 @@ export class EventsModule {
           }
           callback(event);
         }
-      } catch (err) {
+      } catch {
         // Suppress or emit error
       }
     }, pollInterval);

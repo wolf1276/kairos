@@ -1,4 +1,4 @@
-import { Address } from '@stellar/stellar-sdk';
+import { xdr } from '@stellar/stellar-sdk';
 
 export interface NetworkConfig {
   rpcUrl: string;
@@ -12,30 +12,30 @@ export interface ContractConfig {
 }
 
 export interface Caveat {
-  enforcer: string; // Contract address of the policy enforcer
-  terms: Uint8Array; // Raw terms byte array
+  enforcer: string;
+  terms: Uint8Array;
 }
 
 export interface Delegation {
   delegate: string;
   delegator: string;
-  authority: string; // Hex string (32 bytes) or ROOT_AUTHORITY
+  authority: string;
   caveats: Caveat[];
   salt: bigint;
   nonce: bigint;
-  signature: string; // Hex string (64 bytes)
+  signature: string;
 }
 
 export interface Execution {
   target: string;
   function: string;
-  args: any[]; // XDR/Val arguments
+  args: xdr.ScVal[];
 }
 
 export interface ExecutionContext {
   target: string;
   function: string;
-  args: any[];
+  args: xdr.ScVal[];
   redeemer: string;
   delegate: string;
   delegator: string;

@@ -7,4 +7,4 @@ export const POLICY_TYPES = {
   TIME_RESTRICTION: 3,
 } as const;
 export const DEFAULT_TESTNET_RPC = 'https://soroban-testnet.stellar.org';
-export const DEFAULT_TESTNET_PASSPHRASE = 'Test Stellar Network ; September 2015';
+export const DEFAULT_TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';

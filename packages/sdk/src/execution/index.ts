@@ -1,6 +1,7 @@
-import { Address, Keypair, Operation, Transaction, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
 import { Delegation, Execution, TransactionResult } from '../types';
+import { TransactionSimulationError } from '../errors';
 
 export class ExecutionModule {
   constructor(private client: KairosClient) {}
@@ -87,7 +88,7 @@ export class ExecutionModule {
     redeemerAddress: string;
     delegationChains: Delegation[][] | Delegation[];
     executions: Execution[] | Execution;
-  }): Promise<any> {
+  }): Promise<rpc.Api.SimulateTransactionResponse> {
     const sourceAccount = await this.client.getAccount(params.redeemerAddress);
     
     let chains: Delegation[][];
@@ -161,12 +162,12 @@ export class ExecutionModule {
     executions: Execution[] | Execution;
   }): Promise<{ cpuInstructions: number; memoryBytes: number; fee: string }> {
     const simResult = await this.simulate(params);
-    if (!simResult.minResourceFee) {
-      throw new Error(`Simulation failed: ${JSON.stringify(simResult)}`);
+    if (!rpc.Api.isSimulationSuccess(simResult)) {
+      throw new TransactionSimulationError(`Simulation failed: ${JSON.stringify(simResult)}`, simResult);
     }
     return {
-      cpuInstructions: Number(simResult.cost?.cpuInsns || 0),
-      memoryBytes: Number(simResult.cost?.memBytes || 0),
+      cpuInstructions: 0,
+      memoryBytes: 0,
       fee: simResult.minResourceFee,
     };
   }
@@ -181,14 +182,13 @@ export class ExecutionModule {
   /**
    * Queries transaction/execution history.
    */
-  async history(delegationHash: string): Promise<any[]> {
-    // Queries the RPC getEvents filter for the delegation hash
+  async history(delegationHash: string): Promise<unknown[]> {
     return this.client.events.query({
       topicFilters: [
         {
           topics: [
+            'redeemed',
             '*',
-            delegationHash,
           ],
         },
       ],

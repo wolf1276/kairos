@@ -37,13 +37,13 @@ export class DelegationExpiredError extends KairosError {
 }
 
 export class RpcError extends KairosError {
-  constructor(message: string, public readonly details?: any) {
+  constructor(message: string, public readonly details?: unknown) {
     super(`RPC Error: ${message}`);
   }
 }
 
 export class TransactionSimulationError extends KairosError {
-  constructor(message: string, public readonly details?: any) {
+  constructor(message: string, public readonly details?: unknown) {
     super(`Transaction Simulation Error: ${message}`);
   }
 }

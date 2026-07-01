@@ -12,10 +12,10 @@ export async function POST(request: Request) {
         const delegatedAmount = body.delegatedAmount !== undefined ? Number(body.delegatedAmount) : 1000;
         const balance = body.balance !== undefined ? Number(body.balance) : 10000;
         const address = body.address || 'G_DEFAULT';
+        const timeframe = body.timeframe || '1m';
 
-        // Retrieve current market snapshot via the BinanceOracle
-        const oracle = new BinanceOracle();
-        const marketSnapshot = await oracle.getMarketSnapshot(symbol);
+        const oracle = new BinanceOracle(timeframe);
+        const marketSnapshot = await oracle.getMarketSnapshot(symbol, timeframe);
 
         const tradingContext: TradingContext = {
             walletContext: { address, balance },
@@ -26,14 +26,13 @@ export async function POST(request: Request) {
                 automationMode,
                 tradingProfile: body.tradingProfile,
                 strategyConfiguration: body.strategyConfiguration,
-                agentConfiguration: body.agentConfiguration
-            }
+                agentConfiguration: body.agentConfiguration,
+            },
         };
 
         const decisionEngine = new DecisionEngine();
         const proposal = await decisionEngine.decide(tradingContext);
 
-        // Generate presentation layer config display
         let configToDisplay = null;
         if (automationMode === 'AI_MANAGED') {
             configToDisplay = body.tradingProfile;
@@ -47,7 +46,8 @@ export async function POST(request: Request) {
 
         return NextResponse.json({
             ...proposal,
-            display
+            display,
+            timeframe,
         });
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);

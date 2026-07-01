@@ -1,16 +1,15 @@
-import { Caveat } from '../types';
-import { encodeTargetWhitelistTerms, encodeTimeRestrictionTerms } from '../utils';
+import { Address, xdr, StrKey } from '@stellar/stellar-sdk';
+import { Caveat, Delegation } from '../types';
+import { addressToPublicKey, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, i128ToBuffer } from '../utils';
+import { PolicyViolationError, ExecutionFailedError } from '../errors';
 
 export interface PolicyCreateParams {
   type: 'spend-limit' | 'time-restriction' | 'target-whitelist';
-  // Spend Limit options
   token?: string;
   spendLimit?: string | bigint;
   period?: bigint | number;
-  // Time restriction options
   start?: bigint | number;
   expiry?: bigint | number;
-  // Target Whitelist options
   target?: string;
 }
 
@@ -36,23 +35,22 @@ export class PolicyModule {
       }
       case 'target-whitelist': {
         if (!params.target) {
-          throw new Error('Target address is required for target-whitelist policy');
+          throw new PolicyViolationError('target-whitelist', 'Target address is required');
         }
         terms = encodeTargetWhitelistTerms(params.target);
         break;
       }
       case 'spend-limit': {
         if (!params.token || params.spendLimit === undefined || params.period === undefined) {
-          throw new Error('token, spendLimit, and period are required for spend-limit policy');
+          throw new PolicyViolationError('spend-limit', 'token, spendLimit, and period are required');
         }
         // Spend Limit: policy_type = 2
-        // Next 32 bytes: token public key / contract ID
-        // Next 16 bytes: limit (i128BE)
+        // Next 32 bytes: token contract public key
+        // Next 16 bytes: limit (i128BE split into hi and lo 64-bit segments)
         // Next 8 bytes: period (u64BE)
-        const tokenXdr = require('../utils').addressToPublicKey(params.token);
-        const limitBuf = Buffer.alloc(16);
-        limitBuf.writeBigInt64BE(BigInt(params.spendLimit) >> 64n, 0);
-        limitBuf.writeBigInt64BE(BigInt(params.spendLimit) & 0xffffffffffffffffn, 8);
+        const tokenXdr = addressToPublicKey(params.token);
+        
+        const limitBuf = i128ToBuffer(BigInt(params.spendLimit));
         
         const periodBuf = Buffer.alloc(8);
         periodBuf.writeBigUInt64BE(BigInt(params.period), 0);
@@ -67,7 +65,7 @@ export class PolicyModule {
         break;
       }
       default:
-        throw new Error(`Unsupported policy type: ${params.type}`);
+        throw new PolicyViolationError(params.type, `Unsupported policy type: ${params.type}`);
     }
 
     return {
@@ -77,41 +75,57 @@ export class PolicyModule {
   }
 
   /**
-   * Fake CRUD operations as policies are stored inline inside the delegation caveats.
+   * Updates a policy's configuration.
    */
   async update(caveat: Caveat, newParams: Partial<PolicyCreateParams>): Promise<Caveat> {
     const parsed = this.decode(caveat);
-    return this.create({
+    const merged: PolicyCreateParams = {
       ...parsed,
       ...newParams,
-    } as PolicyCreateParams);
+    };
+    return this.create(merged);
   }
 
-  async delete(caveat: Caveat): Promise<void> {
-    // No-op, just remove from delegation caveats
+  /**
+   * Deletes a policy caveat from a delegation.
+   */
+  async delete(delegation: Delegation, index: number): Promise<Delegation> {
+    const caveats = [...delegation.caveats];
+    if (index < 0 || index >= caveats.length) {
+      throw new PolicyViolationError('policy-list', `Policy index out of bounds: ${index}`);
+    }
+    caveats.splice(index, 1);
+    return {
+      ...delegation,
+      caveats,
+    };
   }
 
   async get(caveat: Caveat): Promise<Caveat> {
     return caveat;
   }
 
-  async list(): Promise<Caveat[]> {
+  /**
+   * Returns policies configured in a delegation.
+   */
+  async list(delegation?: Delegation): Promise<Caveat[]> {
+    if (delegation) {
+      return delegation.caveats;
+    }
     return [];
   }
 
   /**
-   * Decodes raw terms byte array back into options.
+   * Decodes raw terms byte array back into human-readable options.
    */
   decode(caveat: Caveat): PolicyCreateParams {
     const terms = Buffer.from(caveat.terms);
     if (terms.length === 0) {
-      throw new Error('Empty terms');
+      throw new PolicyViolationError('decode', 'Empty terms');
     }
     const typeTag = terms.readUInt8(0);
     switch (typeTag) {
       case 1: {
-        // Target Whitelist
-        const { Address } = require('@stellar/stellar-sdk');
         const targetAddress = Address.fromScVal(
           this.parseScValFromBuffer(terms.subarray(1))
         ).toString();
@@ -121,15 +135,11 @@ export class PolicyModule {
         };
       }
       case 2: {
-        // Spend Limit
-        // Decode token, limit, period
         const tokenBytes = terms.subarray(1, 33);
-        // Find tokenAddress by converting contractId bytes back to address
-        const { StrKey } = require('@stellar/stellar-sdk');
         const token = StrKey.encodeContract(tokenBytes);
         
         const limitHi = terms.readBigInt64BE(33);
-        const limitLo = terms.readBigInt64BE(41);
+        const limitLo = terms.readBigUInt64BE(41);
         const spendLimit = (limitHi << 64n) | (limitLo & 0xffffffffffffffffn);
         
         const period = terms.readBigUInt64BE(49);
@@ -141,7 +151,6 @@ export class PolicyModule {
         };
       }
       case 3: {
-        // Time restriction
         const start = terms.readBigUInt64BE(1);
         const expiry = terms.readBigUInt64BE(9);
         return {
@@ -151,12 +160,11 @@ export class PolicyModule {
         };
       }
       default:
-        throw new Error(`Unknown policy type tag: ${typeTag}`);
+        throw new PolicyViolationError('decode', `Unknown policy type tag: ${typeTag}`);
     }
   }
 
-  private parseScValFromBuffer(buf: Buffer) {
-    const { xdr } = require('@stellar/stellar-sdk');
+  private parseScValFromBuffer(buf: Buffer): xdr.ScVal {
     return xdr.ScVal.fromXDR(buf);
   }
 }

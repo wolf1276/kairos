@@ -1,8 +1,9 @@
-import { Address, Keypair, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
+import { Address, Keypair, Operation, rpc, TransactionBuilder } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
 import { ROOT_AUTHORITY } from '../constants';
-import { Caveat, Delegation } from '../types';
-import { computeDelegationHash } from '../utils';
+import { Caveat, Delegation, TransactionResult } from '../types';
+import { computeDelegationHash, scValToBigInt } from '../utils';
+import { ExecutionFailedError, PolicyViolationError, RpcError } from '../errors';
 
 export class DelegationModule {
   constructor(private client: KairosClient) {}
@@ -25,7 +26,7 @@ export class DelegationModule {
     const salt = params.salt || BigInt(Math.floor(Math.random() * 1000000));
     
     // Fetch nonce from contract if not provided
-    const nonce = params.nonce !== undefined ? params.nonce : await this.client.delegation.getNonce(params.delegator);
+    const nonce = params.nonce !== undefined ? params.nonce : await this.getNonce(params.delegator);
 
     const unsignedDelegation: Omit<Delegation, 'signature'> = {
       delegate: params.delegate,
@@ -36,7 +37,11 @@ export class DelegationModule {
       nonce,
     };
 
-    const hashStr = computeDelegationHash(unsignedDelegation);
+    const hashStr = computeDelegationHash(
+      unsignedDelegation,
+      this.client.contracts.delegationManager,
+      this.client.networkPassphrase
+    );
     const hashBuffer = Buffer.from(hashStr, 'hex');
 
     let signatureBuffer: Buffer;
@@ -47,7 +52,7 @@ export class DelegationModule {
     }
 
     if (signatureBuffer.length !== 64) {
-      throw new Error(`Signature must be exactly 64 bytes. Received: ${signatureBuffer.length}`);
+      throw new ExecutionFailedError(`Signature must be exactly 64 bytes. Received: ${signatureBuffer.length}`);
     }
 
     return {
@@ -60,7 +65,7 @@ export class DelegationModule {
    * Fetches the current nonce for a delegator from the DelegationManager.
    */
   async getNonce(delegator: string): Promise<bigint> {
-    const sourceAccount = await this.client.getAccount(this.client.contracts.delegationManager);
+    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
     const nonceOp = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'get_nonce',
@@ -75,10 +80,9 @@ export class DelegationModule {
       .setTimeout(30)
       .build();
 
-    const simRes = (await this.client.simulateTx(tx)) as any;
-    if (simRes.results?.[0]?.xdr) {
-      const val = this.client.parseScVal(simRes.results[0].xdr);
-      return val.u64().toBigInt();
+    const simRes = await this.client.simulateTx(tx);
+    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
+      return scValToBigInt(simRes.result.retval);
     }
     return 0n;
   }
@@ -87,14 +91,18 @@ export class DelegationModule {
    * Gets the hash of a delegation.
    */
   getHash(delegation: Delegation): string {
-    return computeDelegationHash(delegation);
+    return computeDelegationHash(
+      delegation,
+      this.client.contracts.delegationManager,
+      this.client.networkPassphrase
+    );
   }
 
   /**
    * Checks if a delegation hash is disabled on-chain.
    */
   async get(hash: string): Promise<{ disabled: boolean }> {
-    const sourceAccount = await this.client.getAccount(this.client.contracts.delegationManager);
+    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
     const disabledOp = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'is_delegation_disabled',
@@ -111,10 +119,9 @@ export class DelegationModule {
       .setTimeout(30)
       .build();
 
-    const simRes = (await this.client.simulateTx(tx)) as any;
-    if (simRes.results?.[0]?.xdr) {
-      const val = this.client.parseScVal(simRes.results[0].xdr);
-      return { disabled: val.b() };
+    const simRes = await this.client.simulateTx(tx);
+    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
+      return { disabled: simRes.result.retval.b() };
     }
     return { disabled: false };
   }
@@ -122,10 +129,8 @@ export class DelegationModule {
   /**
    * Disables a delegation on-chain.
    */
-  async disable(delegation: Delegation, delegatorSigner: Keypair): Promise<any> {
+  async disable(delegation: Delegation, delegatorSigner: Keypair): Promise<TransactionResult> {
     const sourceAccount = await this.client.getAccount(delegatorSigner.publicKey());
-    
-    // We convert delegation structure to ScVal structure
     const delegationScVal = this.client.delegationToScVal(delegation);
 
     const disableOp = Operation.invokeContractFunction({
@@ -151,14 +156,14 @@ export class DelegationModule {
   /**
    * Alias for disable.
    */
-  async revoke(delegation: Delegation, delegatorSigner: Keypair): Promise<any> {
+  async revoke(delegation: Delegation, delegatorSigner: Keypair): Promise<TransactionResult> {
     return this.disable(delegation, delegatorSigner);
   }
 
   /**
    * Re-enables a delegation on-chain.
    */
-  async enable(delegation: Delegation, delegatorSigner: Keypair): Promise<any> {
+  async enable(delegation: Delegation, delegatorSigner: Keypair): Promise<TransactionResult> {
     const sourceAccount = await this.client.getAccount(delegatorSigner.publicKey());
     const delegationScVal = this.client.delegationToScVal(delegation);
 
@@ -193,7 +198,6 @@ export class DelegationModule {
       signer: Keypair | ((hash: Buffer) => Promise<Buffer> | Buffer);
     }
   ): Promise<Delegation> {
-    // Renew delegation with a fresh nonce or custom properties
     const freshNonce = await this.getNonce(oldDelegation.delegator);
     return this.create({
       delegate: oldDelegation.delegate,
@@ -206,11 +210,31 @@ export class DelegationModule {
     });
   }
 
-  /**
-   * Helper to list delegations (returns empty list / mock status since it's off-chain client,
-   * but could query indexer if available).
-   */
-  async list(): Promise<Delegation[]> {
-    return [];
+  async list(delegator?: string): Promise<string[]> {
+    const eventTypes = ['del_dis', 'del_en', 'redeemed'];
+    const topicFilters = eventTypes.map(t => ({
+      topics: [t],
+    }));
+
+    const events = await this.client.events.query({
+      topicFilters
+    });
+
+    const hashes = events
+      .map(e => e.data.hash)
+      .filter((h): h is string => typeof h === 'string' && h.length > 0);
+
+    const uniqueHashes = Array.from(new Set(hashes));
+
+    if (delegator) {
+      return uniqueHashes.filter(h => {
+        const matchingEvents = events.filter(e => e.data.hash === h);
+        return matchingEvents.some(e =>
+          typeof e.data.delegator === 'string' && e.data.delegator === delegator
+        );
+      });
+    }
+
+    return uniqueHashes;
   }
 }

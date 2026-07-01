@@ -164,9 +164,12 @@ export default function Home() {
           </p>
 
           <div className="anim-cta mt-10 flex flex-wrap gap-4">
-            <button className="h-10 rounded-full bg-white px-6 text-[10px] font-semibold text-black transition duration-500 hover:bg-white/90">
+            <a
+              href="/dashboard"
+              className="inline-flex h-10 items-center rounded-full bg-white px-6 text-[10px] font-semibold text-black transition duration-500 hover:bg-white/90"
+            >
               Launch App
-            </button>
+            </a>
             <button className="h-10 rounded-full border border-white/10 bg-white/[0.02] px-6 text-[10px] font-semibold text-white/80 transition duration-500 hover:bg-white/[0.06] hover:border-white/20">
               Documentation
             </button>

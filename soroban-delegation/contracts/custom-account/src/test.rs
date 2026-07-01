@@ -21,7 +21,7 @@ fn test_custom_account_initialization() {
     let owner = Address::generate(&env);
     let manager = Address::generate(&env);
     
-    let account = CustomAccountClient::new(&env, &env.register_contract(None, CustomAccount));
+    let account = CustomAccountClient::new(&env, &env.register(CustomAccount, ()));
     account.init(&owner, &manager);
 }
 
@@ -33,12 +33,12 @@ fn test_custom_account_execution_from_executor() {
     let owner = Address::generate(&env);
     let manager = Address::generate(&env);
     
-    let account_id = env.register_contract(None, CustomAccount);
+    let account_id = env.register(CustomAccount, ());
     let account = CustomAccountClient::new(&env, &account_id);
     account.init(&owner, &manager);
 
     // Call execution from the manager
-    let target = env.register_contract(None, DummyContract);
+    let target = env.register(DummyContract, ());
     let function = Symbol::new(&env, "test");
     let args: Vec<Val> = Vec::new(&env);
 

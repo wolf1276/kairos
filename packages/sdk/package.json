@@ -1,6 +1,6 @@
 {
   "name": "@wolf1276/kairos-sdk",
-  "version": "1.0.1",
+  "version": "1.0.0",
   "description": "Official TypeScript SDK for the Kairos Soroban Delegation Framework",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
@@ -17,16 +17,13 @@
   ],
   "scripts": {
     "build": "tsup",
-    "test": "bun test"
+    "test": "vitest run"
   },
   "peerDependencies": {
     "@stellar/stellar-sdk": "^13.3.0"
   },
   "devDependencies": {
-<<<<<<< HEAD
-=======
     "@stellar/stellar-sdk": "^13.3.0",
->>>>>>> 9ed80f0 (backend infra)
     "pathe": "^2.0.3",
     "tsup": "^8.0.2",
     "typescript": "^5.0.0",

@@ -1,6 +1,9 @@
-import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import * as crypto from 'crypto';
+import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr, StrKey, hash } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
-import { Wallet } from '../types';
+import { Wallet, TransactionResult } from '../types';
+import { scValToBigInt } from '../utils';
+import { ExecutionFailedError, RpcError } from '../errors';
 
 export class WalletModule {
   constructor(private client: KairosClient) {}
@@ -15,10 +18,25 @@ export class WalletModule {
     // 1. Build contract deployment transaction
     const sourceAccount = await this.client.getAccount(owner.publicKey());
     
-    // Deploy contract operation
-    const deployOp = Operation.createCustomContract({
-      wasmHash: Buffer.from(wasmHash, 'hex'),
-      address: Address.fromString(owner.publicKey()),
+    // Deploy contract operation (using CreateContract V1 to match network support)
+    const salt = crypto.randomBytes(32);
+    const preimage = xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+      new xdr.ContractIdPreimageFromAddress({
+        address: Address.fromString(owner.publicKey()).toScAddress(),
+        salt,
+      })
+    );
+    const executable = xdr.ContractExecutable.contractExecutableWasm(
+      Buffer.from(wasmHash, 'hex')
+    );
+    const createContractArgs = new xdr.CreateContractArgs({
+      contractIdPreimage: preimage,
+      executable,
+    });
+    const func = xdr.HostFunction.hostFunctionTypeCreateContract(createContractArgs);
+    const deployOp = Operation.invokeHostFunction({
+      func,
+      auth: [],
     });
 
     const tx = new TransactionBuilder(sourceAccount, {
@@ -29,22 +47,38 @@ export class WalletModule {
       .setTimeout(30)
       .build();
 
+    // Compute contract ID locally and deterministically
+    const networkId = xdr.Hash.fromXDR(hash(Buffer.from(this.client.networkPassphrase)));
+    const preimageContractId = new xdr.HashIdPreimageContractId({
+      networkId,
+      contractIdPreimage: preimage,
+    });
+    const hashIdPreimage = xdr.HashIdPreimage.envelopeTypeContractId(preimageContractId);
+    const contractIdBytes = hash(hashIdPreimage.toXDR());
+    const contractId = StrKey.encodeContract(contractIdBytes);
+
     // Sign and submit to deploy
     const result = await this.client.submitTransaction(tx, owner);
     if (result.status !== 'SUCCESS') {
-      throw new Error(`Failed to deploy CustomAccount contract: ${result.error}`);
+      const errMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || `status=${result.status} hash=${result.hash}`);
+      throw new ExecutionFailedError(`Failed to deploy CustomAccount contract: ${errMsg}`);
     }
 
-    // Extract contract ID from result XDR or event
-    // For Soroban, the contract ID can be computed or extracted.
-    // In stellar-sdk, we can get the contract ID from the transaction result.
-    const contractId = this.client.extractContractId(result.resultXdr!);
-    if (!contractId) {
-      throw new Error('Could not extract deployed contract ID from transaction result');
+    let initialized = false;
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        await this.initializeWallet(contractId, owner);
+        initialized = true;
+        break;
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : 'Unknown error';
+        await new Promise(resolve => setTimeout(resolve, 5000));
+      }
     }
-
-    // 2. Initialize the contract
-    await this.initializeWallet(contractId, owner);
+    if (!initialized) {
+      throw new ExecutionFailedError(`Failed to initialize CustomAccount: ${lastError || 'Unknown error'}`);
+    }
 
     return {
       address: contractId,
@@ -78,7 +112,7 @@ export class WalletModule {
 
     const result = await this.client.submitTransaction(tx, owner);
     if (result.status !== 'SUCCESS') {
-      throw new Error(`Failed to initialize CustomAccount: ${result.error}`);
+      throw new ExecutionFailedError(`Failed to initialize CustomAccount: ${result.error}`);
     }
   }
 
@@ -100,9 +134,8 @@ export class WalletModule {
   async owner(address: string): Promise<string> {
     const result = await this.client.readInstanceStorage(address, 'Owner');
     if (!result) {
-      throw new Error(`Could not retrieve owner for wallet: ${address}`);
+      throw new RpcError(`Could not retrieve owner for wallet: ${address}`);
     }
-    // Convert ScVal Address to string
     return Address.fromScVal(result).toString();
   }
 
@@ -110,7 +143,7 @@ export class WalletModule {
    * Returns the balance of a token (e.g. Stellar Asset Contract) for the wallet.
    */
   async balance(address: string, tokenAddress: string): Promise<bigint> {
-    const sourceAccount = await this.client.getAccount(address);
+    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
     
     const balanceOp = Operation.invokeContractFunction({
       contract: tokenAddress,
@@ -126,10 +159,9 @@ export class WalletModule {
       .setTimeout(30)
       .build();
 
-    const simRes = (await this.client.simulateTx(tx)) as any;
-    if (simRes.results?.[0]?.xdr) {
-      const val = xdr.ScVal.fromXDR(Buffer.from(simRes.results[0].xdr, 'base64'));
-      return val.i128().lo().toBigInt(); // or parse i128 correctly
+    const simRes = await this.client.simulateTx(tx);
+    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
+      return scValToBigInt(simRes.result.retval);
     }
     return 0n;
   }
@@ -143,7 +175,7 @@ export class WalletModule {
     target: string,
     functionName: string,
     args: xdr.ScVal[]
-  ): Promise<any> {
+  ): Promise<TransactionResult> {
     const sourceAccount = await this.client.getAccount(owner.publicKey());
     
     const execOp = Operation.invokeContractFunction({

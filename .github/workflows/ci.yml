@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contracts:
+    name: Contracts (cargo test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: soroban-delegation
+    steps:
+      - uses: actions/checkout@v4
+      - uses: stellar/stellar-cli@v1
+        with:
+          version: "22.1.0"
+      - run: cargo test
+
+  sdk:
+    name: SDK (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm --filter @wolf1276/kairos-sdk build
+      - run: pnpm --filter @wolf1276/kairos-sdk test
+
+  app:
+    name: App (build + lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm --filter @wolf1276/kairos-sdk build
+      - run: pnpm --filter app build
+      - run: pnpm --filter app lint
+      - run: pnpm --filter app exec vitest run
+
+  json-validity:
+    name: JSON validity check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          for f in $(find . -name "*.json" -not -path "*/node_modules/*" -not -path "*/.next/*"); do
+            echo "Checking $f..."
+            python3 -m json.tool "$f" > /dev/null
+          done

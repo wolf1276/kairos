@@ -19,7 +19,7 @@ pub struct Delegation {
     pub authority: BytesN<32>, // Parent delegation hash or ROOT_AUTHORITY
     pub caveats: Vec<Caveat>,
     pub salt: u64,
-    pub nonce: u64, // Added for native replay protection
+    pub nonce: u64, // u64::MAX = reusable-until-revoked, otherwise single-use
     pub signature: BytesN<64>,
 }
 
@@ -50,6 +50,7 @@ pub enum DataKey {
     Nonce(Address),
     Owner,
     Paused,
+    Locked,
 }
 
 #[contracterror]
@@ -67,6 +68,7 @@ pub enum ManagerError {
     ExecutionFailed = 9,
     Paused = 10,
     InvalidNonce = 11,
+    Locked = 12,
 }
 
 const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
@@ -86,6 +88,12 @@ impl DelegationManager {
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+
+        // Emit Init Event
+        env.events().publish(
+            (symbol_short!("init"), owner),
+            (),
+        );
     }
 
     pub fn pause(env: Env) {
@@ -93,6 +101,12 @@ impl DelegationManager {
         owner.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+
+        // Emit Paused Event
+        env.events().publish(
+            (symbol_short!("paused"),),
+            (),
+        );
     }
 
     pub fn unpause(env: Env) {
@@ -100,11 +114,37 @@ impl DelegationManager {
         owner.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
+
+        // Emit Unpaused Event
+        env.events().publish(
+            (symbol_short!("unpaused"),),
+            (),
+        );
     }
 
     pub fn is_paused(env: Env) -> bool {
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    }
+
+    // Owner-gated contract upgrade
+    pub fn update_current_contract_wasm(env: Env, new_wasm_hash: BytesN<32>) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+    }
+
+    // Owner-gated transfer of ownership
+    pub fn transfer_ownership(env: Env, new_owner: Address) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage().instance().set(&DataKey::Owner, &new_owner);
+
+        // Emit ownership transferred event with richer data
+        env.events().publish(
+            (symbol_short!("own_xfer"), owner),
+            new_owner,
+        );
     }
 
     // Disable a delegation on-chain
@@ -121,10 +161,10 @@ impl DelegationManager {
         }
         env.storage().persistent().set(&key, &true);
         env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
-        
-        // Emit Event
+
+        // Emit Event for disable
         env.events().publish(
-            (symbol_short!("disabled"), delegator),
+            (symbol_short!("del_dis"), delegator),
             hash,
         );
     }
@@ -142,10 +182,10 @@ impl DelegationManager {
             panic_with_error!(&env, ManagerError::AlreadyEnabled);
         }
         env.storage().persistent().remove(&key);
-        
-        // Emit Event
+
+        // Emit Event for enable
         env.events().publish(
-            (symbol_short!("enabled"), delegator),
+            (symbol_short!("del_en"), delegator),
             hash,
         );
     }
@@ -172,9 +212,14 @@ impl DelegationManager {
         }
     }
 
-    // Helper to calculate Delegation hash using SHA-256
+    // Helper to calculate Delegation hash using SHA-256 with Domain Separator
     pub fn get_delegation_hash(env: Env, delegation: Delegation) -> BytesN<32> {
         let mut bin = Bytes::new(&env);
+        
+        // Domain Separator: Fixed domain string + contract address & network ID
+        bin.append(&Bytes::from_array(&env, b"soroban-delegation"));
+        bin.append(&env.current_contract_address().to_xdr(&env));
+        bin.append(&Bytes::from_array(&env, &env.ledger().network_id().to_array()));
         
         bin.append(&delegation.delegate.to_xdr(&env));
         bin.append(&delegation.delegator.to_xdr(&env));
@@ -203,14 +248,25 @@ impl DelegationManager {
             panic_with_error!(&env, ManagerError::Paused);
         }
 
+        // Reentrancy Guard Check-Effect
+        let lock_key = DataKey::Locked;
+        if env.storage().instance().has(&lock_key) {
+            panic_with_error!(&env, ManagerError::Locked);
+        }
+        env.storage().instance().set(&lock_key, &true);
+
         let batch_size = permission_contexts.len();
         if batch_size != executions.len() {
+            env.storage().instance().remove(&lock_key);
             panic_with_error!(&env, ManagerError::BatchLengthMismatch);
         }
 
+        // Ensure each delegation hash is used only once per batch to prevent double-spend
+        let mut used_hashes: Vec<BytesN<32>> = Vec::new(&env);
+
         let mut delegation_hashes_batch: Vec<Vec<BytesN<32>>> = Vec::new(&env);
 
-        // 1. Signature, Nonce, & Chain Validation
+        // 1. Signature, Nonce, & Chain Validation + Immediate Nonce consumption (CEI)
         for i in 0..batch_size {
             let chain = permission_contexts.get(i).unwrap();
             let mut hashes = Vec::new(&env);
@@ -223,6 +279,7 @@ impl DelegationManager {
             // Verify delegation leaf specifies the redeemer
             let leaf = chain.get(0).unwrap();
             if leaf.delegate != redeemer {
+                env.storage().instance().remove(&lock_key);
                 panic_with_error!(&env, ManagerError::InvalidDelegate);
             }
 
@@ -230,17 +287,23 @@ impl DelegationManager {
             for j in 0..chain.len() {
                 let delegation = chain.get(j).unwrap();
                 let hash = Self::get_delegation_hash(env.clone(), delegation.clone());
+                // Detect duplicate delegation hash within the batch
+                if used_hashes.iter().any(|h| h == hash) {
+                    env.storage().instance().remove(&lock_key);
+                    panic_with_error!(&env, ManagerError::InvalidNonce); // reuse same error for simplicity
+                }
+                used_hashes.push_back(hash.clone());
                 hashes.push_back(hash.clone());
 
                 if Self::is_delegation_disabled(env.clone(), hash.clone()) {
+                    env.storage().instance().remove(&lock_key);
                     panic_with_error!(&env, ManagerError::CannotUseDisabled);
                 }
 
                 // Nonce Validation (Replay Protection)
-                let current_nonce = Self::get_nonce(env.clone(), delegation.delegator.clone());
-                if delegation.nonce != current_nonce {
-                    panic_with_error!(&env, ManagerError::InvalidNonce);
-                }
+                // If delegation.nonce == u64::MAX (18446744073709551615), it is reusable-until-revoked
+                // Consume nonce using helper (replay protection)
+                Self::consume_nonce(&env, &delegation.delegator, delegation.nonce, &lock_key);
 
                 // Verify Signature (Standard EOA Account vs Smart Custom Contract)
                 let bytes = delegation.delegator.clone().to_xdr(&env);
@@ -253,6 +316,7 @@ impl DelegationManager {
                         (hash.clone(), delegation.signature.clone()).into_val(&env),
                     );
                     if !is_valid {
+                        env.storage().instance().remove(&lock_key);
                         panic_with_error!(&env, ManagerError::InvalidSignature);
                     }
                 } else {
@@ -272,15 +336,18 @@ impl DelegationManager {
                 if j != chain.len() - 1 {
                     let parent_hash = hashes.get(j + 1).unwrap();
                     if delegation.authority != parent_hash {
+                        env.storage().instance().remove(&lock_key);
                         panic_with_error!(&env, ManagerError::InvalidAuthority);
                     }
                     
                     let parent_delegation = chain.get(j + 1).unwrap();
                     if delegation.delegator != parent_delegation.delegate {
+                        env.storage().instance().remove(&lock_key);
                         panic_with_error!(&env, ManagerError::InvalidDelegate);
                     }
                 } else {
                     if delegation.authority != BytesN::from_array(&env, &ROOT_AUTHORITY) {
+                        env.storage().instance().remove(&lock_key);
                         panic_with_error!(&env, ManagerError::InvalidAuthority);
                     }
                 }
@@ -289,7 +356,7 @@ impl DelegationManager {
             delegation_hashes_batch.push_back(hashes);
         }
 
-        // 2. Hook Execution & Execution Pipeline
+        // 2. Hook Execution & Execution Pipeline (External Calls)
         for i in 0..batch_size {
             let chain = permission_contexts.get(i).unwrap();
             let execution = executions.get(i).unwrap();
@@ -386,26 +453,28 @@ impl DelegationManager {
             }
         }
 
-        // 3. Emit Event & Nonce Update (Only increment on success)
+        // 3. Emit Rich Redeemed Events (Post-execution success)
         for i in 0..batch_size {
             let chain = permission_contexts.get(i).unwrap();
+            let execution = executions.get(i).unwrap();
+            let hashes = delegation_hashes_batch.get(i).unwrap();
+
             if chain.len() > 0 {
                 let root_delegator = chain.get(chain.len() - 1).unwrap().delegator.clone();
-                let key = DataKey::Nonce(root_delegator.clone());
-                
-                let nonce = Self::get_nonce(env.clone(), root_delegator.clone());
-                env.storage().persistent().set(&key, &(nonce + 1));
-                env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+                let root_delegation_hash = hashes.get(chain.len() - 1).unwrap();
 
+                // Publish rich redeemed event containing delegator, delegation hash, and execution info
                 env.events().publish(
                     (symbol_short!("redeemed"), redeemer.clone()),
-                    root_delegator,
+                    (root_delegator, root_delegation_hash.clone(), execution.clone()),
                 );
             }
         }
+
+        // Release Reentrancy Guard
+        env.storage().instance().remove(&lock_key);
     }
 
-    // Helper to get raw Ed25519 public key bytes from Address (assuming standard Account)
     fn address_to_public_key(env: &Env, address: &Address) -> BytesN<32> {
         let xdr = address.to_xdr(env);
         let mut key_bytes = [0u8; 32];
@@ -414,5 +483,28 @@ impl DelegationManager {
         }
         BytesN::from_array(env, &key_bytes)
     }
+
+    // Consume a nonce with replay protection and optional reusable-until-revoked model
+    fn consume_nonce(env: &Env, delegator: &Address, nonce: u64, lock_key: &DataKey) {
+        // If nonce == u64::MAX, treat as reusable-until-revoked: do not increment storage
+        if nonce == u64::MAX {
+            // No state change needed; ensure delegator exists if desired (optional)
+            return;
+        }
+        // Load current stored nonce (default 0)
+        let current = Self::get_nonce(env.clone(), delegator.clone());
+        // Must match expected nonce
+        if nonce != current {
+            // Invalidate reentrancy guard before panic
+            env.storage().instance().remove(lock_key);
+            panic_with_error!(&env, ManagerError::InvalidNonce);
+        }
+        // Increment stored nonce to prevent replay, and bump TTL so it cannot silently expire
+        let nonce_key = DataKey::Nonce(delegator.clone());
+        env.storage().persistent().set(&nonce_key, &(nonce + 1));
+        env.storage().persistent().extend_ttl(&nonce_key, BUMP_THRESHOLD, BUMP_LIMIT);
+    }
+
+
 }
 mod test;

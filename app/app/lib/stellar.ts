@@ -30,6 +30,7 @@ export interface WalletState {
   networkPassphrase: string;
   balance: string;
   isTestnet: boolean;
+  smartWalletAddress?: string;
 }
 
 export interface DelegationResult {
@@ -243,14 +244,13 @@ export async function connectWallet(): Promise<ConnectResult> {
   };
 }
 
-// ── Delegate (send XLM) ──
+// ── Delegate (send XLM via Horizon — the Freighter-friendly path) ──
 
 export async function delegateXLM(
   amount: string,
   destination: string,
   networkPassphrase: string
 ): Promise<DelegationResult> {
-  // 1. Get source address (must already be authorized)
   const sourceAddress = await getAddressFromFreighter();
 
   const horizonUrl =
@@ -259,7 +259,6 @@ export async function delegateXLM(
     allowHttp: !horizonUrl.startsWith("https"),
   });
 
-  // 2. Load source account
   let account;
   try {
     account = await server.loadAccount(sourceAddress);
@@ -269,7 +268,6 @@ export async function delegateXLM(
     );
   }
 
-  // 3. Build transaction
   const transaction = new TransactionBuilder(account, {
     fee: BASE_FEE,
     networkPassphrase,
@@ -284,13 +282,11 @@ export async function delegateXLM(
     .setTimeout(30)
     .build();
 
-  // 4. Sign with Freighter
   const signedXDR = await signWithFreighter(
     transaction.toXDR(),
     networkPassphrase
   );
 
-  // 5. Submit
   const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
   const result = await server.submitTransaction(signedTx);
 

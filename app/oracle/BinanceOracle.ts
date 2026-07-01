@@ -2,23 +2,42 @@ import axios, { AxiosInstance } from 'axios';
 import { PriceResponse, TickerResponse, Candle, RawCandle, MarketSnapshot } from './types';
 import { IndicatorEngine } from './IndicatorEngine';
 
+const REQUEST_INTERVAL_MS = 1000;
+const MAX_CANDLES = 500;
+
 export class BinanceOracle {
     private readonly client: AxiosInstance;
+    private lastRequestTime = 0;
+    private timeframe: string;
 
-    constructor() {
+    constructor(timeframe?: string) {
         this.client = axios.create({
             baseURL: 'https://api.binance.com/api/v3',
             timeout: 5000,
         });
+        this.timeframe = timeframe || '1m';
     }
 
-    /**
-     * Helper to handle and format errors from Axios requests
-     */
+    setTimeframe(interval: string): void {
+        const valid = ['1m', '3m', '5m', '15m', '30m', '1h', '2h', '4h', '6h', '8h', '12h', '1d', '1w'];
+        if (!valid.includes(interval)) {
+            throw new Error(`Invalid timeframe: ${interval}. Valid: ${valid.join(', ')}`);
+        }
+        this.timeframe = interval;
+    }
+
+    private async rateLimit(): Promise<void> {
+        const now = Date.now();
+        const elapsed = now - this.lastRequestTime;
+        if (elapsed < REQUEST_INTERVAL_MS) {
+            await new Promise(resolve => setTimeout(resolve, REQUEST_INTERVAL_MS - elapsed));
+        }
+        this.lastRequestTime = Date.now();
+    }
+
     private handleError(error: unknown, context: string): never {
         if (axios.isAxiosError(error)) {
             const status = error.response?.status;
-            // Binance API returns errors in format: { code: -1121, msg: "Invalid symbol." }
             const binanceMessage = error.response?.data && typeof error.response.data === 'object' && 'msg' in error.response.data
                 ? (error.response.data as { msg: string }).msg
                 : undefined;
@@ -31,13 +50,11 @@ export class BinanceOracle {
         throw new Error(`BinanceOracle.${context} failed with an unknown error`);
     }
 
-    /**
-     * Fetches current price for a symbol
-     */
     async getPrice(symbol: string): Promise<PriceResponse> {
         if (!symbol) {
             throw new Error('BinanceOracle.getPrice: symbol is required');
         }
+        await this.rateLimit();
         try {
             const response = await this.client.get<PriceResponse>('/ticker/price', {
                 params: { symbol: symbol.toUpperCase() }
@@ -48,13 +65,11 @@ export class BinanceOracle {
         }
     }
 
-    /**
-     * Fetches 24hr ticker price change statistics for a symbol
-     */
     async getTicker(symbol: string): Promise<TickerResponse> {
         if (!symbol) {
             throw new Error('BinanceOracle.getTicker: symbol is required');
         }
+        await this.rateLimit();
         try {
             const response = await this.client.get<TickerResponse>('/ticker/24hr', {
                 params: { symbol: symbol.toUpperCase() }
@@ -65,19 +80,19 @@ export class BinanceOracle {
         }
     }
 
-    /**
-     * Fetches candle (kline) data for a symbol
-     */
     async getCandles(symbol: string, interval?: string, limit?: number): Promise<Candle[]> {
         if (!symbol) {
             throw new Error('BinanceOracle.getCandles: symbol is required');
         }
+        await this.rateLimit();
+        const useInterval = interval ?? this.timeframe;
+        const useLimit = Math.min(limit ?? 200, MAX_CANDLES);
         try {
             const response = await this.client.get<RawCandle[]>('/klines', {
                 params: {
                     symbol: symbol.toUpperCase(),
-                    interval: interval ?? '1m',
-                    limit: limit ?? 200
+                    interval: useInterval,
+                    limit: useLimit,
                 }
             });
             return response.data.map((c) => ({
@@ -90,23 +105,20 @@ export class BinanceOracle {
                 closeTime: c[6]
             }));
         } catch (error) {
-            this.handleError(error, `getCandles(${symbol}, ${interval ?? '1m'}, ${limit ?? 200})`);
+            this.handleError(error, `getCandles(${symbol}, ${useInterval}, ${useLimit})`);
         }
     }
 
-    /**
-     * Fetches price, ticker, and candles in parallel and calculates indicators,
-     * returning a single normalized MarketSnapshot.
-     */
-    async getMarketSnapshot(symbol: string): Promise<MarketSnapshot> {
+    async getMarketSnapshot(symbol: string, interval?: string): Promise<MarketSnapshot> {
         if (!symbol) {
             throw new Error('BinanceOracle.getMarketSnapshot: symbol is required');
         }
+        const useInterval = interval ?? this.timeframe;
         try {
             const [priceRes, tickerRes, candlesRes] = await Promise.all([
                 this.getPrice(symbol),
                 this.getTicker(symbol),
-                this.getCandles(symbol, '1m', 200)
+                this.getCandles(symbol, useInterval, 200),
             ]);
 
             const engine = new IndicatorEngine();
@@ -120,14 +132,13 @@ export class BinanceOracle {
                 volume24h: parseFloat(tickerRes.volume),
                 change24h: parseFloat(tickerRes.priceChangePercent),
                 candles: candlesRes,
-                indicators
+                indicators,
             };
         } catch (error) {
             if (error instanceof Error) {
-                throw new Error(`BinanceOracle.getMarketSnapshot(${symbol}) failed: ${error.message}`);
+                throw new Error(`BinanceOracle.getMarketSnapshot(${symbol}, ${useInterval}) failed: ${error.message}`);
             }
-            throw new Error(`BinanceOracle.getMarketSnapshot(${symbol}) failed with an unknown error`);
+            throw new Error(`BinanceOracle.getMarketSnapshot(${symbol}, ${useInterval}) failed with an unknown error`);
         }
     }
 }
-

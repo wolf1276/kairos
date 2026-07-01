@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { Address, Keypair } from '@stellar/stellar-sdk';
+import { Address, hash, Keypair } from '@stellar/stellar-sdk';
 import { KairosClient } from '../src/client';
 import { ROOT_AUTHORITY } from '../src/constants';
-import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms } from '../src/utils';
+import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, getAddressXdrBytes, i128ToBuffer, uint64ToXdrBytes } from '../src/utils';
 
 describe('Kairos SDK Unit Tests', () => {
   const mockContracts = {
     delegationManager: 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
     policyEngine: 'CCPENGINE4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
-    smartWallet: 'CCS SCA4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
+    smartWallet: 'CCSSCA4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
   };
 
   const client = new KairosClient({
@@ -26,7 +26,7 @@ describe('Kairos SDK Unit Tests', () => {
   it('should correctly encode target whitelist terms', () => {
     const target = Keypair.random().publicKey();
     const terms = encodeTargetWhitelistTerms(target);
-    expect(terms[0]).toBe(1); // Policy type = 1
+    expect(terms[0]).toBe(1);
     expect(terms.length).toBeGreaterThan(1);
   });
 
@@ -34,7 +34,7 @@ describe('Kairos SDK Unit Tests', () => {
     const start = 1000n;
     const end = 2000n;
     const terms = encodeTimeRestrictionTerms(start, end);
-    expect(terms[0]).toBe(3); // Policy type = 3
+    expect(terms[0]).toBe(3);
     expect(terms.readBigUInt64BE ? terms.readBigUInt64BE(1) : 1000n).toBe(1000n);
   });
 
@@ -51,9 +51,9 @@ describe('Kairos SDK Unit Tests', () => {
       nonce: 0n,
     };
 
-    const hash = computeDelegationHash(delegation);
-    expect(hash).toHaveLength(64); // SHA-256 hex string is 64 characters
-    expect(/^[0-9a-fA-F]{64}$/.test(hash)).toBe(true);
+    const hashVal = client.delegation.getHash(delegation);
+    expect(hashVal).toHaveLength(64);
+    expect(/^[0-9a-fA-F]{64}$/.test(hashVal)).toBe(true);
   });
 
   it('should sign delegation and create correct structure', async () => {
@@ -69,6 +69,122 @@ describe('Kairos SDK Unit Tests', () => {
     });
 
     expect(delegation.signature).toBeDefined();
-    expect(delegation.signature).toHaveLength(128); // 64 bytes signature in hex is 128 chars
+    expect(delegation.signature).toHaveLength(128);
+  });
+
+  it('should produce deterministic hash for the same inputs', () => {
+    const kp = Keypair.random();
+    const delegate = kp.publicKey();
+    const delegator = kp.publicKey();
+    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const networkPassphrase = 'Test SDF Network ; September 2015';
+    const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
+    const hash1 = computeDelegationHash(
+      { delegate, delegator, authority, caveats: [], salt: 0n, nonce: 0n },
+      delegationManager,
+      networkPassphrase
+    );
+    const hash2 = computeDelegationHash(
+      { delegate, delegator, authority, caveats: [], salt: 0n, nonce: 0n },
+      delegationManager,
+      networkPassphrase
+    );
+
+    expect(hash1).toBe(hash2);
+    expect(hash1).toHaveLength(64);
+  });
+
+  it('should produce different hash when delegation fields change', () => {
+    const delegate = Keypair.random().publicKey();
+    const delegator = Keypair.random().publicKey();
+    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const networkPassphrase = 'Test SDF Network ; September 2015';
+    const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
+    const baseHash = computeDelegationHash(
+      { delegate, delegator, authority, caveats: [], salt: 0n, nonce: 0n },
+      delegationManager,
+      networkPassphrase
+    );
+
+    const differentSaltHash = computeDelegationHash(
+      { delegate, delegator, authority, caveats: [], salt: 1n, nonce: 0n },
+      delegationManager,
+      networkPassphrase
+    );
+
+    expect(baseHash).not.toBe(differentSaltHash);
+  });
+
+  it('should include domain separator in hash computation', () => {
+    const delegate = Keypair.random().publicKey();
+    const delegator = Keypair.random().publicKey();
+    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const networkPassphrase = 'Test SDF Network ; September 2015';
+    const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
+    const hashVal = computeDelegationHash(
+      { delegate, delegator, authority, caveats: [], salt: 12345n, nonce: 0n },
+      delegationManager,
+      networkPassphrase
+    );
+
+    const hashWithCaveats = computeDelegationHash(
+      {
+        delegate,
+        delegator,
+        authority: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        caveats: [
+          {
+            enforcer: 'CCPENGINE4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
+            terms: new Uint8Array(80),
+          },
+        ],
+        salt: 99999n,
+        nonce: 42n,
+      },
+      delegationManager,
+      networkPassphrase
+    );
+
+    expect(hashVal).toHaveLength(64);
+    expect(hashWithCaveats).toHaveLength(64);
+    expect(hashVal).not.toBe(hashWithCaveats);
+  });
+
+  it('verify XDR address encoding matches Soroban contract format', () => {
+    const kp = Keypair.random();
+    const pubKey = kp.publicKey();
+    const xdrBytes = getAddressXdrBytes(pubKey);
+    expect(xdrBytes.length).toBe(40);
+    expect(xdrBytes[0]).toBe(0);
+    expect(xdrBytes[1]).toBe(0);
+    expect(xdrBytes[2]).toBe(0);
+    expect(xdrBytes[3]).toBe(0);
+  });
+
+  it('should correctly encode i128 values for spend limits', () => {
+    const positive = 100n;
+    const positiveBuf = i128ToBuffer(positive);
+    expect(positiveBuf.length).toBe(16);
+    expect(positiveBuf.readBigInt64BE(0)).toBe(0n);
+    expect(positiveBuf.readBigUInt64BE(8)).toBe(100n);
+
+    const negative = -100n;
+    const negativeBuf = i128ToBuffer(negative);
+    expect(negativeBuf.length).toBe(16);
+    expect(negativeBuf.readBigInt64BE(0)).toBe(-1n);
+    expect(negativeBuf.readBigUInt64BE(8) > 0n).toBe(true);
+
+    const large = 2n ** 80n;
+    const largeBuf = i128ToBuffer(large);
+    expect(largeBuf.readBigInt64BE(0)).toBe(1n << 16n);
+    expect(largeBuf.readBigUInt64BE(8)).toBe(0n);
+
+    const maxPositive = (2n ** 127n) - 1n;
+    const maxBuf = i128ToBuffer(maxPositive);
+    expect(maxBuf.readBigInt64BE(0)).toBe((2n ** 63n) - 1n);
+    expect(maxBuf.readBigUInt64BE(8)).toBe(2n ** 64n - 1n);
   });
 });

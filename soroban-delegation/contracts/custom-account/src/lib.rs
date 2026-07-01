@@ -95,7 +95,7 @@ impl CustomAccount {
 
             env.crypto().ed25519_verify(
                 &public_key,
-                &env.crypto().sha256(&message).into(),
+                &message,
                 &sig_bytes.try_into().unwrap(),
             );
         } else {

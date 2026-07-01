@@ -1,5 +1,3 @@
-import { spawnSync } from "child_process";
-
 export async function POST(req: Request) {
   try {
     const { email } = await req.json();
@@ -16,16 +14,15 @@ export async function POST(req: Request) {
 
     const body = JSON.stringify({ email, timestamp: new Date().toISOString() });
 
-    const result = spawnSync("curl", [
-      "-s", "-L",
-      "-X", "POST",
-      "-H", "Content-Type: application/json",
-      "-d", body,
-      webhookUrl,
-    ], { timeout: 15000, encoding: "utf-8" });
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
 
-    if (result.error || result.status !== 0) {
-      console.error("Curl error:", result.stderr || result.error);
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.error("Webhook error:", res.status, text);
       return Response.json({ error: "Failed to save email" }, { status: 502 });
     }
 
