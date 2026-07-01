@@ -159,8 +159,9 @@ Status: ✅ — 13 passed (phase4.test.ts — schema validation, injection resis
 
 App lint:
 
-Status: ✅ — 0 errors, 2 pre-existing warnings
+Status: ✅ — 0 errors, 0 `any` across all source and test files
 SDK lint: ✅ — 0 `any` in public SDK APIs
+Cross-boundary imports (config files outside app/): ✅ — replaced with env vars
 
 App build:
 

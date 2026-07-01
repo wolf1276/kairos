@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server';
-import { Keypair, Address, Operation, rpc, TransactionBuilder, xdr, hash, StrKey } from '@stellar/stellar-sdk';
+import { Keypair, Address, Operation, TransactionBuilder, xdr, hash, StrKey } from '@stellar/stellar-sdk';
 import KairosClient from '@wolf1276/kairos-sdk';
 import * as crypto from 'crypto';
-import contractsConfig from '../../../../config/contracts.testnet.json';
+import { getContractConfig } from '../../lib/sdk';
 
 const FUNDER_SECRET = process.env.FUNDER_SECRET_KEY;
 const NETWORK = 'testnet';
@@ -18,12 +18,13 @@ let sdkClient: KairosClient | null = null;
 
 function getClient(): KairosClient {
   if (!sdkClient) {
+    const config = getContractConfig();
     sdkClient = new KairosClient({
       network: NETWORK,
       contracts: {
-        delegationManager: contractsConfig.delegationManager,
-        policyEngine: contractsConfig.policyEngine,
-        smartWallet: contractsConfig.customAccount,
+        delegationManager: config.delegationManager,
+        policyEngine: config.policyEngine,
+        smartWallet: config.customAccount,
       },
     });
   }
@@ -58,7 +59,7 @@ export async function POST(request: Request) {
           })
         );
         const executable = xdr.ContractExecutable.contractExecutableWasm(
-          Buffer.from(contractsConfig.customAccountWasmHash, 'hex')
+          Buffer.from(getContractConfig().customAccountWasmHash, 'hex')
         );
         const createContractArgs = new xdr.CreateContractArgs({
           contractIdPreimage: preimage,
@@ -166,7 +167,7 @@ export async function POST(request: Request) {
         if (!address) {
           return NextResponse.json({ error: 'address is required' }, { status: 400 });
         }
-        const balance = await client.wallet.balance(address, token || contractsConfig.customAccount);
+        const balance = await client.wallet.balance(address, token || getContractConfig().customAccount);
         return NextResponse.json({ success: true, balance: balance.toString() });
       }
 

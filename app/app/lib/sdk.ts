@@ -1,6 +1,20 @@
 import KairosClient from "@wolf1276/kairos-sdk";
 import type { Delegation, Caveat } from "@wolf1276/kairos-sdk";
-import contractsConfig from "../../../config/contracts.testnet.json";
+
+function readContractId(key: string): string {
+  const val = process.env[key];
+  if (!val) throw new Error(`Missing env var: ${key}. Set it in .env.local or Vercel env.`);
+  return val;
+}
+
+export function getContractConfig() {
+  return {
+    delegationManager: readContractId("DELEGATION_MANAGER_CONTRACT_ID"),
+    policyEngine: readContractId("POLICY_CONTRACT_ID"),
+    customAccount: readContractId("CUSTOM_ACCOUNT_CONTRACT_ID"),
+    customAccountWasmHash: readContractId("CUSTOM_ACCOUNT_WASM_HASH"),
+  };
+}
 
 export interface AppWallet {
   address: string;
@@ -21,12 +35,13 @@ let sdkClient: KairosClient | null = null;
 
 function getClient(): KairosClient {
   if (!sdkClient) {
+    const config = getContractConfig();
     sdkClient = new KairosClient({
       network: "testnet",
       contracts: {
-        delegationManager: contractsConfig.delegationManager,
-        policyEngine: contractsConfig.policyEngine,
-        smartWallet: contractsConfig.customAccount,
+        delegationManager: config.delegationManager,
+        policyEngine: config.policyEngine,
+        smartWallet: config.customAccount,
       },
     });
   }
@@ -52,5 +67,4 @@ export function computeHash(delegation: Omit<Delegation, "signature">): string {
   return hash;
 }
 
-export { contractsConfig };
 export type { Delegation, Caveat } from "@wolf1276/kairos-sdk";
