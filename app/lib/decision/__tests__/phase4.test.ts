@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { validateProfile } from '../hfIntentParser';
-import { applyPolicyGate } from '../index';
+import { applyPolicyGate, HfAdvisor } from '../index';
+import type { TradingContext, WalletContext } from '../types';
 
 describe('Phase 4 — Schema Validation', () => {
   it('should validate a complete trading profile', () => {
@@ -62,9 +63,9 @@ describe('Phase 4 — Policy Gate / Injection Resistance', () => {
       },
       delegatedAmount: 10000,
     },
-    walletContext: { balance: 10000 } as { address?: string; balance?: number },
+    walletContext: { balance: 10000 } as WalletContext,
     marketSnapshot: { price: 0.5, symbol: 'XLMUSDT' },
-  } as any;
+  } as TradingContext;
 
   it('should block trades for disallowed assets', () => {
     const proposal = {
@@ -164,7 +165,7 @@ describe('Phase 4 — Fallback Path', () => {
         delegatedAmount: 10000,
         automationMode: 'AI_MANAGED' as const,
       },
-    } as any;
+    } as TradingContext;
 
     const proposal = await advisor.advise(context);
     expect(proposal).toBeDefined();
@@ -186,9 +187,9 @@ describe('Phase 4 — Policy Gate Rejects Policy-Violating Proposal', () => {
         },
         delegatedAmount: 5000,
       },
-      walletContext: { balance: 5000 } as any,
+      walletContext: { balance: 5000 } as WalletContext,
       marketSnapshot: { price: 150, symbol: 'ETHUSDT' },
-    } as any;
+    } as TradingContext;
 
     const proposal = {
       action: 'BUY' as const,
@@ -214,9 +215,9 @@ describe('Phase 4 — Policy Gate Rejects Policy-Violating Proposal', () => {
         },
         delegatedAmount: 10000,
       },
-      walletContext: { balance: 10000 } as any,
+      walletContext: { balance: 10000 } as WalletContext,
       marketSnapshot: { price: 0.5, symbol: 'XLMUSDT' },
-    } as any;
+    } as TradingContext;
 
     const proposal = {
       action: 'BUY' as const,

@@ -17,9 +17,9 @@ jobs:
         working-directory: soroban-delegation
     steps:
       - uses: actions/checkout@v4
-      - uses: stellar/stellar-cli@v1
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          version: "22.1.0"
+          targets: wasm32-unknown-unknown
       - run: cargo test
 
   sdk:
@@ -28,11 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @wolf1276/kairos-sdk build
       - run: pnpm --filter @wolf1276/kairos-sdk test
 
@@ -42,15 +44,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @wolf1276/kairos-sdk build
       - run: pnpm --filter app build
-      - run: pnpm --filter app lint
-      - run: pnpm --filter app exec vitest run
+      - name: Lint
+        working-directory: app
+        run: pnpm eslint . --ext .ts,.tsx --max-warnings 10
+      - name: Test
+        working-directory: app
+        run: pnpm vitest run
 
   json-validity:
     name: JSON validity check
@@ -60,5 +68,6 @@ jobs:
       - run: |
           for f in $(find . -name "*.json" -not -path "*/node_modules/*" -not -path "*/.next/*"); do
             echo "Checking $f..."
-            python3 -m json.tool "$f" > /dev/null
+            python3 -m json.tool "$f" > /dev/null || exit 1
           done
+          echo "All JSON files valid."

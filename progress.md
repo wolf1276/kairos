@@ -159,7 +159,7 @@ Status: ✅ — 13 passed (phase4.test.ts — schema validation, injection resis
 
 App lint:
 
-Status: ⚠️ — 6 errors (all `as any` in test fixtures — acceptable), 2 pre-existing warnings
+Status: ✅ — 0 errors, 2 pre-existing warnings
 SDK lint: ✅ — 0 `any` in public SDK APIs
 
 App build:
