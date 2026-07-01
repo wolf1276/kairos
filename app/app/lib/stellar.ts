@@ -47,13 +47,6 @@ function isBrowser(): boolean {
 
 // ── Freighter helpers ──
 
-/** Check if the Freighter extension is installed at all. */
-function freighterInstalled(): boolean {
-  if (!isBrowser()) return false;
-  const win = window as typeof window & { freighter?: unknown; stellar?: unknown };
-  return !!(win.freighter || win.stellar);
-}
-
 /** Safely read the address from a freighter-api response. */
 function unwrapAddress(
   res: { address?: string; error?: string }
@@ -94,7 +87,7 @@ async function getFreighterNetwork(): Promise<{
 
 /** Check if Freighter has already authorized this app. */
 export async function tryCheckConnection(): Promise<boolean> {
-  if (!isBrowser() || !freighterInstalled()) return false;
+  if (!isBrowser()) return false;
   try {
     const res = await isConnected();
     // `isConnected` returns `{ isConnected: boolean | object, error?: string }`
@@ -172,18 +165,7 @@ export async function connectWallet(): Promise<ConnectResult> {
     };
   }
 
-  // 2. Freighter extension check
-  if (!freighterInstalled()) {
-    return {
-      success: false,
-      error: {
-        kind: "no-extension",
-        message: "Freighter extension not detected",
-      },
-    };
-  }
-
-  // 3. Request access (pops up Freighter)
+  // 2. Request access (pops up Freighter)
   let address: string;
   try {
     address = await requestAccessFromFreighter();
