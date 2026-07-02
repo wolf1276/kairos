@@ -56,6 +56,7 @@ export function useBinanceWebSocket(symbols: string[]) {
   const aliveRef = useRef(true);
   const throttleRef = useRef(0);
   const rafRef = useRef(0);
+  const connectIdRef = useRef(0);
 
   const streams = symbols.map((s) => `${s.toLowerCase()}@ticker`).join("/");
 
@@ -72,6 +73,9 @@ export function useBinanceWebSocket(symbols: string[]) {
     cleanup();
     if (!aliveRef.current || !streams) return;
 
+    connectIdRef.current++;
+    const connectId = connectIdRef.current;
+
     setStatus(reconnectCountRef.current > 0 ? "reconnecting" : "connecting");
 
     const url = `${WS_BASE}?streams=${streams}`;
@@ -79,7 +83,7 @@ export function useBinanceWebSocket(symbols: string[]) {
     wsRef.current = ws;
 
     ws.onopen = () => {
-      if (!aliveRef.current) { ws.close(); return; }
+      if (connectId !== connectIdRef.current || !aliveRef.current) { ws.close(); return; }
       reconnectCountRef.current = 0;
       setStatus("connected");
 
@@ -116,7 +120,7 @@ export function useBinanceWebSocket(symbols: string[]) {
 
     ws.onclose = () => {
       clearInterval(pingTimerRef.current);
-      if (!aliveRef.current) return;
+      if (connectId !== connectIdRef.current || !aliveRef.current) return;
       setStatus("reconnecting");
       reconnectCountRef.current++;
       if (reconnectCountRef.current >= MAX_RECONNECT_ATTEMPTS) {

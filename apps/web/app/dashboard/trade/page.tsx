@@ -6,7 +6,6 @@ import DelegationKit from "@/app/components/DelegationKit";
 import { PriceChart } from "@/app/components/charts/PriceChart";
 import { PriceViewPanel } from "@/app/components/panels/PriceViewPanel";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
-import { Badge } from "@/app/components/ui/Badge";
 import { Segmented } from "@/app/components/ui/Segmented";
 import { usePrices } from "@/app/hooks/usePrices";
 import { usePaperTrading } from "@/app/hooks/usePaperTrading";
@@ -18,37 +17,9 @@ import {
   formatUsd,
 } from "@/app/lib/format";
 
-type AutomationMode = "AI_MANAGED" | "STRATEGY_MANAGED" | "AUTONOMOUS_AI";
 type Side = "BUY" | "SELL";
 
-interface Indicators {
-  ema20: number;
-  ema50: number;
-  sma20: number;
-  rsi: number;
-  macd: { MACD: number; signal: number; histogram: number };
-  atr: number;
-}
-
-interface Proposal {
-  action: "BUY" | "SELL" | "HOLD";
-  symbol: string;
-  amount: number;
-  confidence: number;
-  reasoning: string;
-  stopLoss?: number;
-  takeProfit?: number;
-  timestamp: number;
-  market?: { price: number; change24h: number; volume24h: number; indicators: Indicators };
-}
-
 const SYMBOLS = ["BTCUSDT", "ETHUSDT", "XLMUSDT", "SOLUSDT", "ADAUSDT"];
-
-const MODES: { value: AutomationMode; label: string }[] = [
-  { value: "AI_MANAGED", label: "AI Managed" },
-  { value: "STRATEGY_MANAGED", label: "Strategy" },
-  { value: "AUTONOMOUS_AI", label: "Autonomous" },
-];
 
 function TradeInner() {
   const searchParams = useSearchParams();
@@ -131,65 +102,6 @@ function TradeInner() {
     }
   };
 
-  // ── AI analysis ──
-  const [mode, setMode] = useState<AutomationMode>("AI_MANAGED");
-  const [intentText, setIntentText] = useState("");
-  const [proposal, setProposal] = useState<Proposal | null>(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [executing, setExecuting] = useState(false);
-
-  const handleAnalyze = async () => {
-    setAnalyzing(true);
-    setProposal(null);
-    setToast(null);
-    try {
-      const body: Record<string, unknown> = {
-        symbol,
-        automationMode: mode,
-        balance,
-      };
-      if (intentText.trim()) body.tradingProfile = { intentText };
-      const res = await fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Analysis failed");
-      setProposal(data);
-    } catch (e) {
-      flash("err", e instanceof Error ? e.message : String(e));
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const handleExecuteProposal = () => {
-    if (!proposal || proposal.action === "HOLD") return;
-    const price = proposal.market?.price ?? getLatestPrice(symbol) ?? livePrice;
-    const qty = Math.abs(proposal.amount);
-    if (qty <= 0 || price <= 0) {
-      flash("err", "Invalid proposal amount or price");
-      return;
-    }
-    setExecuting(true);
-    try {
-      if (proposal.action === "BUY") buy(proposal.symbol, qty, price);
-      else sell(proposal.symbol, qty, price);
-      flash(
-        "ok",
-        `${proposal.action} ${formatNumber(qty)} ${baseAsset(proposal.symbol)} @ ${formatPrice(price)}`
-      );
-      setProposal(null);
-    } catch (e) {
-      flash("err", e instanceof Error ? e.message : String(e));
-    } finally {
-      setExecuting(false);
-    }
-  };
-
-  const ind = proposal?.market?.indicators;
-
   return (
     <div className="space-y-6">
       {/* ── Toast ── */}
@@ -247,128 +159,13 @@ function TradeInner() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
         {/* ── Main column ── */}
         <div className="space-y-6 lg:col-span-2">
-          <Card>
-            <CardBody className="p-0">
-              <PriceChart symbol={symbol} />
-            </CardBody>
-          </Card>
+          <PriceChart symbol={symbol} symbols={SYMBOLS} onSymbolChange={setSymbol} />
 
           <PriceViewPanel
             symbol={symbol}
             ticker={ticker}
             wsStatus={wsStatus}
-            indicators={ind}
           />
-
-          {/* AI analysis */}
-          <Card>
-            <CardHeader title="AI Analysis" />
-            <CardBody className="space-y-4 pt-3">
-              <div>
-                <label className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-widest text-text-muted">
-                  Automation Mode
-                </label>
-                <Segmented options={MODES} value={mode} onChange={setMode} />
-              </div>
-              <div>
-                <label
-                  htmlFor="intent"
-                  className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-widest text-text-muted"
-                >
-                  Trading Intent{" "}
-                  <span className="text-text-muted/60 normal-case">(optional)</span>
-                </label>
-                <textarea
-                  id="intent"
-                  value={intentText}
-                  onChange={(e) => setIntentText(e.target.value)}
-                  placeholder="e.g., Grow funds with moderate risk, prefer XLM and BTC…"
-                  rows={2}
-                  className="w-full resize-none rounded-xl border border-border bg-bg-elevated p-3 font-mono text-xs text-text-primary placeholder-text-muted transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
-                />
-              </div>
-              <button
-                onClick={handleAnalyze}
-                disabled={analyzing}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-accent px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:opacity-50"
-              >
-                {analyzing && (
-                  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-                )}
-                {analyzing ? "Analyzing market…" : `Analyze ${baseAsset(symbol)}`}
-              </button>
-
-              {proposal && (
-                <div className="animate-fade-in-up space-y-3 rounded-xl border border-border bg-bg-elevated p-4">
-                  <div className="flex items-center justify-between">
-                    <Badge
-                      tone={
-                        proposal.action === "BUY"
-                          ? "buy"
-                          : proposal.action === "SELL"
-                            ? "sell"
-                            : "neutral"
-                      }
-                      dot
-                    >
-                      {proposal.action} Signal
-                    </Badge>
-                    <span className="font-mono text-xs text-text-muted">
-                      Confidence {(proposal.confidence * 100).toFixed(0)}%
-                    </span>
-                  </div>
-
-                  {/* Confidence meter */}
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-bg-card">
-                    <div
-                      className="h-full rounded-full bg-accent transition-all"
-                      style={{ width: `${Math.min(100, proposal.confidence * 100)}%` }}
-                    />
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-3">
-                    <Stat label="Amount" value={formatNumber(Math.abs(proposal.amount))} />
-                    <Stat
-                      label="Ref Price"
-                      value={formatPrice(proposal.market?.price ?? livePrice)}
-                    />
-                    {proposal.stopLoss ? (
-                      <Stat
-                        label="Stop Loss"
-                        value={formatPrice(proposal.stopLoss)}
-                        className="text-error"
-                      />
-                    ) : null}
-                    {proposal.takeProfit ? (
-                      <Stat
-                        label="Take Profit"
-                        value={formatPrice(proposal.takeProfit)}
-                        className="text-success"
-                      />
-                    ) : null}
-                  </div>
-
-                  <p className="text-xs leading-relaxed text-text-secondary">
-                    {proposal.reasoning}
-                  </p>
-
-                  {proposal.action !== "HOLD" && (
-                    <button
-                      onClick={handleExecuteProposal}
-                      disabled={executing}
-                      className={`w-full rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition-colors disabled:opacity-50 ${
-                        proposal.action === "BUY"
-                          ? "bg-emerald-600 hover:bg-emerald-700"
-                          : "bg-red-600 hover:bg-red-700"
-                      }`}
-                    >
-                      {executing ? "Executing…" : `Execute ${proposal.action}`}
-                    </button>
-                  )}
-                </div>
-              )}
-            </CardBody>
-          </Card>
         </div>
 
         {/* ── Sidebar ── */}
@@ -484,29 +281,54 @@ function TradeInner() {
           </Card>
 
           <DelegationKit />
+
+          {/* Position Snapshot */}
+          {heldPosition && (
+            <Card>
+              <CardHeader title={baseAsset(symbol)} />
+              <CardBody className="space-y-3 pt-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
+                    Amount
+                  </span>
+                  <span className="font-mono text-sm tabular-nums">
+                    {formatNumber(heldPosition.amount)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
+                    Entry
+                  </span>
+                  <span className="font-mono text-sm tabular-nums">
+                    {formatPrice(heldPosition.entryPrice)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
+                    Market
+                  </span>
+                  <span className="font-mono text-sm tabular-nums">
+                    {formatPrice(heldPosition.currentPrice ?? livePrice)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between border-t border-border pt-2">
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
+                    P&L
+                  </span>
+                  <span
+                    className={`font-mono text-sm tabular-nums ${
+                      (heldPosition.pnl ?? 0) >= 0 ? "text-success" : "text-error"
+                    }`}
+                  >
+                    {formatUsd(heldPosition.pnl ?? 0)} ({(heldPosition.pnlPct ?? 0) >= 0 ? "+" : ""}
+                    {(heldPosition.pnlPct ?? 0).toFixed(2)}%)
+                  </span>
+                </div>
+              </CardBody>
+            </Card>
+          )}
         </div>
       </div>
-    </div>
-  );
-}
-
-function Stat({
-  label,
-  value,
-  className = "",
-}: {
-  label: string;
-  value: React.ReactNode;
-  className?: string;
-}) {
-  return (
-    <div>
-      <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
-        {label}
-      </p>
-      <p className={`mt-0.5 font-mono text-sm font-medium tabular-nums ${className}`}>
-        {value}
-      </p>
     </div>
   );
 }
