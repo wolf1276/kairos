@@ -12,3 +12,7 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 policies = { path = "../policies" }
+custom-account = { path = "../custom-account" }
+ed25519-dalek = "2.2.0"
+stellar-strkey = "0.0.9"
+rand = "0.8"

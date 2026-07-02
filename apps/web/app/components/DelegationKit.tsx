@@ -8,6 +8,13 @@ import {
   tryCheckConnection,
 } from "@/app/lib/stellar";
 
+interface DelegationKitProps {
+  /** Called whenever the connected wallet changes (connect/disconnect/refresh). */
+  onWalletChange?: (wallet: WalletState | null) => void;
+  /** Prefills the destination field, e.g. with a freshly deployed smart wallet address. */
+  defaultDestination?: string;
+}
+
 // ── Simple SVG icons ──
 
 const WalletIcon = () => (
@@ -36,7 +43,7 @@ const Spinner = () => (
 
 type TxStatus = "idle" | "pending" | "confirmed" | "error";
 
-export default function DelegationKit() {
+export default function DelegationKit({ onWalletChange, defaultDestination }: DelegationKitProps = {}) {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -46,6 +53,10 @@ export default function DelegationKit() {
   const [txStatus, setTxStatus] = useState<TxStatus>("idle");
   const [txHash, setTxHash] = useState<string | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
+
+  useEffect(() => {
+    onWalletChange?.(wallet);
+  }, [wallet, onWalletChange]);
 
   // ── Connect ──
   const handleConnect = useCallback(async () => {
@@ -100,7 +111,12 @@ export default function DelegationKit() {
     setTxError(null);
 
     try {
-      const result = await delegateXLM(amount, destination, wallet.networkPassphrase);
+      const result = await delegateXLM(
+        amount,
+        destination,
+        wallet.networkPassphrase,
+        wallet.sorobanRpcUrl
+      );
       setTxHash(result.hash);
       setTxStatus("confirmed");
 
@@ -281,12 +297,22 @@ export default function DelegationKit() {
 
         {/* Destination input */}
         <div>
-          <label
-            htmlFor="del-dest"
-            className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-widest text-text-secondary"
-          >
-            Destination
-          </label>
+          <div className="mb-1.5 flex items-center justify-between">
+            <label
+              htmlFor="del-dest"
+              className="block font-mono text-[11px] font-medium uppercase tracking-widest text-text-secondary"
+            >
+              Destination
+            </label>
+            {defaultDestination && (
+              <button
+                onClick={() => setDestination(defaultDestination)}
+                className="font-mono text-[11px] font-medium text-accent transition-colors hover:text-accent-hover"
+              >
+                Use smart wallet
+              </button>
+            )}
+          </div>
           <input
             id="del-dest"
             type="text"

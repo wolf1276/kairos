@@ -128,10 +128,12 @@ impl Policies {
                     env.storage().persistent().extend_ttl(&last_time_key, 10000, 100000);
                 }
 
-                // Decode spend/transfer amount from args
+                // Decode spend/transfer amount from args. SEP-41 `transfer(from, to, amount)`
+                // and `xfer` both carry the amount as the third argument (index 2), not the
+                // `to` address at index 1.
                 if context.target == token && (context.function == Symbol::new(&env, "transfer") || context.function == Symbol::new(&env, "xfer")) {
-                    if context.args.len() > 1 {
-                        let amount = i128::try_from_val(&env, &context.args.get(1).unwrap()).unwrap_or(0);
+                    if context.args.len() > 2 {
+                        let amount = i128::try_from_val(&env, &context.args.get(2).unwrap()).unwrap_or(0);
                         if current_spent + amount > limit {
                             panic_with_error!(&env, Error::SpendLimitExceeded);
                         }

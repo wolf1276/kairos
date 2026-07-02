@@ -57,6 +57,63 @@ export class KairosClient {
   }
 
   /**
+   * Polls Soroban RPC until an account is visible on-chain, retrying while a freshly
+   * funded (e.g. via Friendbot) account propagates. Unlike `getAccount`, this throws
+   * instead of silently returning a bare sequence-0 account, since callers building a
+   * transaction need a real, signable source account.
+   */
+  async waitForAccount(addressStr: string, opts: { maxAttempts?: number; intervalMs?: number } = {}): Promise<Account> {
+    const { maxAttempts = 10, intervalMs = 2000 } = opts;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.rpcProvider.getAccount(addressStr);
+      } catch (e) {
+        if (attempt === maxAttempts) {
+          throw new RpcError(`Account ${addressStr} not found on-chain after ${maxAttempts} attempts. Fund it first (e.g. via Friendbot on testnet).`);
+        }
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+      }
+    }
+    // Unreachable, but keeps TypeScript's control-flow analysis happy.
+    throw new RpcError(`Account ${addressStr} not found on-chain.`);
+  }
+
+  /**
+   * Funds a testnet account via Friendbot, retrying on transient failures
+   * (Friendbot is best-effort and occasionally times out or 5xxs under load).
+   */
+  async fundTestnetAccount(addressStr: string, opts: { maxAttempts?: number; intervalMs?: number } = {}): Promise<void> {
+    const { maxAttempts = 5, intervalMs = 3000 } = opts;
+    let lastError: string | undefined;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const res = await fetch(`https://friendbot.stellar.org?addr=${encodeURIComponent(addressStr)}`);
+        if (res.ok) return;
+        lastError = `Friendbot responded with status ${res.status}`;
+      } catch (e) {
+        lastError = e instanceof Error ? e.message : 'Unknown Friendbot error';
+      }
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+      }
+    }
+    throw new RpcError(`Failed to fund testnet account ${addressStr} via Friendbot: ${lastError}`);
+  }
+
+  /**
+   * Ensures an account exists on-chain, funding it via Friendbot first if it's missing.
+   * No-op (besides the existence check) once the account is already funded.
+   */
+  async ensureFundedTestnetAccount(addressStr: string): Promise<Account> {
+    try {
+      return await this.waitForAccount(addressStr, { maxAttempts: 1 });
+    } catch {
+      await this.fundTestnetAccount(addressStr);
+      return this.waitForAccount(addressStr, { maxAttempts: 10, intervalMs: 2000 });
+    }
+  }
+
+  /**
    * Simulates a transaction.
    */
   async simulateTx(tx: Transaction): Promise<rpc.Api.SimulateTransactionResponse> {
