@@ -13,7 +13,7 @@ const pkgPath = join(
 
 try {
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-  const original = JSON.stringify(pkg.exports, null, 2);
+
 
   if (pkg.exports?.["."]?.style && !pkg.exports["."]?.default) {
     pkg.exports["."].default = pkg.exports["."].style;

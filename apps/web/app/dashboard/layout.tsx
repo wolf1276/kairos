@@ -7,10 +7,10 @@ import TerminalTicker from "@/app/components/TerminalTicker";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", exact: true },
-  { href: "/dashboard/trade", label: "Trade" },
-  { href: "/dashboard/portfolio", label: "Portfolio" },
-  { href: "/dashboard/delegations", label: "Delegations" },
-  { href: "/dashboard/history", label: "History" },
+  { href: "/dashboard/trade", label: "Trade", exact: false },
+  { href: "/dashboard/portfolio", label: "Portfolio", exact: false },
+  { href: "/dashboard/delegations", label: "Delegations", exact: false },
+  { href: "/dashboard/history", label: "History", exact: false },
 ] as const;
 
 export default function DashboardLayout({

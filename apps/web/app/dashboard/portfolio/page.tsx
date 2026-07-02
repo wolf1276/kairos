@@ -57,6 +57,7 @@ export default function PortfolioPage() {
   }, []);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     Promise.all([fetchPortfolio(), fetchTrades()]).finally(() =>
       setLoading(false)
     );
