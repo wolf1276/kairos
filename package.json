@@ -4,8 +4,8 @@
   "private": true,
   "workspaces": [
     "packages/*",
-    "app",
-    "comming-soon"
+    "apps/web",
+    "apps/comming-soon"
   ],
   "scripts": {
     "build": "pnpm --filter @wolf1276/kairos-sdk build",

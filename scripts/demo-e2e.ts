@@ -24,7 +24,7 @@ import { KairosClient } from '../packages/sdk/src';
 
 // ── Config ──
 
-const CONFIG_FILE = path.join(__dirname, '../config/contracts.testnet.json');
+const CONFIG_FILE = path.join(__dirname, '../configs/contracts.testnet.json');
 const FUNDER_SECRET = process.env.FUNDER_SECRET_KEY;
 const DEMO_INTENT = "I want to grow my portfolio steadily with moderate risk, focusing on Stellar ecosystem assets like XLM. Keep daily trade limit under 2000 XLM and max position size under 500 XLM worth. Stop loss at 3%, take profit at 8%.";
 
@@ -64,7 +64,7 @@ async function main() {
   // ── 0. Validate config ──
 
   if (!fs.existsSync(CONFIG_FILE)) {
-    console.error('✗ config/contracts.testnet.json not found. Run scripts/deploy-testnet.ts first.');
+    console.error('✗ configs/contracts.testnet.json not found. Run scripts/deploy-testnet.ts first.');
     process.exit(1);
   }
   if (!FUNDER_SECRET) {
@@ -84,7 +84,7 @@ async function main() {
   let tradingProfile: Record<string, unknown> | undefined;
 
   try {
-    const { parseIntentWithHf } = await import('../app/lib/decision/hfIntentParser');
+    const { parseIntentWithHf } = await import('../apps/web/lib/decision/hfIntentParser');
     const result = await parseIntentWithHf(DEMO_INTENT);
     if (result.status === 'COMPLETE' && result.profile) {
       tradingProfile = result.profile as unknown as Record<string, unknown>;
@@ -97,7 +97,7 @@ async function main() {
   }
 
   if (!tradingProfile) {
-    const { parseIntent } = await import('../app/lib/decision/intentParser');
+    const { parseIntent } = await import('../apps/web/lib/decision/intentParser');
     const parsed = parseIntent({ text: DEMO_INTENT });
     tradingProfile = parsed.profile as unknown as Record<string, unknown> ?? parsed.extracted;
     printf('Goal', (tradingProfile.goal as string) || 'N/A');
@@ -116,7 +116,7 @@ async function main() {
 
   console.log('─── Step 2: Market Analysis & Decision ───');
 
-  const { BinanceOracle } = await import('../app/oracle/BinanceOracle');
+  const { BinanceOracle } = await import('../apps/web/oracle/BinanceOracle');
   const oracle = new BinanceOracle('1h');
   const symbol = 'XLMUSDT';
 
@@ -128,7 +128,7 @@ async function main() {
   printf('EMA 20/50', `${marketSnapshot.indicators.ema20.toFixed(4)} / ${marketSnapshot.indicators.ema50.toFixed(4)}`);
   console.log('');
 
-  const { DecisionEngine } = await import('../app/lib/decision/index');
+  const { DecisionEngine } = await import('../apps/web/lib/decision/index');
   const engine = new DecisionEngine();
 
   const proposal = await engine.decide({

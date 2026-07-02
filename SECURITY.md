@@ -2,7 +2,7 @@
 
 Kairos is a non-custodial capital delegation protocol. This document describes the security guarantees, trust boundaries, and threat model of the system.
 
-> **Note:** Contract-level security details (replay protection, authorization boundaries, storage security, hook safety) are documented in [`soroban-delegation/SECURITY.md`](./soroban-delegation/SECURITY.md). This document covers the full stack including the AI/decision layer.
+> **Note:** Contract-level security details (replay protection, authorization boundaries, storage security, hook safety) are documented in [`docs/security/SECURITY.md`](./docs/security/SECURITY.md). This document covers the full stack including the AI/decision layer.
 
 ---
 
@@ -92,7 +92,7 @@ Both the intent parser and advisor use exponential backoff:
 
 ## 3. Smart Contract Security
 
-See [`soroban-delegation/SECURITY.md`](./soroban-delegation/SECURITY.md) for detailed contract-level security considerations covering:
+See [`docs/security/SECURITY.md`](./docs/security/SECURITY.md) for detailed contract-level security considerations covering:
 
 - **Replay Protection**: Monotonic nonces, domain-separated hashes
 - **Authorization Boundaries**: Delegate-only redemption, DelegationManager-only execution on CustomAccount

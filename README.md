@@ -226,20 +226,28 @@ Initiates time-bound autonomous sessions where the Kairos Agent acts on your beh
 
 ```
 .
-├── app/                      # Next.js web application (Dashboard & API)
-│   ├── app/                  # Next.js App Router pages and globals
-│   ├── components/           # Reusable UI component library (Shadcn-based)
-│   ├── lib/                  # Core logic (Decision, Strategy, Paper Trading)
-│   └── oracle/               # Price oracle and indicator calculator engines
+├── apps/
+│   ├── web/                  # Next.js web application (Dashboard & API)
+│   │   ├── app/              # Next.js App Router pages and globals
+│   │   ├── components/       # Reusable UI component library (Shadcn-based)
+│   │   ├── lib/              # Core logic (Decision, Strategy, Paper Trading)
+│   │   └── oracle/           # Price oracle and indicator calculator engines
+│   └── comming-soon/         # Pre-launch landing page
 ├── packages/
 │   └── sdk/                  # TypeScript SDK for interacting with Kairos contracts
-├── soroban-delegation/       # Soroban Rust contracts (Delegation Manager, Policies, CustomAccount)
+├── contracts/
+│   └── soroban/              # Soroban Rust contracts (Delegation Manager, Policies, CustomAccount)
 ├── scripts/
 │   ├── deploy-testnet.ts     # Deploy all contracts to Stellar testnet
 │   ├── test-integration.ts   # SDK integration test against testnet
 │   └── demo-e2e.ts           # Full end-to-end demo (intent → decision → on-chain)
-├── config/
+├── configs/
 │   └── contracts.testnet.json # Deployed contract IDs
+├── docs/
+│   ├── architecture/         # Architecture documentation and reports
+│   ├── api/                  # SDK API reference
+│   ├── deployment/           # Deployment guide
+│   └── security/             # Security audit and contract-level security
 ├── .env.example              # Environment variable documentation
 ├── README.md                 # This file
 └── SECURITY.md               # Security guarantees and architecture
@@ -269,7 +277,7 @@ pnpm run build
 Copy `.env.example` to `app/.env.local` and configure:
 
 ```bash
-cp .env.example app/.env.local
+cp .env.example apps/web/.env.local
 ```
 
 Required variables:
@@ -285,7 +293,7 @@ Required variables:
 ### Running the Dashboard
 
 ```bash
-cd app
+cd apps/web
 pnpm run dev
 ```
 
@@ -293,10 +301,10 @@ The dashboard will be available at `http://localhost:3000`.
 
 ### Deploying to Vercel
 
-This is a pnpm monorepo — the Next.js app lives in `app/`. To deploy on Vercel:
+This is a pnpm monorepo — the Next.js app lives in `apps/web/`. To deploy on Vercel:
 
 1. **Import the repo** into Vercel.
-2. **Set Root Directory** to `app/` in project settings (Settings → General → Root Directory).
+2. **Set Root Directory** to `apps/web/` in project settings (Settings → General → Root Directory).
 3. **Add environment variables** listed in `.env.example` to your Vercel project.
 4. **Deploy** — Vercel will install from root (resolving workspace deps) and build both the SDK and app.
 
@@ -324,7 +332,7 @@ export FUNDER_SECRET_KEY=SC…
 npx tsx scripts/test-integration.ts
 
 # E2E Playwright tests
-cd app
+cd apps/web
 pnpm exec playwright test
 ```
 

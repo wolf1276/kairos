@@ -19,6 +19,6 @@
 
 ## Workflow
 
-- **Do not modify the contracts directly**. The smart contracts reside in `soroban-delegation` and must not be altered.
+- **Do not modify the contracts directly**. The smart contracts reside in `contracts/soroban` and must not be altered.
 - **Ensure ESM + CommonJS compatibility**: Build outputs should tree-shake properly.
 - **Add Tests**: All new features and modules should include corresponding tests under `tests/`.

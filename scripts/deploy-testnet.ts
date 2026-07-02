@@ -4,7 +4,7 @@ import * as path from 'path';
 
 const DEPLOYER_ALIAS = 'deployer';
 const NETWORK = 'testnet';
-const CONFIG_DIR = path.join(__dirname, '../config');
+const CONFIG_DIR = path.join(__dirname, '../configs');
 const CONFIG_FILE = path.join(CONFIG_DIR, 'contracts.testnet.json');
 
 function runCommand(cmd: string, cwd = '.'): string {
@@ -16,9 +16,9 @@ function runCommand(cmd: string, cwd = '.'): string {
 
 async function main() {
   try {
-    // 1. Build the contracts (runs in soroban-delegation)
+    // 1. Build the contracts (runs in contracts/soroban)
     console.log('Building Soroban contracts...');
-    runCommand('stellar contract build', 'soroban-delegation');
+    runCommand('stellar contract build', 'contracts/soroban');
 
     // 2. Get deployer address
     console.log('Retrieving deployer address...');
@@ -28,7 +28,7 @@ async function main() {
     console.log('Uploading CustomAccount Wasm...');
     const uploadStdout = runCommand(
       `stellar contract upload --wasm target/wasm32v1-none/release/custom_account.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
-      'soroban-delegation'
+      'contracts/soroban'
     );
     // Wasm hash is a 64-character hex string
     const wasmHashMatch = uploadStdout.match(/([a-f0-9]{64})/i);
@@ -42,7 +42,7 @@ async function main() {
     console.log('Deploying DelegationManager...');
     const managerStdout = runCommand(
       `stellar contract deploy --wasm target/wasm32v1-none/release/delegation_manager.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
-      'soroban-delegation'
+      'contracts/soroban'
     );
     const managerMatch = managerStdout.match(/(C[A-Z0-9]{55})/);
     if (!managerMatch) {
@@ -55,7 +55,7 @@ async function main() {
     console.log('Deploying Policies...');
     const policiesStdout = runCommand(
       `stellar contract deploy --wasm target/wasm32v1-none/release/policies.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
-      'soroban-delegation'
+      'contracts/soroban'
     );
     const policiesMatch = policiesStdout.match(/(C[A-Z0-9]{55})/);
     if (!policiesMatch) {
@@ -68,7 +68,7 @@ async function main() {
     console.log('Deploying CustomAccount Instance...');
     const accountStdout = runCommand(
       `stellar contract deploy --wasm target/wasm32v1-none/release/custom_account.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
-      'soroban-delegation'
+      'contracts/soroban'
     );
     const accountMatch = accountStdout.match(/(C[A-Z0-9]{55})/);
     if (!accountMatch) {

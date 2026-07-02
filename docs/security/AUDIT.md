@@ -1,6 +1,6 @@
 # Comprehensive Security & Architecture Audit
 
-This document presents a critical, production-readiness audit of the Soroban-native Delegation Framework implementation in `soroban-delegation`. All previously identified gaps have been remediated in Phase 1.
+This document presents a critical, production-readiness audit of the Soroban-native Delegation Framework implementation in `contracts/soroban`. All previously identified gaps have been remediated in Phase 1.
 
 ---
 

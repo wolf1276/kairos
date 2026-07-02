@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { KairosClient } from '../packages/sdk/src';
 
-const CONFIG_FILE = path.join(__dirname, '../config/contracts.testnet.json');
+const CONFIG_FILE = path.join(__dirname, '../configs/contracts.testnet.json');
 
 async function fundAccount(publicKey: string): Promise<void> {
   const url = `https://friendbot.stellar.org?addr=${publicKey}`;
@@ -34,7 +34,7 @@ async function main() {
   console.log('--- Starting Kairos SDK End-to-End Integration Test ---');
 
   if (!fs.existsSync(CONFIG_FILE)) {
-    console.error('Config file config/contracts.testnet.json not found! Run deployment first.');
+    console.error('Config file configs/contracts.testnet.json not found! Run deployment first.');
     process.exit(1);
   }
 

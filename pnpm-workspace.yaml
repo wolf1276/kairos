@@ -1,4 +1,4 @@
 packages:
   - 'packages/*'
-  - 'app'
-  - 'comming-soon'
+  - 'apps/web'
+  - 'apps/comming-soon'

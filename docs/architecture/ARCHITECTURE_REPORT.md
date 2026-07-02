@@ -1,6 +1,6 @@
 # Soroban-Native Delegation Framework Architecture Audit Report
 
-This report presents a comprehensive architectural analysis and security audit of the Soroban-Native Delegation Framework implemented in `soroban-delegation`. The framework is inspired by MetaMask's delegation specification but tailored specifically for Stellar's Soroban smart contract platform, leveraging native account abstraction features.
+This report presents a comprehensive architectural analysis and security audit of the Soroban-Native Delegation Framework implemented in `contracts/soroban`. The framework is inspired by MetaMask's delegation specification but tailored specifically for Stellar's Soroban smart contract platform, leveraging native account abstraction features.
 
 ---
 
@@ -9,7 +9,7 @@ This report presents a comprehensive architectural analysis and security audit o
 The repository is structured as a standard Rust Cargo workspace containing a set of smart contracts and configuration metadata:
 
 ```
-soroban-delegation/
+contracts/soroban/
 ├── Cargo.toml                      # Workspace configuration defining members and shared dependencies
 ├── Cargo.lock                      # Locked dependency versions
 ├── ARCHITECTURE.md                 # Design patterns and storage mapping documentation

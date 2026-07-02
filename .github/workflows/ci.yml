@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: soroban-delegation
+        working-directory: contracts/soroban
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,10 +54,10 @@ jobs:
       - run: pnpm --filter @wolf1276/kairos-sdk build
       - run: pnpm --filter app build
       - name: Lint
-        working-directory: app
+        working-directory: apps/web
         run: pnpm eslint . --ext .ts,.tsx --max-warnings 10
       - name: Test
-        working-directory: app
+        working-directory: apps/web
         run: pnpm vitest run
 
   json-validity:
