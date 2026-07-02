@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 import {
   Area,
   AreaChart,
@@ -18,7 +18,7 @@ import { formatUsd } from "@/app/lib/format";
  * equity(t) = initialBalance + Σ realized pnl up to t.
  * A final live point folds in current unrealized PnL when provided.
  */
-export function EquityCurve({
+export const EquityCurve = memo(function EquityCurve({
   trades,
   initialBalance = 10000,
   liveEquity,
@@ -120,4 +120,4 @@ export function EquityCurve({
       </AreaChart>
     </ResponsiveContainer>
   );
-}
+});

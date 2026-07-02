@@ -44,6 +44,10 @@ export function ChartToolbar({
   onFullscreen,
   symbols,
   onSymbolChange,
+  showOrderBook,
+  showTradingPanel,
+  onToggleOrderBook,
+  onToggleTradingPanel,
 }: {
   symbol: string;
   interval: Interval;
@@ -56,6 +60,10 @@ export function ChartToolbar({
   onFullscreen: () => void;
   symbols?: string[];
   onSymbolChange?: (symbol: string) => void;
+  showOrderBook?: boolean;
+  showTradingPanel?: boolean;
+  onToggleOrderBook?: () => void;
+  onToggleTradingPanel?: () => void;
 }) {
   return (
     <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded-xl border border-border bg-bg-elevated/80 px-2 py-1.5 text-xs backdrop-blur-xl scrollbar-none">
@@ -140,6 +148,33 @@ export function ChartToolbar({
       </div>
 
       <div className="ml-auto flex items-center gap-1 shrink-0">
+        {onToggleOrderBook && (
+          <button
+            onClick={onToggleOrderBook}
+            className={cn(
+              "cursor-pointer rounded-lg px-2 py-1 font-mono text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+              showOrderBook
+                ? "text-accent"
+                : "text-text-muted hover:text-text-secondary",
+            )}
+          >
+            Book
+          </button>
+        )}
+        {onToggleTradingPanel && (
+          <button
+            onClick={onToggleTradingPanel}
+            className={cn(
+              "cursor-pointer rounded-lg px-2 py-1 font-mono text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+              showTradingPanel
+                ? "text-accent"
+                : "text-text-muted hover:text-text-secondary",
+            )}
+          >
+            Panel
+          </button>
+        )}
+        <div className="h-4 w-px bg-border" />
         <button
           onClick={onFitContent}
           title="Fit Content"

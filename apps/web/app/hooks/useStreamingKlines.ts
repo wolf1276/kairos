@@ -71,6 +71,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
   const aliveRef = useRef(true);
   const throttleRef = useRef(0);
   const connectIdRef = useRef(0);
+  const fetchedRef = useRef(false);
 
   // Initial fetch — direct Binance CDN first, fall back to GraphQL
   useEffect(() => {
@@ -78,13 +79,16 @@ export function useStreamingKlines(symbol: string, interval: string) {
     let alive = true;
 
     const fetchInitial = async () => {
-      setCandles([]);
+      fetchedRef.current = false;
+      candlesRef.current = [];
       setLoading(true);
       setError(null);
       try {
+        fetchedRef.current = true;
         try {
           const data = await fetchKlinesHTTP(symbol, interval, 120);
           if (alive) {
+            fetchedRef.current = true;
             if (candlesRef.current.length > 1) {
               // Merge: WS has live candle, fetch has full history
               const map = new Map<number, Candle>();
@@ -103,6 +107,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
         } catch {}
         const data = await fetchCandlesGQL(symbol, interval, 120);
         if (alive) {
+          fetchedRef.current = true;
           if (candlesRef.current.length > 1) {
             const map = new Map<number, Candle>();
             for (const c of data) map.set(c.openTime, c);
@@ -185,6 +190,9 @@ export function useStreamingKlines(symbol: string, interval: string) {
             // ── New candle (closed or forming) — always track it ──
             candlesRef.current = [...arr, updated];
           }
+
+          // Skip React state updates until initial HTTP fetch completes
+          if (!fetchedRef.current) return;
 
           // RAF-throttle React state update
           const now = performance.now();

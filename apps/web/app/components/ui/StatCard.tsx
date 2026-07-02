@@ -15,16 +15,16 @@ export function StatCard({
   loading?: boolean;
 }) {
   return (
-    <Card className="p-5">
-      <p className="font-mono text-[11px] font-medium uppercase tracking-widest text-text-muted">
+    <Card className="p-6">
+      <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
         {label}
       </p>
       {loading ? (
-        <div className="mt-2 h-7 w-24 animate-pulse rounded bg-bg-elevated" />
+        <div className="mt-2 h-8 w-28 animate-pulse rounded-md bg-bg-elevated/60" />
       ) : (
         <p
           className={cn(
-            "mt-1 font-display text-2xl font-bold tracking-tight tabular-nums",
+            "mt-1.5 font-display text-3xl font-bold tracking-tight tabular-nums text-text-primary",
             valueClassName
           )}
         >
@@ -32,7 +32,7 @@ export function StatCard({
         </p>
       )}
       {sub && !loading && (
-        <p className="mt-1 text-xs text-text-secondary tabular-nums">{sub}</p>
+        <p className="mt-1.5 text-xs text-text-secondary tabular-nums">{sub}</p>
       )}
     </Card>
   );

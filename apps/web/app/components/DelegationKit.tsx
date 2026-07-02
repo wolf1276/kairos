@@ -114,25 +114,22 @@ export default function DelegationKit() {
     }
   };
 
-  const shortAddress = (addr: string) => `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+  const shortAddress = (addr: string) => `${addr.slice(0, 4)}\u2026${addr.slice(-4)}`;
 
   // ── Disconnected: Show connect prompt ──
   if (!wallet) {
     return (
-      <div
-        className="animate-glow rounded-2xl border border-border bg-bg-card p-6"
-        style={{ animationDelay: "0.5s" }}
-      >
+      <div className="rounded-2xl card-glass card-glow p-6">
         {/* Header */}
         <div className="mb-6 flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted text-accent">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted/60 text-accent">
             <WalletIcon />
           </span>
           <div>
-            <h2 className="font-display text-base font-semibold text-text-primary">
+            <h2 className="font-display text-sm font-medium text-text-primary">
               Delegation Wallet
             </h2>
-            <p className="text-sm text-text-muted">
+            <p className="text-xs text-text-muted">
               Connect Freighter to fund your agent
             </p>
           </div>
@@ -142,12 +139,12 @@ export default function DelegationKit() {
         <button
           onClick={handleConnect}
           disabled={connecting}
-          className="group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-white transition-all duration-200 hover:bg-accent-hover disabled:opacity-50"
+          className="group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-accent/80 px-5 py-3 text-sm font-semibold text-white transition-all duration-300 hover:bg-accent hover:shadow-[0_0_25px_-10px_rgba(120,81,233,0.2)] disabled:opacity-40"
         >
           {connecting ? (
             <>
               <Spinner />
-              Connecting…
+              Connecting\u2026
             </>
           ) : (
             <>
@@ -159,8 +156,8 @@ export default function DelegationKit() {
 
         {/* Error feedback */}
         {connectError && (
-          <div className="mt-4 animate-fade-in-up rounded-xl border border-error/20 bg-error/10 px-4 py-3">
-            <p className="text-xs leading-relaxed text-error">{connectError}</p>
+          <div className="mt-4 animate-fade-in-up rounded-xl border border-error/15 bg-error/6 px-4 py-3">
+            <p className="text-xs leading-relaxed text-error/90">{connectError}</p>
           </div>
         )}
 
@@ -173,7 +170,7 @@ export default function DelegationKit() {
             rel="noopener noreferrer"
             className="font-medium text-accent underline underline-offset-2 hover:text-accent-hover"
           >
-            Install Freighter →
+            Install Freighter \u2192
           </a>
         </p>
       </div>
@@ -182,25 +179,22 @@ export default function DelegationKit() {
 
   // ── Connected: Show wallet & delegate form ──
   return (
-    <div
-      className="animate-glow rounded-2xl border border-border bg-bg-card p-6"
-      style={{ animationDelay: "0.5s" }}
-    >
+    <div className="rounded-2xl card-glass card-glow p-6">
       {/* Header row */}
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted text-accent">
+          <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-accent-muted/60 text-accent">
             <WalletIcon />
           </span>
           <div>
-            <h2 className="font-display text-base font-semibold text-text-primary">
+            <h2 className="font-display text-sm font-medium text-text-primary">
               Delegation Wallet
             </h2>
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider ${
                 wallet.isTestnet
-                  ? "bg-amber-500/10 text-amber-400"
-                  : "bg-emerald-500/10 text-emerald-400"
+                  ? "bg-amber-500/8 text-amber-400/85"
+                  : "bg-emerald-500/8 text-emerald-400/85"
               }`}
             >
               <span
@@ -214,32 +208,32 @@ export default function DelegationKit() {
         </div>
         <button
           onClick={handleDisconnect}
-          className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors hover:bg-bg-elevated hover:text-text-secondary"
+          className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-text-muted transition-colors duration-200 hover:bg-white/[0.03] hover:text-text-secondary"
         >
           Disconnect
         </button>
       </div>
 
       {/* Account & Balance */}
-      <div className="mb-5 rounded-xl border border-border bg-bg-elevated p-4">
+      <div className="mb-5 rounded-xl border border-white/5 bg-white/[0.02] p-4">
         <div className="flex items-center justify-between">
           <div>
-            <p className="font-mono text-[11px] font-medium uppercase tracking-widest text-text-muted">
+            <p className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
               Account
             </p>
             <p className="mt-0.5 font-mono text-sm text-text-primary">
               {shortAddress(wallet.address)}
             </p>
           </div>
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-muted text-accent">
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent-muted/50 text-accent">
             <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
               <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
           </span>
         </div>
-        <div className="mt-3 border-t border-border pt-3">
-          <p className="font-mono text-[11px] font-medium uppercase tracking-widest text-text-muted">
+        <div className="mt-3 border-t border-white/5 pt-3">
+          <p className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
             Balance
           </p>
           <p className="mt-1 font-display text-2xl font-bold tracking-tight text-text-primary">
@@ -255,7 +249,7 @@ export default function DelegationKit() {
         <div>
           <label
             htmlFor="del-amount"
-            className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-widest text-text-secondary"
+            className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted"
           >
             Amount (XLM)
           </label>
@@ -268,11 +262,11 @@ export default function DelegationKit() {
               placeholder="0.00"
               value={amount}
               onChange={(e) => setAmount(e.target.value)}
-              className="w-full rounded-xl border border-border bg-bg-elevated py-2.5 pl-3.5 pr-14 font-mono text-sm text-text-primary placeholder-text-muted transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+              className="w-full rounded-xl border border-white/5 bg-white/[0.02] py-2.5 pl-3.5 pr-14 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
             />
             <button
               onClick={() => setAmount(wallet.balance)}
-              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-0.5 font-mono text-[11px] font-medium text-accent transition-colors hover:bg-accent-muted"
+              className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg px-2 py-0.5 font-mono text-[11px] font-medium text-accent/80 transition-colors duration-200 hover:bg-accent-muted/50 hover:text-accent"
             >
               MAX
             </button>
@@ -283,17 +277,17 @@ export default function DelegationKit() {
         <div>
           <label
             htmlFor="del-dest"
-            className="mb-1.5 block font-mono text-[11px] font-medium uppercase tracking-widest text-text-secondary"
+            className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted"
           >
             Destination
           </label>
           <input
             id="del-dest"
             type="text"
-            placeholder="G… or C…"
+            placeholder="G\u2026 or C\u2026"
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
-            className="w-full rounded-xl border border-border bg-bg-elevated py-2.5 pl-3.5 pr-3.5 font-mono text-sm text-text-primary placeholder-text-muted transition-colors focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent/20"
+            className="w-full rounded-xl border border-white/5 bg-white/[0.02] py-2.5 pl-3.5 pr-3.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
           />
         </div>
 
@@ -303,7 +297,7 @@ export default function DelegationKit() {
             <button
               key={amt}
               onClick={() => setAmount(amt.toString())}
-              className="flex-1 rounded-lg border border-border bg-bg-elevated px-2 py-1.5 font-mono text-xs font-medium text-text-secondary transition-colors hover:border-accent/40 hover:text-accent"
+              className="flex-1 rounded-lg border border-white/5 bg-white/[0.02] px-2 py-1.5 font-mono text-xs font-medium text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary"
             >
               {amt}
             </button>
@@ -319,12 +313,12 @@ export default function DelegationKit() {
             !destination ||
             txStatus === "pending"
           }
-          className="group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-accent px-5 py-3 text-sm font-semibold text-white transition-all duration-200 hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-35"
+          className="group relative inline-flex w-full items-center justify-center gap-2 overflow-hidden rounded-xl bg-accent/80 px-5 py-3 text-sm font-semibold text-white transition-all duration-300 hover:bg-accent hover:shadow-[0_0_25px_-10px_rgba(120,81,233,0.2)] disabled:cursor-not-allowed disabled:opacity-30"
         >
           {txStatus === "pending" ? (
             <>
               <Spinner />
-              Signing & Sending…
+              Signing &amp; Sending\u2026
             </>
           ) : (
             <>
@@ -337,13 +331,13 @@ export default function DelegationKit() {
 
       {/* Success banner */}
       {txStatus === "confirmed" && (
-        <div className="mt-4 animate-slide-in-right flex items-center gap-2.5 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3">
-          <span className="text-emerald-400"><CheckIcon /></span>
-          <span className="text-sm font-medium text-emerald-300">
+        <div className="mt-4 animate-fade-in-up flex items-center gap-2.5 rounded-xl border border-emerald-500/15 bg-emerald-500/6 px-4 py-3">
+          <span className="text-emerald-400/80"><CheckIcon /></span>
+          <span className="text-sm font-medium text-emerald-300/90">
             Delegation confirmed
           </span>
           {txHash && (
-            <span className="ml-auto font-mono text-[11px] text-emerald-400/70">
+            <span className="ml-auto font-mono text-[11px] text-emerald-400/60">
               {shortAddress(txHash)}
             </span>
           )}
@@ -352,8 +346,8 @@ export default function DelegationKit() {
 
       {/* Error banner */}
       {txStatus === "error" && txError && (
-        <div className="mt-4 animate-slide-in-right rounded-xl border border-error/20 bg-error/10 px-4 py-3">
-          <p className="text-xs text-error">{txError}</p>
+        <div className="mt-4 animate-fade-in-up rounded-xl border border-error/15 bg-error/6 px-4 py-3">
+          <p className="text-xs text-error/90">{txError}</p>
         </div>
       )}
     </div>

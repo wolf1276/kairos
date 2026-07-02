@@ -55,7 +55,7 @@ export function AllocationPie({
           >
             {data.map((entry, i) => (
               <Cell
-                key={entry.name}
+                key={`${entry.name}-${i}`}
                 fill={entry.name === "Cash" ? CASH_COLOR : COLORS[i % COLORS.length]}
               />
             ))}
