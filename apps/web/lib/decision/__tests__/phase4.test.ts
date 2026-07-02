@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { validateProfile } from '../hfIntentParser';
-import { applyPolicyGate, HfAdvisor } from '../index';
+import { applyPolicyGate } from '../index';
 import type { TradingContext, WalletContext } from '../types';
 
 describe('Phase 4 — Schema Validation', () => {
