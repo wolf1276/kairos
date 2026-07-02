@@ -59,6 +59,8 @@ export function useBinanceWebSocket(symbols: string[]) {
 
   const streams = symbols.map((s) => `${s.toLowerCase()}@ticker`).join("/");
 
+  const connectRef = useRef<(() => void) | null>(null);
+
   const cleanup = useCallback(() => {
     clearTimeout(reconnectTimerRef.current);
     clearInterval(pingTimerRef.current);
@@ -116,7 +118,16 @@ export function useBinanceWebSocket(symbols: string[]) {
       clearInterval(pingTimerRef.current);
       if (!aliveRef.current) return;
       setStatus("reconnecting");
-      handleReconnect();
+      reconnectCountRef.current++;
+      if (reconnectCountRef.current >= MAX_RECONNECT_ATTEMPTS) {
+        setStatus("disconnected");
+        return;
+      }
+      const delay = Math.min(
+        INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectCountRef.current - 1),
+        MAX_RECONNECT_DELAY
+      );
+      reconnectTimerRef.current = setTimeout(connectRef.current!, delay);
     };
 
     ws.onerror = () => {
@@ -124,19 +135,7 @@ export function useBinanceWebSocket(symbols: string[]) {
     };
   }, [streams, cleanup]);
 
-  const handleReconnect = useCallback(() => {
-    if (!aliveRef.current) return;
-    if (reconnectCountRef.current >= MAX_RECONNECT_ATTEMPTS) {
-      setStatus("disconnected");
-      return;
-    }
-    reconnectCountRef.current++;
-    const delay = Math.min(
-      INITIAL_RECONNECT_DELAY * Math.pow(2, reconnectCountRef.current - 1),
-      MAX_RECONNECT_DELAY
-    );
-    reconnectTimerRef.current = setTimeout(connect, delay);
-  }, [connect]);
+  useEffect(() => { connectRef.current = connect; });
 
   useEffect(() => {
     if (!key) return;
@@ -154,8 +153,7 @@ export function useBinanceWebSocket(symbols: string[]) {
     const loop = (now: number) => {
       if (now - throttleRef.current >= 100) {
         const ref = tickersRef.current;
-        let gen = 0;
-        for (const _ in ref) gen++;
+        const gen = Object.keys(ref).length;
         if (gen !== lastGen || (gen > 0 && ref[Object.keys(ref)[0]]?.price !== undefined)) {
           lastGen = gen;
           setTickers({ ...ref });

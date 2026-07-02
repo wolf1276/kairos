@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useMemo, useState, useCallback, useRef, useEffect } from "react";
+import { Suspense, useMemo, useState, useCallback, useRef, useEffect, startTransition, useSyncExternalStore } from "react";
 import { useSearchParams } from "next/navigation";
 import DelegationKit from "@/app/components/DelegationKit";
 import { PriceChart } from "@/app/components/charts/PriceChart";
@@ -65,8 +65,24 @@ function TradeInner() {
   const livePrice = getLatestPrice(symbol) ?? priceMap[symbol] ?? ticker?.price ?? 0;
   const heldPosition = positions.find((p) => p.symbol === symbol);
 
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  const isMounted = useSyncExternalStore(() => () => {}, () => true, () => false);
+
+  const [timeStr, setTimeStr] = useState("—");
+  useEffect(() => {
+    const update = () => {
+      const t = new Date();
+      startTransition(() => setTimeStr(
+        `${t.toLocaleTimeString("en-US", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        })}.${String(t.getMilliseconds()).padStart(3, "0")}`
+      ));
+    };
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   // Price flash animation on change
   const prevPriceRef = useRef(livePrice);
@@ -379,13 +395,7 @@ function TradeInner() {
                     {baseAsset(symbol)} Price
                   </span>
                   <p className="font-mono text-[9px] text-text-muted/60" suppressHydrationWarning>
-                    {mounted
-                      ? `${new Date().toLocaleTimeString("en-US", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                          second: "2-digit",
-                        })}.${String(Date.now() % 1000).padStart(3, "0")}`
-                      : "—"}
+                    {isMounted ? timeStr : "—"}
                   </p>
                 </div>
                 <span

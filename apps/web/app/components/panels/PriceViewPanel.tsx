@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState } from "react";
 import { Card, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { ConfidenceRing } from "./ConfidenceRing";
 import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 import { useMarketAnalysis } from "@/app/hooks/useMarketAnalysis";
-import { formatPrice, formatPct, formatNumber, baseAsset } from "@/app/lib/format";
+import { formatPrice, formatPct, formatNumber } from "@/app/lib/format";
 import type { WSStatus } from "@/app/hooks/usePrices";
 
 interface Indicators {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { useBinanceWebSocket, type WSTicker, type WSTickerMap, type WSStatus } from "./useBinanceWebSocket";
 
 export type { WSTicker as Ticker, WSTickerMap as TickerMap, WSStatus };
@@ -22,9 +22,11 @@ export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
   useEffect(() => {
     if (wsConnected && hasWsData) {
       initRef.current = true;
-      setTickers(wsTickers);
-      setError(null);
-      setLoading(false);
+      startTransition(() => {
+        setTickers(wsTickers);
+        setError(null);
+        setLoading(false);
+      });
     }
   }, [wsTickers, wsConnected, hasWsData]);
 
@@ -33,7 +35,7 @@ export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
   useEffect(() => {
     aliveRef.current = true;
     if (!key) {
-      setLoading(false);
+      startTransition(() => setLoading(false));
       return;
     }
 
