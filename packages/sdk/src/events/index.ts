@@ -44,7 +44,7 @@ export class EventsModule {
 
       const eventTypeSymbol = topics[0].sym().toString();
 
-      if (eventTypeSymbol === 'disabled') {
+      if (eventTypeSymbol === 'del_dis') {
         const delegator = Address.fromScVal(topics[1]).toString();
         const hash = value.bytes().toString('hex');
         return {
@@ -56,7 +56,7 @@ export class EventsModule {
         };
       }
 
-      if (eventTypeSymbol === 'enabled') {
+      if (eventTypeSymbol === 'del_en') {
         const delegator = Address.fromScVal(topics[1]).toString();
         const hash = value.bytes().toString('hex');
         return {
@@ -116,8 +116,18 @@ export class EventsModule {
       topics: string[];
     }>;
   }): Promise<KairosEvent[]> {
+    // RPC nodes only retain events for a recent ledger window (currently ~120k ledgers on
+    // testnet) — `startLedger: 1` always falls outside that window and the RPC rejects the
+    // request outright. Default to a recent ledger instead of the beginning of the chain.
+    const startLedger =
+      filters.startLedger ??
+      (await this.client.rpcProvider
+        .getLatestLedger()
+        .then((l) => Math.max(1, l.sequence - 100_000))
+        .catch(() => 1));
+
     const rawFilters: rpc.Server.GetEventsRequest = {
-      startLedger: filters.startLedger || 1,
+      startLedger,
       filters: (filters.topicFilters || []).map(f => ({
         contractIds: [this.client.contracts.delegationManager],
         topics: f.topics.map(t => {

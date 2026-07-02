@@ -116,8 +116,14 @@ impl Policies {
                 let spent_key = PolicyStateKey::Spent(hash.clone());
                 let last_time_key = PolicyStateKey::LastSpentTime(hash.clone());
 
-                env.storage().persistent().extend_ttl(&spent_key, 10000, 100000);
-                env.storage().persistent().extend_ttl(&last_time_key, 10000, 100000);
+                // `extend_ttl` panics if the entry doesn't exist yet — guard it, since a
+                // delegation's first-ever spend against this policy has no prior entries.
+                if env.storage().persistent().has(&spent_key) {
+                    env.storage().persistent().extend_ttl(&spent_key, 10000, 100000);
+                }
+                if env.storage().persistent().has(&last_time_key) {
+                    env.storage().persistent().extend_ttl(&last_time_key, 10000, 100000);
+                }
 
                 let last_time: u64 = env.storage().persistent().get(&last_time_key).unwrap_or(0);
                 let mut current_spent: i128 = env.storage().persistent().get(&spent_key).unwrap_or(0);
@@ -167,8 +173,10 @@ impl Policies {
             return Err(Error::InvalidTerms);
         }
         let mut xdr_bytes = Bytes::new(env);
-        // Prepend SCAddressTypeContract = 1 (4 bytes big-endian: 0, 0, 0, 1)
-        xdr_bytes.append(&Bytes::from_array(env, &[0, 0, 0, 1]));
+        // `Address::from_xdr` deserializes a full `ScVal` (via `env.deserialize_from_bytes`),
+        // not a bare `ScAddress` — it needs the SCV_ADDRESS discriminant (18) in front of the
+        // ScAddress's own SC_ADDRESS_TYPE_CONTRACT discriminant (1), each a 4-byte big-endian i32.
+        xdr_bytes.append(&Bytes::from_array(env, &[0, 0, 0, 18, 0, 0, 0, 1]));
         xdr_bytes.append(&terms.slice(offset..(offset + 32)));
         Address::from_xdr(env, &xdr_bytes).map_err(|_| Error::InvalidTerms)
     }

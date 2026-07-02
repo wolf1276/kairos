@@ -170,9 +170,12 @@ export default function Home() {
             >
               Launch App
             </a>
-            <button className="h-10 rounded-full border border-white/10 bg-white/[0.02] px-6 text-[10px] font-semibold text-white/80 transition duration-500 hover:bg-white/[0.06] hover:border-white/20">
+            <a
+              href="/docs"
+              className="inline-flex h-10 items-center rounded-full border border-white/10 bg-white/[0.02] px-6 text-[10px] font-semibold text-white/80 transition duration-500 hover:bg-white/[0.06] hover:border-white/20"
+            >
               Documentation
-            </button>
+            </a>
           </div>
 
 

@@ -22,6 +22,10 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Only used to decide whether the mobile overlay/hamburger should render at all — the actual
+  // responsive layout (sidebar hidden/offset, content margin) is driven by CSS `lg:` breakpoints
+  // below, not this flag, so there's no SSR/client mismatch and no flash of desktop layout on
+  // mobile page loads.
   const [isDesktop, setIsDesktop] = useState(true);
 
   useEffect(() => {
@@ -63,8 +67,8 @@ export default function DashboardLayout({
       {/* ── Left Sidebar ── */}
       <aside
         className={cn(
-          "fixed left-0 top-0 z-50 flex h-screen w-56 flex-col border-r border-white/5 bg-glass-bg backdrop-blur-2xl transition-transform duration-300",
-          isDesktop ? "translate-x-0" : sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          "fixed left-0 top-0 z-50 flex h-screen w-56 flex-col border-r border-white/5 bg-glass-bg backdrop-blur-2xl transition-transform duration-300 lg:translate-x-0",
+          sidebarOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
         <div className="flex items-center gap-3 px-6 pt-6 pb-4">
@@ -102,7 +106,7 @@ export default function DashboardLayout({
       </aside>
 
       {/* ── Main Content ── */}
-      <main className={cn("flex-1 px-6 py-8", isDesktop ? "ml-56" : "ml-0")}>
+      <main className="ml-0 flex-1 px-6 py-8 lg:ml-56">
         <div className="mx-auto max-w-7xl">{children}</div>
       </main>
     </div>

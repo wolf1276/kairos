@@ -7,6 +7,7 @@ import {
   type WalletState,
   tryCheckConnection,
 } from "@/app/lib/stellar";
+import { Spinner } from "@/app/components/ui/Spinner";
 
 interface DelegationKitProps {
   /** Called whenever the connected wallet changes (connect/disconnect/refresh). */
@@ -35,10 +36,6 @@ const CheckIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="20 6 9 17 4 12" />
   </svg>
-);
-
-const Spinner = () => (
-  <span className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
 );
 
 type TxStatus = "idle" | "pending" | "confirmed" | "error";
@@ -143,10 +140,10 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
           </span>
           <div>
             <h2 className="font-display text-sm font-medium text-text-primary">
-              Delegation Wallet
+              Wallet Funding
             </h2>
             <p className="text-xs text-text-muted">
-              Connect Freighter to fund your agent
+              Connect Freighter to fund your smart wallet
             </p>
           </div>
         </div>
@@ -160,7 +157,7 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
           {connecting ? (
             <>
               <Spinner />
-              Connecting\u2026
+              Connecting…
             </>
           ) : (
             <>
@@ -186,7 +183,7 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
             rel="noopener noreferrer"
             className="font-medium text-accent underline underline-offset-2 hover:text-accent-hover"
           >
-            Install Freighter \u2192
+            Install Freighter →
           </a>
         </p>
       </div>
@@ -204,7 +201,7 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
           </span>
           <div>
             <h2 className="font-display text-sm font-medium text-text-primary">
-              Delegation Wallet
+              Wallet Funding
             </h2>
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider ${
@@ -344,12 +341,12 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
           {txStatus === "pending" ? (
             <>
               <Spinner />
-              Signing &amp; Sending\u2026
+              Signing & Sending…
             </>
           ) : (
             <>
               <ArrowRight />
-              Delegate {amount ? `${amount} XLM` : "Funds"}
+              Send {amount ? `${amount} XLM` : "Funds"}
             </>
           )}
         </button>
@@ -360,7 +357,7 @@ export default function DelegationKit({ onWalletChange, defaultDestination }: De
         <div className="mt-4 animate-fade-in-up flex items-center gap-2.5 rounded-xl border border-emerald-500/15 bg-emerald-500/6 px-4 py-3">
           <span className="text-emerald-400/80"><CheckIcon /></span>
           <span className="text-sm font-medium text-emerald-300/90">
-            Delegation confirmed
+            Transfer confirmed
           </span>
           {txHash && (
             <span className="ml-auto font-mono text-[11px] text-emerald-400/60">

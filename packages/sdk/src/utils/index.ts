@@ -17,7 +17,10 @@ export function getAddressXdrBytes(addressString: string): Buffer {
     let hex = addressString.startsWith('C') ? addressString.slice(1).replace(/[^0-9a-fA-F]/g, '') : '';
     if (hex.length >= 64) hex = hex.slice(0, 64);
     const buf = hex.length === 64 ? Buffer.from(hex, 'hex') : Buffer.alloc(32);
-    return Buffer.from(xdr.ScAddress.scAddressTypeContract(buf).toXDR());
+    // xdr.d.ts types `Hash` as `Opaque[]` (a plain byte array), not `Buffer` — Buffer's
+    // Uint8Array shape doesn't structurally satisfy that at the type level even though
+    // the runtime encoder accepts any array-like of byte values.
+    return Buffer.from(xdr.ScAddress.scAddressTypeContract(Array.from(buf) as unknown as xdr.Hash).toXDR());
   }
 }
 

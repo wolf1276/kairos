@@ -20,10 +20,10 @@
     "test": "vitest run"
   },
   "peerDependencies": {
-    "@stellar/stellar-sdk": "^13.3.0"
+    "@stellar/stellar-sdk": "^14.6.1"
   },
   "devDependencies": {
-    "@stellar/stellar-sdk": "^13.3.0",
+    "@stellar/stellar-sdk": "^14.6.1",
     "pathe": "^2.0.3",
     "tsup": "^8.0.2",
     "typescript": "^5.0.0",

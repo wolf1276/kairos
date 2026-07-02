@@ -537,3 +537,235 @@ export async function fetchSmartWalletBalance(
   const stroops = scValToBigInt(simulated.result.retval);
   return (Number(stroops) / 1e7).toFixed(7);
 }
+
+// ── Real on-chain DEX swaps (Stellar path payments) ──
+//
+// Only XLM and real Stellar-issued assets can be swapped here — nothing else in this file's
+// price feeds (BTC/ETH/SOL/etc. from Binance) correspond to actual Stellar assets, so those
+// stay display-only until a real bridge or synthetic settlement layer exists.
+
+/** Circle's official testnet USDC issuer — confirmed to have live testnet DEX order-book depth. */
+export const TESTNET_USDC_ISSUER =
+  "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+
+export interface SwapAsset {
+  code: string;
+  issuer?: string; // omitted for native XLM
+}
+
+export function swapAssetToStellarAsset(a: SwapAsset): Asset {
+  return a.issuer ? new Asset(a.code, a.issuer) : Asset.native();
+}
+
+export interface AccountBalance {
+  code: string;
+  issuer?: string;
+  balance: string;
+}
+
+/** Reads every trustline balance (including native XLM) for a connected wallet. */
+export async function fetchAccountBalances(
+  address: string,
+  networkPassphrase: string
+): Promise<AccountBalance[]> {
+  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const server = new Horizon.Server(horizonUrl, {
+    allowHttp: !horizonUrl.startsWith("https"),
+  });
+
+  const account = await server.loadAccount(address);
+  return account.balances.map((b) => {
+    if (b.asset_type === "native") {
+      return { code: "XLM", balance: b.balance };
+    }
+    const credit = b as { asset_code: string; asset_issuer: string; balance: string };
+    return { code: credit.asset_code, issuer: credit.asset_issuer, balance: credit.balance };
+  });
+}
+
+export interface OrderBookQuote {
+  hasLiquidity: boolean;
+  /** Units of `buying` received per 1 unit of `selling`, from the best bid/ask. */
+  price: number | null;
+}
+
+/** Reads the live Stellar DEX order book for a pair — used to show a real price and refuse
+ *  to submit a swap when there's no on-chain liquidity, instead of guessing. */
+export async function fetchOrderBookQuote(
+  selling: SwapAsset,
+  buying: SwapAsset,
+  networkPassphrase: string
+): Promise<OrderBookQuote> {
+  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const server = new Horizon.Server(horizonUrl, {
+    allowHttp: !horizonUrl.startsWith("https"),
+  });
+
+  const book = await server
+    .orderbook(swapAssetToStellarAsset(selling), swapAssetToStellarAsset(buying))
+    .call();
+
+  const bestAsk = book.asks[0];
+  if (!bestAsk) return { hasLiquidity: false, price: null };
+  return { hasLiquidity: true, price: parseFloat(bestAsk.price) };
+}
+
+export interface SwapResult {
+  hash: string;
+  sourceAmount: string;
+  destAsset: SwapAsset;
+}
+
+async function loadAccountForSwap(server: Horizon.Server, sourceAddress: string) {
+  try {
+    return await server.loadAccount(sourceAddress);
+  } catch {
+    throw new Error("Could not load Stellar account. Is it funded with testnet XLM?");
+  }
+}
+
+function hasTrustline(
+  account: Awaited<ReturnType<Horizon.Server["loadAccount"]>>,
+  asset: SwapAsset
+): boolean {
+  if (!asset.issuer) return true; // native XLM never needs a trustline
+  return account.balances.some(
+    (b) =>
+      b.asset_type !== "native" &&
+      (b as { asset_code: string; asset_issuer: string }).asset_code === asset.code &&
+      (b as { asset_code: string; asset_issuer: string }).asset_issuer === asset.issuer
+  );
+}
+
+/** A non-native asset needs a trustline before the account can hold it — whether it's being
+ *  sent (you must already hold it to spend it) or received (you must trust it to receive it). */
+function assertHasTrustline(
+  account: Awaited<ReturnType<Horizon.Server["loadAccount"]>>,
+  asset: SwapAsset
+) {
+  if (!hasTrustline(account, asset)) {
+    throw new Error(
+      `No trustline for ${asset.code}. Add a trustline to this asset in Freighter before trading it.`
+    );
+  }
+}
+
+/** Establishes a trustline (via a real signed `changeTrust` operation) so the connected wallet
+ *  can hold a non-native asset like testnet USDC. Required once before it can be sent or
+ *  received in a swap. */
+export async function addTrustline(
+  sourceAddress: string,
+  asset: SwapAsset,
+  networkPassphrase: string
+): Promise<string> {
+  if (!asset.issuer) throw new Error("Native XLM does not need a trustline");
+  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
+
+  const account = await loadAccountForSwap(server, sourceAddress);
+  const op = Operation.changeTrust({ asset: swapAssetToStellarAsset(asset) });
+  const hash = await submitSwap(server, account, op, networkPassphrase);
+  return hash;
+}
+
+async function submitSwap(
+  server: Horizon.Server,
+  account: Awaited<ReturnType<Horizon.Server["loadAccount"]>>,
+  op: xdr.Operation,
+  networkPassphrase: string
+): Promise<string> {
+  const transaction = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(op)
+    .setTimeout(30)
+    .build();
+
+  const signedXDR = await signWithFreighter(transaction.toXDR(), networkPassphrase);
+  const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
+
+  try {
+    const result = await server.submitTransaction(signedTx);
+    return result.hash;
+  } catch (e) {
+    const horizonError = e as { response?: { data?: { extras?: { result_codes?: unknown } } } };
+    const codes = horizonError.response?.data?.extras?.result_codes;
+    if (codes) {
+      throw new Error(`Swap failed: ${JSON.stringify(codes)}`);
+    }
+    throw e instanceof Error ? e : new Error(String(e));
+  }
+}
+
+/**
+ * Executes a real on-chain swap via a Stellar path payment (strict send): the connected
+ * Freighter wallet pays exactly `sendAmount` of `sendAsset`, routed through the DEX order book,
+ * and receives whatever `destAsset` amount the book fills at (must be >= destMin or the
+ * transaction fails on-chain — real slippage protection, not a UI-only check).
+ * Use this when the user is fixing how much they're *sending* (e.g. "sell exactly N XLM").
+ */
+export async function executeSwap(params: {
+  sourceAddress: string;
+  sendAsset: SwapAsset;
+  sendAmount: string;
+  destAsset: SwapAsset;
+  destMin: string;
+  networkPassphrase: string;
+}): Promise<SwapResult> {
+  const { sourceAddress, sendAsset, sendAmount, destAsset, destMin, networkPassphrase } = params;
+  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
+
+  const account = await loadAccountForSwap(server, sourceAddress);
+  // Sending a non-native asset requires already holding a trustline to it; receiving one
+  // requires trusting it too — check whichever side of this swap isn't native XLM.
+  assertHasTrustline(account, sendAsset);
+  assertHasTrustline(account, destAsset);
+
+  const op = Operation.pathPaymentStrictSend({
+    sendAsset: swapAssetToStellarAsset(sendAsset),
+    sendAmount,
+    destination: sourceAddress,
+    destAsset: swapAssetToStellarAsset(destAsset),
+    destMin,
+  });
+
+  const hash = await submitSwap(server, account, op, networkPassphrase);
+  return { hash, sourceAmount: sendAmount, destAsset };
+}
+
+/**
+ * Executes a real on-chain swap via a Stellar path payment (strict receive): the connected
+ * Freighter wallet receives exactly `destAmount` of `destAsset`, paying up to `sendMax` of
+ * `sendAsset` (fails on-chain if the book can't fill within that cap — real slippage
+ * protection). Use this when the user is fixing how much they want to *receive* (e.g.
+ * "buy exactly N XLM").
+ */
+export async function executeSwapStrictReceive(params: {
+  sourceAddress: string;
+  sendAsset: SwapAsset;
+  sendMax: string;
+  destAsset: SwapAsset;
+  destAmount: string;
+  networkPassphrase: string;
+}): Promise<SwapResult> {
+  const { sourceAddress, sendAsset, sendMax, destAsset, destAmount, networkPassphrase } = params;
+  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
+
+  const account = await loadAccountForSwap(server, sourceAddress);
+  assertHasTrustline(account, sendAsset);
+  assertHasTrustline(account, destAsset);
+
+  const op = Operation.pathPaymentStrictReceive({
+    sendAsset: swapAssetToStellarAsset(sendAsset),
+    sendMax,
+    destination: sourceAddress,
+    destAsset: swapAssetToStellarAsset(destAsset),
+    destAmount,
+  });
+
+  const hash = await submitSwap(server, account, op, networkPassphrase);
+  return { hash, sourceAmount: sendMax, destAsset };
+}

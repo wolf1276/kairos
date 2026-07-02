@@ -1,7 +1,35 @@
 import { NextResponse } from 'next/server';
 import { Asset, Keypair } from '@stellar/stellar-sdk';
 import KairosClient from '@wolf1276/kairos-sdk';
+import type { Delegation } from '@wolf1276/kairos-sdk';
 import { getContractConfig } from '../../lib/sdk';
+
+// `Delegation.salt`/`.nonce` are bigint and `Caveat.terms` is a Uint8Array — neither survives
+// `JSON.stringify` (bigint throws, Uint8Array serializes as a plain object). Convert to
+// JSON-safe primitives on the way out and back to the SDK's shape on the way in.
+type JsonSafeDelegation = Omit<Delegation, 'salt' | 'nonce' | 'caveats'> & {
+  salt: string;
+  nonce: string;
+  caveats: { enforcer: string; terms: number[] }[];
+};
+
+function serializeDelegation(d: Delegation): JsonSafeDelegation {
+  return {
+    ...d,
+    salt: d.salt.toString(),
+    nonce: d.nonce.toString(),
+    caveats: d.caveats.map((c) => ({ enforcer: c.enforcer, terms: Array.from(c.terms) })),
+  };
+}
+
+function deserializeDelegation(d: JsonSafeDelegation): Delegation {
+  return {
+    ...d,
+    salt: BigInt(d.salt),
+    nonce: BigInt(d.nonce),
+    caveats: d.caveats.map((c) => ({ enforcer: c.enforcer, terms: new Uint8Array(c.terms) })),
+  };
+}
 
 const FUNDER_SECRET = process.env.FUNDER_SECRET_KEY;
 const NETWORK = 'testnet';
@@ -115,7 +143,47 @@ export async function POST(request: Request) {
         });
 
         const hashStr = client.delegation.getHash(delegation);
-        return NextResponse.json({ success: true, hash: hashStr, delegator, delegation });
+        return NextResponse.json({
+          success: true,
+          hash: hashStr,
+          delegator,
+          delegation: serializeDelegation(delegation),
+        });
+      }
+
+      case 'LIST_DELEGATIONS': {
+        // `delegator` defaults to the funder's own address — CREATE_DELEGATION always sets
+        // delegator = funder.publicKey() today (see the comment there), so omitting the filter
+        // would otherwise return every delegator's hashes on the shared contract.
+        const delegatorFilter: string = body.delegator || funder.publicKey();
+        const hashes = await client.delegation.list(delegatorFilter);
+        const delegations = await Promise.all(
+          hashes.map(async (hash: string) => {
+            const status = await client.delegation.get(hash);
+            return { hash, disabled: status.disabled, delegator: delegatorFilter };
+          })
+        );
+        return NextResponse.json({ success: true, delegations });
+      }
+
+      case 'REVOKE_DELEGATION': {
+        // Same trust model as CREATE_DELEGATION: the delegator is always the funder address,
+        // so only FUNDER_SECRET_KEY can produce a signature disable_delegation will accept.
+        const { delegation } = body;
+        if (!delegation) {
+          return NextResponse.json({ error: 'delegation struct is required' }, { status: 400 });
+        }
+        const result = await client.delegation.revoke(deserializeDelegation(delegation), funder);
+        return NextResponse.json({ success: true, txHash: result.hash });
+      }
+
+      case 'ENABLE_DELEGATION': {
+        const { delegation } = body;
+        if (!delegation) {
+          return NextResponse.json({ error: 'delegation struct is required' }, { status: 400 });
+        }
+        const result = await client.delegation.enable(deserializeDelegation(delegation), funder);
+        return NextResponse.json({ success: true, txHash: result.hash });
       }
 
       case 'DELEGATION_STATUS': {
@@ -162,7 +230,24 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
+    // stellar-sdk's JSON-RPC client throws the raw `{ code, message, data }` error object
+    // from the RPC response (see `postObject` in @stellar/stellar-sdk/lib/rpc/jsonrpc.js),
+    // not an `Error` instance — String(plainObject) would otherwise collapse to
+    // "[object Object]" and hide the actual RPC failure reason.
+    const msg = extractErrorMessage(error);
     return NextResponse.json({ error: msg }, { status: 500 });
+  }
+}
+
+function extractErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === 'object' && 'message' in error) {
+    const m = (error as { message: unknown }).message;
+    if (typeof m === 'string') return m;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
   }
 }
