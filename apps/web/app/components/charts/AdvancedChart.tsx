@@ -65,7 +65,7 @@ export function AdvancedChart({
 }) {
   const { interval, setInterval, bi, chartType, setChartType, indicators, toggleIndicator } =
     useChartConfig();
-  const { candles, loading, error, connected } = useStreamingKlines(symbol, bi);
+  const { candles, loading, error } = useStreamingKlines(symbol, bi);
   const { drawings: savedDrawings, save: saveDrawings } = useDrawings(symbol);
   const { priceMap } = usePrices([symbol]);
   const { positions, trades, closePosition } = usePaperTrading(priceMap);
@@ -425,16 +425,6 @@ export function AdvancedChart({
             </span>
           )}
         </div>
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${
-            connected
-              ? "bg-success shadow-[0_0_6px_theme(colors.success)]"
-              : loading
-                ? "bg-warning"
-                : "bg-error"
-          }`}
-          title={connected ? "Live" : loading ? "Connecting\u2026" : "Disconnected"}
-        />
       </div>
 
       {/* Drawing toolbar */}
