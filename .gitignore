@@ -6,3 +6,5 @@ target/
 *.tsbuildinfo
 bun.lock
 .DS_Store
+progress.md
+phase.md
