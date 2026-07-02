@@ -202,8 +202,8 @@ export function useStreamingKlines(symbol: string, interval: string) {
       };
 
       ws.onclose = () => {
-        setConnected(false);
         if (connectId !== connectIdRef.current || !aliveRef.current) return;
+        setConnected(false);
         reconnectCountRef.current++;
         const delay = Math.min(
           1000 * Math.pow(2, reconnectCountRef.current - 1),

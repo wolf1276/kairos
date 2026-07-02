@@ -126,7 +126,6 @@ export function PriceChart({
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
       autoSize: true,
-      height,
       layout: {
         background: { type: ColorType.Solid, color: THEME.bg },
         textColor: THEME.text,
@@ -200,6 +199,13 @@ export function PriceChart({
       priceLineRef.current = null;
     };
   }, [height]);
+
+  // ── Time scale options on interval change ──
+  useEffect(() => {
+    chartRef.current?.timeScale().applyOptions({
+      secondsVisible: interval === "1m",
+    });
+  }, [interval]);
 
   // ── Reset on symbol or interval change ──
   useEffect(() => {
@@ -392,8 +398,8 @@ export function PriceChart({
       />
 
       {/* Chart */}
-      <div style={{ position: "relative", height }}>
-        <div ref={containerRef} style={{ width: "100%", height, borderRadius: 12, overflow: "hidden" }} />
+      <div style={{ position: "relative", minHeight: height }}>
+        <div ref={containerRef} style={{ width: "100%", minHeight: height, borderRadius: 12, overflow: "hidden" }} />
         {error && (
           <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg-elevated">
             <p className="text-sm text-text-muted">Failed to load chart &middot; {error}</p>
