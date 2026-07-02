@@ -69,7 +69,10 @@ export function useOrderBook(symbol: string | null) {
           const msg = JSON.parse(event.data);
           if (!msg.stream || !msg.data) return;
           const depth = msg.data as DepthData;
-          if (!depth.bids || !depth.asks) return;
+          if (!depth.bids || !depth.asks) {
+            console.log("[useOrderBook] unexpected format", event.data.slice(0, 300));
+            return;
+          }
 
           let bidTotal = 0;
           bidsRef.current = depth.bids

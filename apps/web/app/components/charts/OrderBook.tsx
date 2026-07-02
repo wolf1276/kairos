@@ -32,7 +32,7 @@ export function OrderBook({ symbol, height: minH = 200 }: { symbol: string | nul
       </div>
 
       {/* Asks */}
-      <div className="flex flex-col-reverse overflow-hidden">
+      <div className="flex flex-col overflow-hidden">
         {reversedAsks.map((level) => {
           const barWidth = maxTotal > 0 ? (level.total / maxTotal) * 100 : 0;
           return (
@@ -67,7 +67,7 @@ export function OrderBook({ symbol, height: minH = 200 }: { symbol: string | nul
           return (
             <div key={level.price} className="relative flex items-center px-2 py-[1px]">
               <div
-                className="absolute right-0 top-0 bottom-0 bg-success/8"
+                className="absolute left-0 top-0 bottom-0 bg-success/8"
                 style={{ width: `${barWidth}%` }}
               />
               <span className="relative z-[1] font-mono text-[9px] text-success tabular-nums">
