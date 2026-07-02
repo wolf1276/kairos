@@ -18,7 +18,6 @@ import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 import { useChartConfig } from "@/app/hooks/useChartConfig";
 import { ChartToolbar } from "@/app/components/charts/ChartToolbar";
 import { DrawingManager } from "@/app/components/charts/drawing-tools/DrawingManager";
-import { DrawingToolbar } from "@/app/components/charts/drawing-tools/ui/DrawingToolbar";
 import { useDrawings } from "@/app/hooks/useDrawings";
 import { useKeyboardShortcuts } from "@/app/hooks/useKeyboardShortcuts";
 import { usePrices } from "@/app/hooks/usePrices";
@@ -85,9 +84,16 @@ export function AdvancedChart({
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [showOrderBook, setShowOrderBook] = useState(true);
   const [showTradingPanel, setShowTradingPanel] = useState(true);
-  const [canUndo, setCanUndo] = useState(false);
-  const [canRedo, setCanRedo] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  const TOOL_LABELS: Record<ToolMode, string> = {
+    select: "",
+    trend_line: "Trend",
+    horizontal_line: "H-Line",
+    vertical_line: "V-Line",
+    ray_line: "Ray",
+    fib_retracement: "Fib",
+    text: "Text",
+  };
 
   // Derived candlestick data
   const { data, first, last, changePct, trendUp } = useMemo(() => {
@@ -217,12 +223,7 @@ export function AdvancedChart({
     const mgr = new DrawingManager();
     mgrRef.current = mgr;
     mgr.attach(chart, mainSeries, containerRef.current, {
-      onChange: (drawings) => {
-        saveDrawings(drawings);
-        setCanUndo(mgr.canUndo);
-        setCanRedo(mgr.canRedo);
-      },
-      onSelect: (id) => setSelectedId(id),
+      onChange: (drawings) => saveDrawings(drawings),
       onRequestText: (callback) => {
         const text = window.prompt("Enter annotation text:");
         if (text) callback(text);
@@ -394,11 +395,11 @@ export function AdvancedChart({
       setToolMode(mode);
       mgrRef.current?.setToolMode(mode);
     },
-    () => { const m = mgrRef.current; m?.undo(); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); },
-    () => { const m = mgrRef.current; m?.redo(); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); },
+    () => mgrRef.current?.undo(),
+    () => mgrRef.current?.redo(),
     () => {
       const id = mgrRef.current?.getSelectedId();
-      if (id) { const m = mgrRef.current; m?.removeDrawing(id); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); }
+      if (id) mgrRef.current?.removeDrawing(id);
     },
     () => {
       setToolMode("select");
@@ -424,28 +425,12 @@ export function AdvancedChart({
               {formatPct(changePct)}
             </span>
           )}
+          {toolMode !== "select" && (
+            <span className="ml-1 rounded border border-white/10 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-wider text-text-muted">
+              {TOOL_LABELS[toolMode]}
+            </span>
+          )}
         </div>
-      </div>
-
-      {/* Drawing toolbar */}
-      <div className="mb-2">
-        <DrawingToolbar
-          toolMode={toolMode}
-          onToolChange={(mode) => {
-            setToolMode(mode);
-            mgrRef.current?.setToolMode(mode);
-          }}
-          onUndo={() => { const m = mgrRef.current; m?.undo(); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); }}
-          onRedo={() => { const m = mgrRef.current; m?.redo(); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); }}
-          onClearAll={() => { const m = mgrRef.current; m?.clearAll(); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); }}
-          onDeleteSelected={() => {
-            const id = mgrRef.current?.getSelectedId();
-            if (id) { const m = mgrRef.current; m?.removeDrawing(id); setCanUndo(m?.canUndo ?? false); setCanRedo(m?.canRedo ?? false); }
-          }}
-          canUndo={canUndo}
-          canRedo={canRedo}
-          hasSelection={selectedId !== null}
-        />
       </div>
 
       {/* Instrument toolbar */}
