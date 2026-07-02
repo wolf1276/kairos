@@ -48,6 +48,12 @@ export async function POST(request: Request) {
             ...proposal,
             display,
             timeframe,
+            market: {
+                price: marketSnapshot.price,
+                change24h: marketSnapshot.change24h,
+                volume24h: marketSnapshot.volume24h,
+                indicators: marketSnapshot.indicators,
+            },
         });
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);

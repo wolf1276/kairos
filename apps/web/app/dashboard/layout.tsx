@@ -11,6 +11,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/portfolio", label: "Portfolio", exact: false },
   { href: "/dashboard/delegations", label: "Delegations", exact: false },
   { href: "/dashboard/history", label: "History", exact: false },
+  { href: "/settings", label: "Settings", exact: true },
 ] as const;
 
 export default function DashboardLayout({

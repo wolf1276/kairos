@@ -1,45 +1,60 @@
-const TICKER_DATA = [
-  { pair: "XLM/USD", price: "0.1245", change: "+2.34" },
-  { pair: "BTC/USD", price: "67,432", change: "+0.87" },
-  { pair: "ETH/USD", price: "3,521", change: "-1.23" },
-  { pair: "XRP/USD", price: "0.5234", change: "+1.56" },
-  { pair: "SOL/USD", price: "143.20", change: "+3.45" },
-  { pair: "DOGE/USD", price: "0.0892", change: "-0.45" },
-  { pair: "AQUA/USD", price: "0.0023", change: "+5.67" },
-  { pair: "YBX/USD", price: "0.8912", change: "+0.12" },
-  { pair: "USDC/USD", price: "1.0001", change: "+0.01" },
+"use client";
+
+import { usePrices } from "@/app/hooks/usePrices";
+import { baseAsset, formatPrice, formatPct } from "@/app/lib/format";
+
+const TICKER_SYMBOLS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "XLMUSDT",
+  "SOLUSDT",
+  "ADAUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
 ];
 
 export default function TerminalTicker() {
-  const items = [...TICKER_DATA, ...TICKER_DATA]; // duplicate for seamless loop
+  const { tickers, loading } = usePrices(TICKER_SYMBOLS, 15000);
+
+  const items = TICKER_SYMBOLS.map((s) => tickers[s]).filter(Boolean);
+  // Duplicate for a seamless marquee loop.
+  const loop = items.length > 0 ? [...items, ...items] : [];
 
   return (
     <div className="relative overflow-hidden border-b border-border bg-bg-card/80">
-      {/* Gradient fades on edges */}
       <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-16 bg-gradient-to-r from-bg-primary to-transparent" />
       <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-16 bg-gradient-to-l from-bg-primary to-transparent" />
 
-      <div className="flex animate-ticker py-2" aria-hidden="true">
-        {items.map((item, i) => (
-          <span
-            key={i}
-            className="mx-6 flex shrink-0 items-center gap-3 font-mono text-[13px] tracking-wide"
-          >
-            <span className="text-text-muted">{item.pair}</span>
-            <span className="text-text-primary">${item.price}</span>
-            <span
-              className={
-                item.change.startsWith("+")
-                  ? "text-success"
-                  : "text-error"
-              }
-            >
-              {item.change}%
-            </span>
-            <span className="text-border mx-2">|</span>
+      {loading && items.length === 0 ? (
+        <div className="flex py-2">
+          <span className="mx-6 font-mono text-[13px] text-text-muted">
+            Loading live prices…
           </span>
-        ))}
-      </div>
+        </div>
+      ) : (
+        <div className="flex animate-ticker py-2" aria-hidden="true">
+          {loop.map((item, i) => {
+            const up = item.change24h >= 0;
+            return (
+              <span
+                key={`${item.symbol}-${i}`}
+                className="mx-6 flex shrink-0 items-center gap-3 font-mono text-[13px] tracking-wide"
+              >
+                <span className="text-text-muted">{baseAsset(item.symbol)}/USD</span>
+                <span className="text-text-primary tabular-nums">
+                  {formatPrice(item.price)}
+                </span>
+                <span
+                  className={`tabular-nums ${up ? "text-success" : "text-error"}`}
+                >
+                  {formatPct(item.change24h)}
+                </span>
+                <span className="mx-2 text-border">|</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
