@@ -8,15 +8,22 @@ export type Candle = GQLCandle;
 type RawKline = [number, string, string, string, string, string, number];
 
 const BINANCE_CDN = "https://data-api.binance.vision";
+const BINANCE_API = "https://api.binance.com";
 
-async function fetchKlinesFallback(
+async function fetchKlinesHTTP(
   symbol: string,
   interval: string,
   limit: number,
 ): Promise<Candle[]> {
   const params = `symbol=${symbol.toUpperCase()}&interval=${interval}&limit=${limit}`;
-  const res = await fetch(`${BINANCE_CDN}/api/v3/klines?${params}`);
-  if (!res.ok) throw new Error(`CDN klines: HTTP ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetch(`${BINANCE_CDN}/api/v3/klines?${params}`);
+    if (!res.ok) throw new Error(`CDN klines: HTTP ${res.status}`);
+  } catch {
+    res = await fetch(`${BINANCE_API}/api/v3/klines?${params}`);
+    if (!res.ok) throw new Error(`Binance API klines: HTTP ${res.status}`);
+  }
   const raw: RawKline[] = await res.json();
   return raw.map((c) => ({
     openTime: c[0],
@@ -64,7 +71,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
   const aliveRef = useRef(true);
   const throttleRef = useRef(0);
 
-  // Initial fetch — GraphQL, fallback to direct Binance CDN
+  // Initial fetch — direct Binance CDN first, fall back to GraphQL
   useEffect(() => {
     if (!symbol || !interval) return;
     let alive = true;
@@ -74,7 +81,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
       setError(null);
       try {
         try {
-          const data = await fetchCandlesGQL(symbol, interval, 120);
+          const data = await fetchKlinesHTTP(symbol, interval, 120);
           if (alive) {
             candlesRef.current = data;
             setCandles(data);
@@ -82,7 +89,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
           }
           return;
         } catch {}
-        const data = await fetchKlinesFallback(symbol, interval, 120);
+        const data = await fetchCandlesGQL(symbol, interval, 120);
         if (alive) {
           candlesRef.current = data;
           setCandles(data);
@@ -198,14 +205,14 @@ export function useStreamingKlines(symbol: string, interval: string) {
     const fetchCandles = async () => {
       try {
         try {
-          const data = await fetchCandlesGQL(symbol, interval, 120);
+          const data = await fetchKlinesHTTP(symbol, interval, 120);
           if (!alive) return;
           candlesRef.current = data;
           setCandles(data);
           setError(null);
           return;
         } catch {}
-        const data = await fetchKlinesFallback(symbol, interval, 120);
+        const data = await fetchCandlesGQL(symbol, interval, 120);
         if (!alive) return;
         candlesRef.current = data;
         setCandles(data);

@@ -7,6 +7,7 @@ import { fetchTickersGQL } from "@/app/lib/graphql/client";
 export type { WSTicker as Ticker, WSTickerMap as TickerMap, WSStatus };
 
 const BINANCE_CDN = "https://data-api.binance.vision";
+const BINANCE_API = "https://api.binance.com";
 
 interface BinanceRawTicker {
   symbol: string;
@@ -18,10 +19,16 @@ interface BinanceRawTicker {
   closeTime: number;
 }
 
-async function fetchTickersFallback(syms: string[]): Promise<WSTicker[]> {
-  const encoded = JSON.stringify(syms.map((s) => s.toUpperCase()));
-  const res = await fetch(`${BINANCE_CDN}/api/v3/ticker/24hr?symbols=${encoded}`);
-  if (!res.ok) throw new Error(`CDN tickers: HTTP ${res.status}`);
+async function fetchTickersHTTP(syms: string[]): Promise<WSTicker[]> {
+  const encoded = encodeURIComponent(JSON.stringify(syms.map((s) => s.toUpperCase())));
+  let res: Response;
+  try {
+    res = await fetch(`${BINANCE_CDN}/api/v3/ticker/24hr?symbols=${encoded}`);
+    if (!res.ok) throw new Error(`CDN tickers: HTTP ${res.status}`);
+  } catch {
+    res = await fetch(`${BINANCE_API}/api/v3/ticker/24hr?symbols=${encoded}`);
+    if (!res.ok) throw new Error(`Binance API tickers: HTTP ${res.status}`);
+  }
   const raw: BinanceRawTicker[] = await res.json();
   return raw.map((t) => ({
     symbol: t.symbol,
@@ -73,9 +80,9 @@ export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
         const syms = key.split(",");
         let arr: WSTicker[];
         try {
-          arr = await fetchTickersGQL(syms);
+          arr = await fetchTickersHTTP(syms);
         } catch {
-          arr = await fetchTickersFallback(syms);
+          arr = await fetchTickersGQL(syms);
         }
         if (!aliveRef.current) return;
         const map: WSTickerMap = {};
