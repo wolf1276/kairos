@@ -111,17 +111,31 @@ export function PriceChart({ symbol, height = 440 }: { symbol: string; height?: 
     };
   }, [height]);
 
+  const prevDataRef = useRef<CandlestickData[]>([]);
+
   // Reset fitContent when symbol or interval changes
-  useEffect(() => { fittedRef.current = false; }, [symbol, bi]);
+  useEffect(() => {
+    fittedRef.current = false;
+    prevDataRef.current = [];
+  }, [symbol, bi]);
 
   // Update data on the existing series
   useEffect(() => {
     if (!seriesRef.current || data.length === 0) return;
-    seriesRef.current.setData(data);
-    if (!fittedRef.current) {
-      chartRef.current?.timeScale().fitContent();
-      fittedRef.current = true;
+    const prev = prevDataRef.current;
+    const isNewSeq = prev.length > 0 && prev[0].time !== data[0].time;
+
+    if (prev.length === 0 || isNewSeq) {
+      seriesRef.current.setData(data);
+      if (!fittedRef.current) {
+        chartRef.current?.timeScale().fitContent();
+        fittedRef.current = true;
+      }
+    } else {
+      seriesRef.current.update(data[data.length - 1]);
     }
+
+    prevDataRef.current = data;
   }, [data]);
 
   return (
