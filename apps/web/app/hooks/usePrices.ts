@@ -6,6 +6,34 @@ import { fetchTickersGQL } from "@/app/lib/graphql/client";
 
 export type { WSTicker as Ticker, WSTickerMap as TickerMap, WSStatus };
 
+const BINANCE_CDN = "https://data-api.binance.vision";
+
+interface BinanceRawTicker {
+  symbol: string;
+  lastPrice: string;
+  priceChangePercent: string;
+  highPrice: string;
+  lowPrice: string;
+  quoteVolume: string;
+  closeTime: number;
+}
+
+async function fetchTickersFallback(syms: string[]): Promise<WSTicker[]> {
+  const encoded = JSON.stringify(syms.map((s) => s.toUpperCase()));
+  const res = await fetch(`${BINANCE_CDN}/api/v3/ticker/24hr?symbols=${encoded}`);
+  if (!res.ok) throw new Error(`CDN tickers: HTTP ${res.status}`);
+  const raw: BinanceRawTicker[] = await res.json();
+  return raw.map((t) => ({
+    symbol: t.symbol,
+    price: parseFloat(t.lastPrice),
+    change24h: parseFloat(t.priceChangePercent),
+    high24h: parseFloat(t.highPrice),
+    low24h: parseFloat(t.lowPrice),
+    volume24h: parseFloat(t.quoteVolume),
+    eventTime: t.closeTime,
+  }));
+}
+
 export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
   const key = useMemo(() => [...symbols].sort().join(","), [symbols]);
   const { tickers: wsTickers, tickersRef, status: wsStatus } = useBinanceWebSocket(symbols);
@@ -42,7 +70,13 @@ export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
 
     const fetchPrices = async () => {
       try {
-        const arr = await fetchTickersGQL(key.split(","));
+        const syms = key.split(",");
+        let arr: WSTicker[];
+        try {
+          arr = await fetchTickersGQL(syms);
+        } catch {
+          arr = await fetchTickersFallback(syms);
+        }
         if (!aliveRef.current) return;
         const map: WSTickerMap = {};
         for (const t of arr) map[t.symbol] = t;
