@@ -1,9 +1,10 @@
 "use client";
 
-import { Suspense, useMemo, useState, useCallback } from "react";
+import { Suspense, useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import DelegationKit from "@/app/components/DelegationKit";
 import { PriceChart } from "@/app/components/charts/PriceChart";
+import { PriceViewPanel } from "@/app/components/panels/PriceViewPanel";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Segmented } from "@/app/components/ui/Segmented";
@@ -56,12 +57,28 @@ function TradeInner() {
   const [symbol, setSymbol] = useState(
     SYMBOLS.includes(initialSymbol) ? initialSymbol : "XLMUSDT"
   );
-  const { tickers, priceMap } = usePrices(SYMBOLS, 10000);
+  const { tickers, priceMap, wsStatus, getLatestPrice } = usePrices(SYMBOLS, 10000);
   const { balance, positions, buy, sell } = usePaperTrading(priceMap);
 
   const ticker = tickers[symbol];
-  const livePrice = priceMap[symbol] ?? ticker?.price ?? 0;
+  // Read from WS ref for instant accuracy, fall back to throttle-safe state
+  const livePrice = getLatestPrice(symbol) ?? priceMap[symbol] ?? ticker?.price ?? 0;
   const heldPosition = positions.find((p) => p.symbol === symbol);
+
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
+  // Price flash animation on change
+  const prevPriceRef = useRef(livePrice);
+  const [priceFlash, setPriceFlash] = useState<"up" | "down" | null>(null);
+  useEffect(() => {
+    if (livePrice === prevPriceRef.current) return;
+    const dir = livePrice > prevPriceRef.current ? "up" : "down";
+    prevPriceRef.current = livePrice;
+    setPriceFlash(dir);
+    const t = setTimeout(() => setPriceFlash(null), 300);
+    return () => clearTimeout(t);
+  }, [livePrice]);
 
   // ── Feedback banner ──
   const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
@@ -83,13 +100,14 @@ function TradeInner() {
   const estCost = amountNum * livePrice;
 
   const handleManualTrade = () => {
-    if (amountNum <= 0 || livePrice <= 0) return;
+    const execPrice = getLatestPrice(symbol) || livePrice;
+    if (amountNum <= 0 || execPrice <= 0) return;
     try {
-      if (side === "BUY") buy(symbol, amountNum, livePrice);
-      else sell(symbol, amountNum, livePrice);
+      if (side === "BUY") buy(symbol, amountNum, execPrice);
+      else sell(symbol, amountNum, execPrice);
       flash(
         "ok",
-        `${side} ${formatNumber(amountNum)} ${baseAsset(symbol)} @ ${formatPrice(livePrice)}`
+        `${side} ${formatNumber(amountNum)} ${baseAsset(symbol)} @ ${formatPrice(execPrice)}`
       );
       setAmount("");
     } catch (e) {
@@ -132,7 +150,7 @@ function TradeInner() {
 
   const handleExecuteProposal = () => {
     if (!proposal || proposal.action === "HOLD") return;
-    const price = proposal.market?.price ?? livePrice;
+    const price = proposal.market?.price ?? getLatestPrice(symbol) ?? livePrice;
     const qty = Math.abs(proposal.amount);
     if (qty <= 0 || price <= 0) {
       flash("err", "Invalid proposal amount or price");
@@ -214,44 +232,17 @@ function TradeInner() {
         {/* ── Main column ── */}
         <div className="space-y-6 lg:col-span-2">
           <Card>
-            <CardBody>
+            <CardBody className="p-0">
               <PriceChart symbol={symbol} />
             </CardBody>
           </Card>
 
-          {/* Live market stats */}
-          <Card>
-            <CardHeader
-              title="Market Stats"
-              action={<Badge tone="success" dot>Live</Badge>}
-            />
-            <CardBody className="pt-3">
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-                <Stat label="Price" value={ticker ? formatPrice(ticker.price) : "—"} />
-                <Stat
-                  label="24h Change"
-                  value={ticker ? formatPct(ticker.change24h) : "—"}
-                  className={
-                    ticker ? (ticker.change24h >= 0 ? "text-success" : "text-error") : ""
-                  }
-                />
-                <Stat label="24h High" value={ticker ? formatPrice(ticker.high24h) : "—"} />
-                <Stat label="24h Low" value={ticker ? formatPrice(ticker.low24h) : "—"} />
-              </div>
-              {ind && (
-                <div className="mt-3 grid grid-cols-2 gap-3 border-t border-border pt-3 sm:grid-cols-4">
-                  <Stat label="RSI (14)" value={ind.rsi.toFixed(1)} />
-                  <Stat label="EMA 20" value={formatPrice(ind.ema20)} />
-                  <Stat label="EMA 50" value={formatPrice(ind.ema50)} />
-                  <Stat
-                    label="MACD Hist"
-                    value={ind.macd.histogram.toFixed(4)}
-                    className={ind.macd.histogram >= 0 ? "text-success" : "text-error"}
-                  />
-                </div>
-              )}
-            </CardBody>
-          </Card>
+          <PriceViewPanel
+            symbol={symbol}
+            ticker={ticker}
+            wsStatus={wsStatus}
+            indicators={ind}
+          />
 
           {/* AI analysis */}
           <Card>
@@ -383,10 +374,29 @@ function TradeInner() {
               />
 
               <div className="flex items-center justify-between rounded-lg bg-bg-elevated px-3 py-2">
-                <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
-                  {baseAsset(symbol)} Price
-                </span>
-                <span className="font-mono text-sm tabular-nums">
+                <div>
+                  <span className="font-mono text-[11px] uppercase tracking-widest text-text-muted">
+                    {baseAsset(symbol)} Price
+                  </span>
+                  <p className="font-mono text-[9px] text-text-muted/60" suppressHydrationWarning>
+                    {mounted
+                      ? `${new Date().toLocaleTimeString("en-US", {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                          second: "2-digit",
+                        })}.${String(Date.now() % 1000).padStart(3, "0")}`
+                      : "—"}
+                  </p>
+                </div>
+                <span
+                  className={`font-mono text-sm tabular-nums transition-colors duration-200 ${
+                    priceFlash === "up"
+                      ? "text-success"
+                      : priceFlash === "down"
+                        ? "text-error"
+                        : ""
+                  }`}
+                >
                   {formatPrice(livePrice)}
                 </span>
               </div>

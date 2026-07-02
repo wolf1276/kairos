@@ -36,7 +36,7 @@ export async function GET(request: Request) {
             timeout: 6000,
         });
 
-        const list = Array.isArray(res.data) ? res.data : [res.data];
+        const list = Array.isArray(res.data) ? res.data : [res.data].filter(Boolean);
         const tickers: Ticker[] = list.map((t) => ({
             symbol: t.symbol,
             price: parseFloat(t.lastPrice),

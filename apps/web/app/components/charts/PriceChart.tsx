@@ -1,27 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import {
-  Area,
-  AreaChart,
-  CartesianGrid,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createChart, ColorType, CandlestickSeries, type IChartApi, type ISeriesApi, type CandlestickData } from "lightweight-charts";
 import { Segmented } from "@/app/components/ui/Segmented";
 import { formatPrice, formatPct } from "@/app/lib/format";
-
-interface Candle {
-  openTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  closeTime: number;
-}
+import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 
 type Interval = "15m" | "1h" | "4h" | "1d";
 
@@ -32,55 +15,114 @@ const INTERVALS: { value: Interval; label: string }[] = [
   { value: "1d", label: "1D" },
 ];
 
-export function PriceChart({ symbol, height = 288 }: { symbol: string; height?: number }) {
+const BINANCE_INTERVAL: Record<Interval, string> = {
+  "15m": "15m",
+  "1h": "1h",
+  "4h": "4h",
+  "1d": "1d",
+};
+
+const THEME = {
+  bg: "#121216",
+  text: "#6b6a66",
+  grid: "#1e1e24",
+  up: "#34d399",
+  down: "#ef4444",
+  wickUp: "#34d399",
+  wickDown: "#ef4444",
+};
+
+export function PriceChart({ symbol, height = 440 }: { symbol: string; height?: number }) {
   const [interval, setInterval_] = useState<Interval>("1h");
-  const [candles, setCandles] = useState<Candle[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const bi = BINANCE_INTERVAL[interval];
 
-  useEffect(() => {
-    let alive = true;
+  const { candles, loading, error, connected } = useStreamingKlines(symbol, bi);
 
-    const fetchCandles = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(
-          `/api/klines?symbol=${symbol}&interval=${interval}&limit=120`
-        );
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: Candle[] = await res.json();
-        if (alive) setCandles(data);
-      } catch (e) {
-        if (alive) setError(e instanceof Error ? e.message : String(e));
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const fittedRef = useRef(false);
 
-    fetchCandles();
-    const id = window.setInterval(fetchCandles, 30000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, [symbol, interval]);
-
-  const { data, first, last, changePct, up } = useMemo(() => {
-    const d = candles.map((c) => ({ t: c.openTime, price: c.close }));
-    const f = d[0]?.price ?? 0;
-    const l = d[d.length - 1]?.price ?? 0;
+  const { data, first, last, changePct, trendUp } = useMemo(() => {
+    const d: CandlestickData[] = candles
+      .map((c) => ({
+        time: Math.floor(c.openTime / 1000) as CandlestickData["time"],
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }))
+      .sort((a, b) => Number(a.time) - Number(b.time));
+    const f = d[0]?.close ?? 0;
+    const l = d[d.length - 1]?.close ?? 0;
     const chg = f ? ((l - f) / f) * 100 : 0;
-    return { data: d, first: f, last: l, changePct: chg, up: l >= f };
+    const refIdx = d.length >= 2 ? d.length - 2 : d.length - 1;
+    const trendPrice = d[refIdx]?.close ?? l;
+    return { data: d, first: f, last: l, changePct: chg, trendUp: trendPrice >= f };
   }, [candles]);
 
-  const stroke = up ? "#34d399" : "#ef4444";
-  const timeFmt = (t: number) =>
-    new Date(t).toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: interval === "1d" ? undefined : "2-digit",
-      ...(interval === "1d" ? { month: "short", day: "numeric" } : {}),
+  // Create chart + series once
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const chart = createChart(containerRef.current, {
+      autoSize: true,
+      height,
+      layout: {
+        background: { type: ColorType.Solid, color: THEME.bg },
+        textColor: THEME.text,
+        attributionLogo: false,
+      },
+      grid: {
+        vertLines: { color: THEME.grid },
+        horzLines: { color: THEME.grid },
+      },
+      crosshair: {
+        vertLine: { color: "#6b6a66", width: 1, style: 2, labelBackgroundColor: THEME.grid },
+        horzLine: { color: "#6b6a66", width: 1, style: 2, labelBackgroundColor: THEME.grid },
+      },
+      timeScale: {
+        borderColor: THEME.grid,
+        timeVisible: true,
+        secondsVisible: true,
+        rightOffset: 2,
+      },
+      rightPriceScale: {
+        borderColor: THEME.grid,
+      },
+      handleScroll: true,
+      handleScale: true,
     });
+
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: THEME.up,
+      downColor: THEME.down,
+      wickUpColor: THEME.wickUp,
+      wickDownColor: THEME.wickDown,
+      borderVisible: false,
+    });
+
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    return () => {
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, [height]);
+
+  // Reset fitContent when symbol or interval changes
+  useEffect(() => { fittedRef.current = false; }, [symbol, bi]);
+
+  // Update data on the existing series
+  useEffect(() => {
+    if (!seriesRef.current || data.length === 0) return;
+    seriesRef.current.setData(data);
+    if (!fittedRef.current) {
+      chartRef.current?.timeScale().fitContent();
+      fittedRef.current = true;
+    }
+  }, [data]);
 
   return (
     <div>
@@ -96,7 +138,7 @@ export function PriceChart({ symbol, height = 288 }: { symbol: string; height?: 
             {!!first && (
               <span
                 className={`font-mono text-xs font-medium tabular-nums ${
-                  up ? "text-success" : "text-error"
+                  trendUp ? "text-success" : "text-error"
                 }`}
               >
                 {formatPct(changePct)}
@@ -104,76 +146,38 @@ export function PriceChart({ symbol, height = 288 }: { symbol: string; height?: 
             )}
           </div>
         </div>
-        <Segmented
-          size="sm"
-          options={INTERVALS}
-          value={interval}
-          onChange={setInterval_}
-          className="shrink-0"
-        />
+        <div className="flex items-center gap-3">
+          <span
+            className={`inline-block h-2 w-2 rounded-full ${
+              connected
+                ? "bg-success shadow-[0_0_6px_theme(colors.success)]"
+                : loading
+                  ? "bg-warning"
+                  : "bg-error"
+            }`}
+            title={connected ? "Live" : loading ? "Connecting…" : "Disconnected"}
+          />
+          <Segmented
+            size="sm"
+            options={INTERVALS}
+            value={interval}
+            onChange={setInterval_}
+            className="shrink-0"
+          />
+        </div>
       </div>
 
-      {error ? (
-        <div
-          className="flex items-center justify-center rounded-xl bg-bg-elevated"
-          style={{ height }}
-        >
-          <p className="text-sm text-text-muted">Failed to load chart · {error}</p>
-        </div>
-      ) : loading && data.length === 0 ? (
-        <div
-          className="animate-pulse rounded-xl bg-bg-elevated"
-          style={{ height }}
-        />
-      ) : (
-        <ResponsiveContainer width="100%" height={height}>
-          <AreaChart data={data} margin={{ top: 4, right: 4, left: 4, bottom: 0 }}>
-            <defs>
-              <linearGradient id={`grad-${symbol}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={stroke} stopOpacity={0.28} />
-                <stop offset="100%" stopColor={stroke} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            <CartesianGrid stroke="#2a2a2e" strokeDasharray="3 3" vertical={false} />
-            <XAxis
-              dataKey="t"
-              tickFormatter={timeFmt}
-              tick={{ fill: "#6b6a66", fontSize: 10, fontFamily: "monospace" }}
-              tickLine={false}
-              axisLine={false}
-              minTickGap={48}
-            />
-            <YAxis
-              domain={["auto", "auto"]}
-              tick={{ fill: "#6b6a66", fontSize: 10, fontFamily: "monospace" }}
-              tickLine={false}
-              axisLine={false}
-              width={56}
-              tickFormatter={(v) => formatPrice(v).replace("$", "")}
-              orientation="right"
-            />
-            <Tooltip
-              contentStyle={{
-                background: "#1e1e24",
-                border: "1px solid #2a2a2e",
-                borderRadius: 12,
-                fontSize: 12,
-              }}
-              labelStyle={{ color: "#a8a6a2" }}
-              labelFormatter={(t) => new Date(t as number).toLocaleString()}
-              formatter={(v) => [formatPrice(Number(v)), "Price"]}
-            />
-            <Area
-              type="monotone"
-              dataKey="price"
-              stroke={stroke}
-              strokeWidth={2}
-              fill={`url(#grad-${symbol})`}
-              isAnimationActive={false}
-            />
-          </AreaChart>
-        </ResponsiveContainer>
-      )}
+      <div style={{ position: "relative", height }}>
+        <div ref={containerRef} style={{ height, borderRadius: 12, overflow: "hidden" }} />
+        {error && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg-elevated">
+            <p className="text-sm text-text-muted">Failed to load chart · {error}</p>
+          </div>
+        )}
+        {loading && data.length === 0 && !error && (
+          <div className="absolute inset-0 z-10 animate-pulse rounded-xl bg-bg-elevated" />
+        )}
+      </div>
     </div>
   );
 }
