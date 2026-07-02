@@ -4,6 +4,10 @@ import { IndicatorEngine } from './IndicatorEngine';
 
 const REQUEST_INTERVAL_MS = 1000;
 const MAX_CANDLES = 500;
+const CACHE_TTL = 30_000;
+
+type CacheEntry = { data: unknown; expiry: number };
+const responseCache = new Map<string, CacheEntry>();
 
 export class BinanceOracle {
     private readonly client: AxiosInstance;
@@ -13,7 +17,7 @@ export class BinanceOracle {
     constructor(timeframe?: string) {
         this.client = axios.create({
             baseURL: 'https://api.binance.com/api/v3',
-            timeout: 5000,
+            timeout: 10000,
         });
         this.timeframe = timeframe || '1m';
     }
@@ -54,40 +58,65 @@ export class BinanceOracle {
         if (!symbol) {
             throw new Error('BinanceOracle.getPrice: symbol is required');
         }
-        await this.rateLimit();
-        try {
+        const cacheKey = `price:${symbol}`;
+        const cached = responseCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiry) return cached.data as PriceResponse;
+
+        return this.fetchWithRetry(async () => {
+            await this.rateLimit();
             const response = await this.client.get<PriceResponse>('/ticker/price', {
                 params: { symbol: symbol.toUpperCase() }
             });
+            responseCache.set(cacheKey, { data: response.data, expiry: Date.now() + CACHE_TTL });
             return response.data;
-        } catch (error) {
-            this.handleError(error, `getPrice(${symbol})`);
-        }
+        }, `getPrice(${symbol})`);
     }
 
     async getTicker(symbol: string): Promise<TickerResponse> {
         if (!symbol) {
             throw new Error('BinanceOracle.getTicker: symbol is required');
         }
-        await this.rateLimit();
-        try {
+        const cacheKey = `ticker:${symbol}`;
+        const cached = responseCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiry) return cached.data as TickerResponse;
+
+        return this.fetchWithRetry(async () => {
+            await this.rateLimit();
             const response = await this.client.get<TickerResponse>('/ticker/24hr', {
                 params: { symbol: symbol.toUpperCase() }
             });
+            responseCache.set(cacheKey, { data: response.data, expiry: Date.now() + CACHE_TTL });
             return response.data;
-        } catch (error) {
-            this.handleError(error, `getTicker(${symbol})`);
+        }, `getTicker(${symbol})`);
+    }
+
+    private async fetchWithRetry<T>(fn: () => Promise<T>, context: string): Promise<T> {
+        const maxAttempts = 2;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                return await fn();
+            } catch (error) {
+                if (attempt === maxAttempts) {
+                    this.handleError(error, context);
+                }
+                await new Promise(r => setTimeout(r, 500 * attempt));
+            }
         }
+        throw new Error(`${context}: exhausted retries`);
     }
 
     async getCandles(symbol: string, interval?: string, limit?: number): Promise<Candle[]> {
         if (!symbol) {
             throw new Error('BinanceOracle.getCandles: symbol is required');
         }
-        await this.rateLimit();
         const useInterval = interval ?? this.timeframe;
         const useLimit = Math.min(limit ?? 200, MAX_CANDLES);
-        try {
+        const cacheKey = `candles:${symbol}:${useInterval}:${useLimit}`;
+        const cached = responseCache.get(cacheKey);
+        if (cached && Date.now() < cached.expiry) return cached.data as Candle[];
+
+        return this.fetchWithRetry(async () => {
+            await this.rateLimit();
             const response = await this.client.get<RawCandle[]>('/klines', {
                 params: {
                     symbol: symbol.toUpperCase(),
@@ -95,7 +124,7 @@ export class BinanceOracle {
                     limit: useLimit,
                 }
             });
-            return response.data.map((c) => ({
+            const candles = response.data.map((c) => ({
                 openTime: c[0],
                 open: parseFloat(c[1]),
                 high: parseFloat(c[2]),
@@ -104,9 +133,9 @@ export class BinanceOracle {
                 volume: parseFloat(c[5]),
                 closeTime: c[6]
             }));
-        } catch (error) {
-            this.handleError(error, `getCandles(${symbol}, ${useInterval}, ${useLimit})`);
-        }
+            responseCache.set(cacheKey, { data: candles, expiry: Date.now() + CACHE_TTL });
+            return candles;
+        }, `getCandles(${symbol}, ${useInterval}, ${useLimit})`);
     }
 
     async getMarketSnapshot(symbol: string, interval?: string): Promise<MarketSnapshot> {

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, startTransition } from "react";
 import { useBinanceWebSocket, type WSTicker, type WSTickerMap, type WSStatus } from "./useBinanceWebSocket";
+import { fetchTickersGQL } from "@/app/lib/graphql/client";
 
 export type { WSTicker as Ticker, WSTickerMap as TickerMap, WSStatus };
 
@@ -41,9 +42,7 @@ export function usePrices(symbols: string[], fallbackIntervalMs = 15000) {
 
     const fetchPrices = async () => {
       try {
-        const res = await fetch(`/api/prices?symbols=${key}`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const arr: WSTicker[] = await res.json();
+        const arr = await fetchTickersGQL(key.split(","));
         if (!aliveRef.current) return;
         const map: WSTickerMap = {};
         for (const t of arr) map[t.symbol] = t;

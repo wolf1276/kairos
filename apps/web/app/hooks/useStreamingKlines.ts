@@ -1,16 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { fetchCandlesGQL, type GQLCandle } from "@/app/lib/graphql/client";
 
-export interface Candle {
-  openTime: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-  closeTime: number;
-}
+export type Candle = GQLCandle;
 
 interface BinanceKlineData {
   e: "kline";
@@ -47,7 +40,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
   const aliveRef = useRef(true);
   const throttleRef = useRef(0);
 
-  // Initial fetch via HTTP
+  // Initial fetch via GraphQL
   useEffect(() => {
     if (!symbol || !interval) return;
     let alive = true;
@@ -56,9 +49,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
       setLoading(true);
       setError(null);
       try {
-        const res = await fetch(`/api/klines?symbol=${symbol}&interval=${interval}&limit=120`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: Candle[] = await res.json();
+        const data = await fetchCandlesGQL(symbol, interval, 120);
         if (alive) {
           candlesRef.current = data;
           setCandles(data);
@@ -173,9 +164,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
 
     const fetchCandles = async () => {
       try {
-        const res = await fetch(`/api/klines?symbol=${symbol}&interval=${interval}&limit=120`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data: Candle[] = await res.json();
+        const data = await fetchCandlesGQL(symbol, interval, 120);
         if (!alive) return;
         candlesRef.current = data;
         setCandles(data);
