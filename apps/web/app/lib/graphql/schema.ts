@@ -36,7 +36,13 @@ const resolvers = {
       _: unknown,
       args: { symbol: string; interval: string; limit?: number },
     ) => {
-      return oracle.getCandles(args.symbol, args.interval, args.limit ?? 120);
+      try {
+        return await oracle.getCandles(args.symbol, args.interval, args.limit ?? 120);
+      } catch (e) {
+        throw new Error(
+          `BinanceOracle.getCandles failed: ${e instanceof Error ? e.message : "unknown"}`,
+        );
+      }
     },
     tickers: async (_: unknown, args: { symbols: string[] }) => {
       const results = await Promise.allSettled(

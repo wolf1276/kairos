@@ -1,17 +1,20 @@
 import { createYoga } from "graphql-yoga";
-import type { NextRequest } from "next/server";
 import { schema } from "@/app/lib/graphql/schema";
 
 const yoga = createYoga({
   schema,
   graphqlEndpoint: "/api/graphql",
-  fetchAPI: { Response, Request },
+  maskedErrors: false,
 });
 
-export async function GET(request: NextRequest) {
+export async function GET(request: Request) {
   return yoga.fetch(request);
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request: Request) {
+  return yoga.fetch(request);
+}
+
+export async function OPTIONS(request: Request) {
   return yoga.fetch(request);
 }
