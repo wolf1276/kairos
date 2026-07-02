@@ -8,7 +8,7 @@ export function Card({
   return (
     <div
       className={cn(
-        "rounded-2xl border border-border bg-bg-card",
+        "rounded-2xl card-glass transition-shadow duration-300",
         className
       )}
       {...props}
@@ -28,8 +28,8 @@ export function CardHeader({
   className?: string;
 }) {
   return (
-    <div className={cn("flex items-center justify-between gap-3 px-5 pt-5", className)}>
-      <h3 className="font-display text-base font-semibold text-text-primary">
+    <div className={cn("flex items-center justify-between gap-3 px-6 pt-6", className)}>
+      <h3 className="font-display text-sm font-medium text-text-primary">
         {title}
       </h3>
       {action}
@@ -44,5 +44,5 @@ export function CardBody({
   className?: string;
   children: React.ReactNode;
 }) {
-  return <div className={cn("p-5", className)}>{children}</div>;
+  return <div className={cn("p-6", className)}>{children}</div>;
 }

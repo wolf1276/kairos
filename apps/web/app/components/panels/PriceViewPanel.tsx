@@ -3,7 +3,6 @@
 import { useRef, useEffect, useState } from "react";
 import { Card, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
-import { ConfidenceRing } from "./ConfidenceRing";
 import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 import { useMarketAnalysis } from "@/app/hooks/useMarketAnalysis";
 import { formatPrice, formatPct, formatNumber } from "@/app/lib/format";
@@ -92,12 +91,7 @@ export function PriceViewPanel({
               )}
             </div>
           </div>
-          <div className="flex flex-col items-center gap-1">
-            <ConfidenceRing value={analysis.confidence} size={60} strokeWidth={4} />
-            <span className="font-mono text-[9px] uppercase tracking-wider text-text-muted">
-              Confidence
-            </span>
-          </div>
+
         </div>
 
         {/* ── 24h High / Low strip ── */}

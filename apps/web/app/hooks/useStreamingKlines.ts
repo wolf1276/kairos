@@ -70,6 +70,8 @@ export function useStreamingKlines(symbol: string, interval: string) {
   const reconnectCountRef = useRef(0);
   const aliveRef = useRef(true);
   const throttleRef = useRef(0);
+  const connectIdRef = useRef(0);
+  const fetchedRef = useRef(false);
 
   // Initial fetch — direct Binance CDN first, fall back to GraphQL
   useEffect(() => {
@@ -77,22 +79,46 @@ export function useStreamingKlines(symbol: string, interval: string) {
     let alive = true;
 
     const fetchInitial = async () => {
+      fetchedRef.current = false;
+      candlesRef.current = [];
       setLoading(true);
       setError(null);
       try {
+        fetchedRef.current = true;
         try {
           const data = await fetchKlinesHTTP(symbol, interval, 120);
           if (alive) {
-            candlesRef.current = data;
-            setCandles(data);
+            fetchedRef.current = true;
+            if (candlesRef.current.length > 1) {
+              // Merge: WS has live candle, fetch has full history
+              const map = new Map<number, Candle>();
+              for (const c of data) map.set(c.openTime, c);
+              for (const c of candlesRef.current) map.set(c.openTime, c);
+              const merged = Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+              candlesRef.current = merged;
+              setCandles(merged);
+            } else {
+              candlesRef.current = data;
+              setCandles(data);
+            }
             setLoading(false);
           }
           return;
         } catch {}
         const data = await fetchCandlesGQL(symbol, interval, 120);
         if (alive) {
-          candlesRef.current = data;
-          setCandles(data);
+          fetchedRef.current = true;
+          if (candlesRef.current.length > 1) {
+            const map = new Map<number, Candle>();
+            for (const c of data) map.set(c.openTime, c);
+            for (const c of candlesRef.current) map.set(c.openTime, c);
+            const merged = Array.from(map.values()).sort((a, b) => a.openTime - b.openTime);
+            candlesRef.current = merged;
+            setCandles(merged);
+          } else {
+            candlesRef.current = data;
+            setCandles(data);
+          }
           setLoading(false);
         }
       } catch (e) {
@@ -113,6 +139,9 @@ export function useStreamingKlines(symbol: string, interval: string) {
     aliveRef.current = true;
     reconnectCountRef.current = 0;
 
+    connectIdRef.current++;
+    const connectId = connectIdRef.current;
+
     const connect = () => {
       if (!aliveRef.current) return;
 
@@ -122,7 +151,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
       wsRef.current = ws;
 
       ws.onopen = () => {
-        if (!aliveRef.current) { ws.close(); return; }
+        if (connectId !== connectIdRef.current || !aliveRef.current) { ws.close(); return; }
         reconnectCountRef.current = 0;
         setConnected(true);
       };
@@ -160,21 +189,29 @@ export function useStreamingKlines(symbol: string, interval: string) {
           } else {
             // ── New candle (closed or forming) — always track it ──
             candlesRef.current = [...arr, updated];
-            if (candlesRef.current.length > 120) candlesRef.current.shift();
           }
+
+          // Skip React state updates until initial HTTP fetch completes
+          if (!fetchedRef.current) return;
 
           // RAF-throttle React state update
           const now = performance.now();
           if (now - throttleRef.current >= 100) {
             throttleRef.current = now;
+            const arr = candlesRef.current;
+            if (arr.length > 1) {
+              const sorted = [...arr].sort((a, b) => a.openTime - b.openTime)
+                .filter((c, i, self) => i === 0 || c.openTime !== self[i - 1].openTime);
+              candlesRef.current = sorted;
+            }
             setCandles(candlesRef.current);
           }
         } catch {}
       };
 
       ws.onclose = () => {
+        if (connectId !== connectIdRef.current || !aliveRef.current) return;
         setConnected(false);
-        if (!aliveRef.current) return;
         reconnectCountRef.current++;
         const delay = Math.min(
           1000 * Math.pow(2, reconnectCountRef.current - 1),
@@ -191,6 +228,7 @@ export function useStreamingKlines(symbol: string, interval: string) {
     connect();
 
     return () => {
+      connectIdRef.current = connectId + 1;
       aliveRef.current = false;
       clearTimeout(reconnectTimerRef.current);
       wsRef.current?.close();

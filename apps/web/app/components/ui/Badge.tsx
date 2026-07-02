@@ -3,13 +3,13 @@ import { cn } from "@/lib/utils";
 type Tone = "neutral" | "accent" | "success" | "error" | "warning" | "buy" | "sell";
 
 const TONES: Record<Tone, string> = {
-  neutral: "bg-bg-elevated text-text-secondary border-border",
-  accent: "bg-accent-muted text-accent border-accent/20",
-  success: "bg-success/10 text-success border-success/20",
-  error: "bg-error/10 text-error border-error/20",
-  warning: "bg-amber-500/10 text-amber-400 border-amber-500/20",
-  buy: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
-  sell: "bg-red-500/10 text-red-400 border-red-500/20",
+  neutral: "bg-bg-elevated/60 text-text-secondary border-white/4",
+  accent: "bg-accent-muted/70 text-accent border-accent/10",
+  success: "bg-success/8 text-success/90 border-success/15",
+  error: "bg-error/8 text-error/90 border-error/15",
+  warning: "bg-amber-500/8 text-amber-400/90 border-amber-500/15",
+  buy: "bg-emerald-500/8 text-emerald-400/85 border-emerald-500/15",
+  sell: "bg-red-500/8 text-red-400/85 border-red-500/15",
 };
 
 export function Badge({
@@ -31,7 +31,7 @@ export function Badge({
         className
       )}
     >
-      {dot && <span className="h-1.5 w-1.5 rounded-full bg-current" />}
+      {dot && <span className="h-1.5 w-1.5 rounded-full bg-current opacity-80" />}
       {children}
     </span>
   );

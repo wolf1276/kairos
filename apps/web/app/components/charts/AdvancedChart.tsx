@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createChart,
   ColorType,
@@ -17,6 +17,15 @@ import { formatPrice, formatPct } from "@/app/lib/format";
 import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 import { useChartConfig } from "@/app/hooks/useChartConfig";
 import { ChartToolbar } from "@/app/components/charts/ChartToolbar";
+import { DrawingManager } from "@/app/components/charts/drawing-tools/DrawingManager";
+import { useDrawings } from "@/app/hooks/useDrawings";
+import { useKeyboardShortcuts } from "@/app/hooks/useKeyboardShortcuts";
+import { usePrices } from "@/app/hooks/usePrices";
+import { usePaperTrading } from "@/app/hooks/usePaperTrading";
+import { usePriceAlerts } from "@/app/hooks/usePriceAlerts";
+import type { ToolMode } from "@/app/components/charts/drawing-tools/types";
+import { OrderBook } from "@/app/components/charts/OrderBook";
+import { TradingPanel } from "@/app/components/charts/TradingPanel";
 
 type AnySeries = ISeriesApi<SeriesType>;
 
@@ -42,7 +51,7 @@ function calcEMA(values: number[], period: number): number[] {
   return result;
 }
 
-export function PriceChart({
+export function AdvancedChart({
   symbol,
   height = 440,
   onSymbolChange,
@@ -55,7 +64,11 @@ export function PriceChart({
 }) {
   const { interval, setInterval, bi, chartType, setChartType, indicators, toggleIndicator } =
     useChartConfig();
-  const { candles, loading, error, connected } = useStreamingKlines(symbol, bi);
+  const { candles, loading, error } = useStreamingKlines(symbol, bi);
+  const { drawings: savedDrawings, save: saveDrawings } = useDrawings(symbol);
+  const { priceMap } = usePrices([symbol]);
+  const { positions, trades, closePosition } = usePaperTrading(priceMap);
+  const { alerts: priceAlerts, addAlert, removeAlert, clearTriggered, checkAlerts } = usePriceAlerts();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -64,10 +77,23 @@ export function PriceChart({
   const ema21SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const fittedRef = useRef(false);
   const prevDataRef = useRef<CandlestickData[]>([]);
-  const ema8PrevRef = useRef<LineData[]>([]);
-  const ema21PrevRef = useRef<LineData[]>([]);
   const vwapLineRef = useRef<ReturnType<AnySeries["createPriceLine"]> | null>(null);
   const priceLineRef = useRef<ReturnType<AnySeries["createPriceLine"]> | null>(null);
+  const mgrRef = useRef<DrawingManager | null>(null);
+
+  const [toolMode, setToolMode] = useState<ToolMode>("select");
+  const [showOrderBook, setShowOrderBook] = useState(true);
+  const [showTradingPanel, setShowTradingPanel] = useState(true);
+
+  const TOOL_LABELS: Record<ToolMode, string> = {
+    select: "",
+    trend_line: "Trend",
+    horizontal_line: "H-Line",
+    vertical_line: "V-Line",
+    ray_line: "Ray",
+    fib_retracement: "Fib",
+    text: "Text",
+  };
 
   // Derived candlestick data
   const { data, first, last, changePct, trendUp } = useMemo(() => {
@@ -121,7 +147,7 @@ export function PriceChart({
     };
   }, [candles]);
 
-  // ── Create chart + all series ──
+  // ── Create chart + all series + drawing manager ──
   useEffect(() => {
     if (!containerRef.current) return;
     const chart = createChart(containerRef.current, {
@@ -136,18 +162,8 @@ export function PriceChart({
         horzLines: { color: THEME.grid },
       },
       crosshair: {
-        vertLine: {
-          color: "#6b6a66",
-          width: 1,
-          style: 2,
-          labelBackgroundColor: THEME.grid,
-        },
-        horzLine: {
-          color: "#6b6a66",
-          width: 1,
-          style: 2,
-          labelBackgroundColor: THEME.grid,
-        },
+        vertLine: { color: "#6b6a66", width: 1, style: 2, labelBackgroundColor: THEME.grid },
+        horzLine: { color: "#6b6a66", width: 1, style: 2, labelBackgroundColor: THEME.grid },
       },
       timeScale: {
         borderColor: THEME.grid,
@@ -203,7 +219,20 @@ export function PriceChart({
     ema8SeriesRef.current = ema8;
     ema21SeriesRef.current = ema21;
 
+    // Drawing manager
+    const mgr = new DrawingManager();
+    mgrRef.current = mgr;
+    mgr.attach(chart, mainSeries, containerRef.current, {
+      onChange: (drawings) => saveDrawings(drawings),
+      onRequestText: (callback) => {
+        const text = window.prompt("Enter annotation text:");
+        if (text) callback(text);
+      },
+    });
+
     return () => {
+      mgr.detach();
+      mgrRef.current = null;
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
@@ -212,7 +241,17 @@ export function PriceChart({
       vwapLineRef.current = null;
       priceLineRef.current = null;
     };
-  }, [height]);
+  }, [height, saveDrawings]);
+
+  // ── Load saved drawings when symbol changes ──
+  useEffect(() => {
+    mgrRef.current?.loadDrawings(savedDrawings);
+    fittedRef.current = false;
+    prevDataRef.current = [];
+    vwapLineRef.current = null;
+    priceLineRef.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [symbol, bi]);
 
   // ── Time scale options on interval change ──
   useEffect(() => {
@@ -220,16 +259,6 @@ export function PriceChart({
       secondsVisible: interval === "1m",
     });
   }, [interval]);
-
-  // ── Reset on symbol or interval change ──
-  useEffect(() => {
-    fittedRef.current = false;
-    prevDataRef.current = [];
-    ema8PrevRef.current = [];
-    ema21PrevRef.current = [];
-    vwapLineRef.current = null;
-    priceLineRef.current = null;
-  }, [symbol, bi]);
 
   // ── Chart type switching ──
   useEffect(() => {
@@ -262,12 +291,11 @@ export function PriceChart({
     prevDataRef.current = [];
   }, [chartType]);
 
-  // ── Single merged data/indicator/VWAP/price effect ──
+  // ── Data/indicator effect ──
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || data.length === 0) return;
 
-    // 1. Main series data
     const prev = prevDataRef.current;
     const isNewSeq = prev.length > 0 && prev[0].time !== data[0].time;
     const lastBar = data[data.length - 1];
@@ -293,37 +321,25 @@ export function PriceChart({
     }
     prevDataRef.current = data;
 
-    // 2. EMA8
+    // EMA8
     const e8 = ema8SeriesRef.current;
     if (e8) {
       if (emaData.ema8.length >= 2) {
-        const e8Prev = ema8PrevRef.current;
-        if (e8Prev.length === 0) {
-          e8.setData(emaData.ema8);
-        } else {
-          e8.update(emaData.ema8[emaData.ema8.length - 1]);
-        }
-        ema8PrevRef.current = emaData.ema8;
+        e8.setData(emaData.ema8);
       }
       e8.applyOptions({ visible: indicators.ema8 });
     }
 
-    // 3. EMA21
+    // EMA21
     const e21 = ema21SeriesRef.current;
     if (e21) {
       if (emaData.ema21.length >= 2) {
-        const e21Prev = ema21PrevRef.current;
-        if (e21Prev.length === 0) {
-          e21.setData(emaData.ema21);
-        } else {
-          e21.update(emaData.ema21[emaData.ema21.length - 1]);
-        }
-        ema21PrevRef.current = emaData.ema21;
+        e21.setData(emaData.ema21);
       }
       e21.applyOptions({ visible: indicators.ema21 });
     }
 
-    // 4. VWAP price line
+    // VWAP
     if (vwap > 0) {
       if (!indicators.vwap) {
         if (vwapLineRef.current) {
@@ -344,7 +360,7 @@ export function PriceChart({
       }
     }
 
-    // 5. Current price line
+    // Price line
     if (last > 0) {
       if (!indicators.currentPrice) {
         if (priceLineRef.current) {
@@ -363,8 +379,34 @@ export function PriceChart({
         priceLineRef.current.applyOptions({ price: last });
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, chartType, vwap, last, indicators.vwap, indicators.currentPrice, indicators.ema8, indicators.ema21]);
+
+  // ── Price alert checker ──
+  useEffect(() => {
+    if (Object.keys(priceMap).length === 0) return;
+    const id = window.setInterval(() => { checkAlerts(priceMap); }, 2000);
+    return () => window.clearInterval(id);
+  }, [priceMap, checkAlerts]);
+
+  // ── Keyboard shortcuts ──
+  useKeyboardShortcuts(
+    (mode) => {
+      setToolMode(mode);
+      mgrRef.current?.setToolMode(mode);
+    },
+    () => mgrRef.current?.undo(),
+    () => mgrRef.current?.redo(),
+    () => {
+      const id = mgrRef.current?.getSelectedId();
+      if (id) mgrRef.current?.removeDrawing(id);
+    },
+    () => {
+      setToolMode("select");
+      mgrRef.current?.setToolMode("select");
+      mgrRef.current?.selectDrawing(null);
+    },
+  );
 
   return (
     <div>
@@ -372,7 +414,7 @@ export function PriceChart({
       <div className="mb-3 flex items-center justify-between">
         <div className="flex items-baseline gap-2">
           <span className="font-display text-2xl font-bold tabular-nums">
-            {loading && !last ? "—" : formatPrice(last)}
+            {loading && !last ? "\u2014" : formatPrice(last)}
           </span>
           {!!first && (
             <span
@@ -383,20 +425,15 @@ export function PriceChart({
               {formatPct(changePct)}
             </span>
           )}
+          {toolMode !== "select" && (
+            <span className="ml-1 rounded border border-white/10 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-wider text-text-muted">
+              {TOOL_LABELS[toolMode]}
+            </span>
+          )}
         </div>
-        <span
-          className={`inline-block h-2 w-2 rounded-full ${
-            connected
-              ? "bg-success shadow-[0_0_6px_theme(colors.success)]"
-              : loading
-                ? "bg-warning"
-                : "bg-error"
-          }`}
-          title={connected ? "Live" : loading ? "Connecting\u2026" : "Disconnected"}
-        />
       </div>
 
-      {/* Toolbar */}
+      {/* Instrument toolbar */}
       <ChartToolbar
         symbol={symbol}
         interval={interval}
@@ -409,20 +446,50 @@ export function PriceChart({
         onFullscreen={() => containerRef.current?.requestFullscreen().catch(() => {})}
         symbols={symbols}
         onSymbolChange={onSymbolChange}
+        showOrderBook={showOrderBook}
+        showTradingPanel={showTradingPanel}
+        onToggleOrderBook={() => setShowOrderBook((v) => !v)}
+        onToggleTradingPanel={() => setShowTradingPanel((v) => !v)}
       />
 
-      {/* Chart */}
-      <div style={{ position: "relative", minHeight: height }}>
-        <div ref={containerRef} style={{ width: "100%", minHeight: height, borderRadius: 12, overflow: "hidden" }} />
-        {error && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg-elevated">
-            <p className="text-sm text-text-muted">Failed to load chart &middot; {error}</p>
-          </div>
-        )}
-        {loading && data.length === 0 && !error && (
-          <div className="absolute inset-0 z-10 animate-pulse rounded-xl bg-bg-elevated" />
-        )}
+      {/* Chart + Order Book */}
+      <div className="flex gap-2">
+        <div style={{ position: "relative", flex: 1, minHeight: height }}>
+          <div
+            ref={containerRef}
+            style={{ width: "100%", minHeight: height, borderRadius: 12, overflow: "hidden" }}
+          />
+          {error && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg-elevated">
+              <p className="text-sm text-text-muted">Failed to load chart &middot; {error}</p>
+            </div>
+          )}
+          {loading && data.length === 0 && !error && (
+            <div className="absolute inset-0 z-10 animate-pulse rounded-xl bg-bg-elevated" />
+          )}
+        </div>
+        {showOrderBook && <OrderBook symbol={symbol} height={height} />}
       </div>
+
+      {/* Trading panel */}
+      {showTradingPanel && (
+        <div className="mt-2">
+          <TradingPanel
+            positions={positions}
+            trades={trades}
+            priceAlerts={priceAlerts}
+            symbol={symbol}
+            chartRef={chartRef}
+            onClosePosition={(sym) => {
+              const p = priceMap[sym];
+              if (p) closePosition(sym, p);
+            }}
+            onAddAlert={addAlert}
+            onRemoveAlert={removeAlert}
+            onClearTriggered={clearTriggered}
+          />
+        </div>
+      )}
     </div>
   );
 }
