@@ -8,6 +8,7 @@ export interface NetworkConfig {
 export interface ContractConfig {
   delegationManager: string;
   smartWallet?: string;
+  customAccount?: string;
   policyEngine: string;
 }
 

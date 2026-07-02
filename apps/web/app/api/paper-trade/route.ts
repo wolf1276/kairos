@@ -5,7 +5,7 @@ import { BinanceOracle } from '@/oracle';
 export async function POST(request: Request) {
     try {
         const body = await request.json().catch(() => ({}));
-        const { action, symbol } = body;
+        const { action, symbol, address } = body;
         const amount = body.amount !== undefined ? Number(body.amount) : undefined;
         let price = body.price !== undefined ? Number(body.price) : undefined;
 
@@ -13,7 +13,7 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Action is required' }, { status: 400 });
         }
 
-        const engine = new PaperTradingEngine();
+        const engine = new PaperTradingEngine(address || undefined);
 
         // Support DEPOSIT to sync available delegated balance or test funding
         if (action === 'DEPOSIT') {

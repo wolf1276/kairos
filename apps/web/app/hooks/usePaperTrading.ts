@@ -31,18 +31,20 @@ interface RawSnapshot {
  * Client-side paper-trading state. Pass a live `prices` map to get
  * mark-to-market position values, unrealized PnL and portfolio value.
  */
-export function usePaperTrading(prices: Record<string, number> = {}) {
+export function usePaperTrading(prices: Record<string, number> = {}, userAddress?: string) {
   const [snapshot, setSnapshot] = useState<RawSnapshot | null>(null);
 
+  const engineForAddress = useCallback(() => new PaperTradingEngine(userAddress), [userAddress]);
+
   const reload = useCallback(() => {
-    const engine = new PaperTradingEngine();
+    const engine = engineForAddress();
     const p = engine.getPortfolio();
     setSnapshot({
       balance: p.balance,
       positions: p.positions,
       trades: engine.getTradeHistory(),
     });
-  }, []);
+  }, [engineForAddress]);
 
   useEffect(() => {
     // Initial read + subscribe to the external localStorage-backed store.
@@ -58,29 +60,29 @@ export function usePaperTrading(prices: Record<string, number> = {}) {
   }, [reload]);
 
   const buy = useCallback((symbol: string, amount: number, price: number): Trade => {
-    const t = new PaperTradingEngine().buy(symbol, amount, price);
+    const t = engineForAddress().buy(symbol, amount, price);
     notify();
     return t;
-  }, []);
+  }, [engineForAddress]);
 
   const sell = useCallback((symbol: string, amount: number, price: number): Trade => {
-    const t = new PaperTradingEngine().sell(symbol, amount, price);
+    const t = engineForAddress().sell(symbol, amount, price);
     notify();
     return t;
-  }, []);
+  }, [engineForAddress]);
 
   const closePosition = useCallback((symbol: string, price: number): Trade => {
-    const t = new PaperTradingEngine().closePosition(symbol, price);
+    const t = engineForAddress().closePosition(symbol, price);
     notify();
     return t;
-  }, []);
+  }, [engineForAddress]);
 
   const reset = useCallback((initialBalance = 10000) => {
-    const engine = new PaperTradingEngine();
+    const engine = engineForAddress();
     engine.reset();
     engine.setBalance(initialBalance);
     notify();
-  }, []);
+  }, [engineForAddress]);
 
   const balance = snapshot?.balance ?? 10000;
 

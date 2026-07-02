@@ -4,8 +4,9 @@ import { useState, useEffect, useCallback } from "react";
 import {
   connectWallet,
   delegateXLM,
-  type WalletState,
+  silentConnect,
   tryCheckConnection,
+  type WalletState,
 } from "@/app/lib/stellar";
 
 // ── Simple SVG icons ──
@@ -36,7 +37,11 @@ const Spinner = () => (
 
 type TxStatus = "idle" | "pending" | "confirmed" | "error";
 
-export default function DelegationKit() {
+export default function DelegationKit({
+  onConnect,
+}: {
+  onConnect?: (address: string) => void;
+}) {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -56,6 +61,7 @@ export default function DelegationKit() {
 
     if (result.success && result.wallet) {
       setWallet(result.wallet);
+      onConnect?.(result.wallet.address);
     } else {
       const kind = result.error?.kind;
       const msg = result.error?.message ?? "Unknown error";
@@ -70,16 +76,24 @@ export default function DelegationKit() {
     }
 
     setConnecting(false);
-  }, []);
+  }, [onConnect]);
 
   // ── Auto-reconnect on mount if Freighter already authorized ──
+  // Uses silentConnect to avoid popping up Freighter on page load.
   useEffect(() => {
     let cancelled = false;
     tryCheckConnection().then((ok) => {
-      if (ok && !cancelled) handleConnect();
+      if (ok && !cancelled) {
+        silentConnect().then((result) => {
+          if (!cancelled && result.success && result.wallet) {
+            setWallet(result.wallet);
+            onConnect?.(result.wallet.address);
+          }
+        });
+      }
     });
     return () => { cancelled = true; };
-  }, [handleConnect]);
+  }, [onConnect]);
 
   // ── Disconnect ──
   const handleDisconnect = () => {

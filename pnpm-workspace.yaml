@@ -1,7 +1,6 @@
 packages:
   - 'packages/*'
   - 'apps/web'
-  - 'apps/comming-soon'
 allowBuilds:
   esbuild: set this to true or false
   sharp: set this to true or false

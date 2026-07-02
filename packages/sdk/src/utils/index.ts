@@ -13,11 +13,7 @@ export function getAddressXdrBytes(addressString: string): Buffer {
     const addr = Address.fromString(addressString);
     return Buffer.from(addr.toScAddress().toXDR());
   } catch {
-    // Fallback for invalid/placeholder strkeys: create a contract ScAddress
-    let hex = addressString.startsWith('C') ? addressString.slice(1).replace(/[^0-9a-fA-F]/g, '') : '';
-    if (hex.length >= 64) hex = hex.slice(0, 64);
-    const buf = hex.length === 64 ? Buffer.from(hex, 'hex') : Buffer.alloc(32);
-    return Buffer.from(xdr.ScAddress.scAddressTypeContract(buf).toXDR());
+    throw new RpcError(`Invalid Stellar address: ${addressString}`);
   }
 }
 
@@ -28,16 +24,8 @@ export function getAddressXdrBytes(addressString: string): Buffer {
  * C...: 40 bytes (ScValType::Address + ScAddress)
  */
 export function getAddressScValXdrBytes(addressString: string): Buffer {
-  try {
-    const addr = Address.fromString(addressString);
-    return Buffer.from(xdr.ScVal.scvAddress(addr.toScAddress()).toXDR());
-  } catch {
-    // Fallback for invalid/placeholder strkeys
-    const rawScAddr = getAddressXdrBytes(addressString);
-    return Buffer.from(xdr.ScVal.scvAddress(
-      xdr.ScAddress.fromXDR(rawScAddr)
-    ).toXDR());
-  }
+  const addr = Address.fromString(addressString);
+  return Buffer.from(xdr.ScVal.scvAddress(addr.toScAddress()).toXDR());
 }
 
 /**

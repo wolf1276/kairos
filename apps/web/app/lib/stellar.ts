@@ -63,13 +63,13 @@ async function requestAccessFromFreighter(): Promise<string> {
 }
 
 /** Get the address without prompting (fails if not already authorized). */
-async function getAddressFromFreighter(): Promise<string> {
+export async function getAddressFromFreighter(): Promise<string> {
   const res = await getAddress();
   return unwrapAddress(res);
 }
 
 /** Get network details. */
-async function getFreighterNetwork(): Promise<{
+export async function getFreighterNetwork(): Promise<{
   network: string;
   networkPassphrase: string;
   sorobanRpcUrl: string;
@@ -135,6 +135,58 @@ async function fetchBalance(
   } catch {
     return "0";
   }
+}
+
+/**
+ * Reconnect without triggering the Freighter popup.
+ * Only works if the user has already authorized this app.
+ */
+export async function silentConnect(): Promise<ConnectResult> {
+  if (!isBrowser()) {
+    return {
+      success: false,
+      error: { kind: "no-browser", message: "Not in a browser environment" },
+    };
+  }
+
+  let address: string;
+  try {
+    address = await getAddressFromFreighter();
+  } catch {
+    return {
+      success: false,
+      error: { kind: "user-rejected", message: "Not previously authorized" },
+    };
+  }
+
+  let net: Awaited<ReturnType<typeof getFreighterNetwork>>;
+  try {
+    net = await getFreighterNetwork();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      success: false,
+      error: { kind: "network-error", message: msg || "Failed to get network details" },
+    };
+  }
+
+  const networkPassphrase = net.networkPassphrase || Networks.TESTNET;
+  const networkKey =
+    Object.entries(Networks).find(([, v]) => v === networkPassphrase)?.[0] ?? "TESTNET";
+  const isTestnet = networkKey === "TESTNET" || networkKey === "FUTURENET";
+
+  const balance = await fetchBalance(address, networkPassphrase);
+
+  return {
+    success: true,
+    wallet: {
+      address,
+      network: networkKey,
+      networkPassphrase,
+      balance,
+      isTestnet,
+    },
+  };
 }
 
 // ── Connection flow ──

@@ -162,6 +162,12 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 
+      case 'LIST': {
+        const delegatorAddress: string | undefined = body.delegator;
+        const hashes = await client.delegation.list(delegatorAddress);
+        return NextResponse.json({ success: true, hashes });
+      }
+
       case 'BALANCE': {
         const { address, token } = body;
         if (!address) {

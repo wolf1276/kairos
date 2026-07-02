@@ -145,8 +145,7 @@ export default function Home() {
           </span>
         </div>
         <div className="flex items-center gap-9">
-          <a href="/docs" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">Docs</a>
-          <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">GitHub</a>
+          <a href="https://github.com/anomalyco/kairos" target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">GitHub</a>
           <a href="https://x.com/KairosProtocoll" target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">Twitter</a>
         </div>
       </nav>

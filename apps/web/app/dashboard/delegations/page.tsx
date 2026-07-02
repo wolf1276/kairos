@@ -1,19 +1,31 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import DelegationKit from "@/app/components/DelegationKit";
+import PolicyEditor from "@/app/components/PolicyEditor";
+import type { Caveat } from "@/app/lib/sdk";
 
 export default function DelegationsPage() {
   // ── SDK delegation state ──
   const [smartWalletAddress, setSmartWalletAddress] = useState<string | null>(
     null
   );
-  const [walletOwner] = useState<string | null>(null);
+  const [walletOwner, setWalletOwner] = useState<string | null>(null);
   const [deployingWallet, setDeployingWallet] = useState(false);
   const [delegationHash, setDelegationHash] = useState<string | null>(null);
+  const [caveats, setCaveats] = useState<Caveat[]>([]);
   const [error, setError] = useState<string | null>(null);
 
+  const requireWallet = useCallback(() => {
+    if (!walletOwner) {
+      setError("Connect your Freighter wallet first before deploying.");
+      return false;
+    }
+    return true;
+  }, [walletOwner]);
+
   const handleDeployWallet = async () => {
+    if (!requireWallet()) return;
     setDeployingWallet(true);
     setError(null);
     try {
@@ -22,9 +34,7 @@ export default function DelegationsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "DEPLOY_WALLET",
-          owner:
-            walletOwner ||
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+          owner: walletOwner,
         }),
       });
       const data = await res.json();
@@ -39,6 +49,7 @@ export default function DelegationsPage() {
 
   const handleCreateDelegation = async () => {
     if (!smartWalletAddress) return;
+    if (!requireWallet()) return;
     setError(null);
     try {
       const res = await fetch("/api/delegate-sdk", {
@@ -47,10 +58,8 @@ export default function DelegationsPage() {
         body: JSON.stringify({
           action: "CREATE_DELEGATION",
           delegator: smartWalletAddress,
-          delegate:
-            walletOwner ||
-            "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
-          caveats: [],
+          delegate: walletOwner,
+          caveats,
         }),
       });
       const data = await res.json();
@@ -65,7 +74,7 @@ export default function DelegationsPage() {
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* ── Left column ── */}
       <div className="space-y-5">
-        <DelegationKit />
+        <DelegationKit onConnect={setWalletOwner} />
 
         {/* On-chain delegation card */}
         <div className="rounded-2xl border border-border bg-bg-card p-5">
@@ -119,17 +128,32 @@ export default function DelegationsPage() {
       </div>
 
       {/* ── Right column: delegation list & policies ── */}
-      <div className="rounded-2xl border border-border bg-bg-card p-5">
-        <h3 className="mb-4 font-display text-base font-semibold">
-          Active Delegations
-        </h3>
-        {/* TODO: fetch and list all delegations via /api/delegate-sdk (action: LIST) */}
-        {/* TODO: PolicyEditor component — visual form for target-whitelist, spend-limit, time-restriction */}
-        <p className="text-sm text-text-muted">
-          {smartWalletAddress
-            ? "Delegation management and policy configuration will appear here."
-            : "Deploy a smart wallet to get started."}
-        </p>
+      <div className="space-y-5">
+        {/* Active Delegations */}
+        <div className="rounded-2xl border border-border bg-bg-card p-5">
+          <h3 className="mb-4 font-display text-base font-semibold">
+            Active Delegations
+          </h3>
+          {/* Delegations fetched via /api/delegate-sdk (action: LIST) */}
+          <p className="text-sm text-text-muted">
+            {smartWalletAddress
+              ? "Delegation management will appear here after LIST is populated."
+              : "Deploy a smart wallet to get started."}
+          </p>
+        </div>
+
+        {/* Policy Editor */}
+        {smartWalletAddress && (
+          <div className="rounded-2xl border border-border bg-bg-card p-5">
+            <h3 className="mb-4 font-display text-base font-semibold">
+              Policy Configuration
+            </h3>
+            <p className="mb-4 text-xs text-text-muted">
+              Add caveats to restrict how your delegate can use authority.
+            </p>
+            <PolicyEditor caveats={caveats} onChange={setCaveats} />
+          </div>
+        )}
       </div>
 
       {error && (

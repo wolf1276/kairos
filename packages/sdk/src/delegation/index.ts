@@ -65,7 +65,7 @@ export class DelegationModule {
    * Fetches the current nonce for a delegator from the DelegationManager.
    */
   async getNonce(delegator: string): Promise<bigint> {
-    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
+    const sourceAccount = await this.client.getAccount(this.client.defaultSource);
     const nonceOp = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'get_nonce',
@@ -102,7 +102,7 @@ export class DelegationModule {
    * Checks if a delegation hash is disabled on-chain.
    */
   async get(hash: string): Promise<{ disabled: boolean }> {
-    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
+    const sourceAccount = await this.client.getAccount(this.client.defaultSource);
     const disabledOp = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'is_delegation_disabled',

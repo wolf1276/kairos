@@ -14,6 +14,7 @@ export class KairosClient {
   public readonly rpcProvider: rpc.Server;
   public readonly networkPassphrase: string;
   public readonly contracts: ContractConfig;
+  public readonly defaultSource: string;
 
   public readonly wallet: WalletModule;
   public readonly delegation: DelegationModule;
@@ -26,6 +27,7 @@ export class KairosClient {
     rpcUrl?: string;
     networkPassphrase?: string;
     contracts: ContractConfig;
+    defaultSource?: string;
   }) {
     const netConfig = config.network ? NETWORKS[config.network] : undefined;
     const rpcUrl = config.rpcUrl || netConfig?.rpcUrl;
@@ -35,7 +37,12 @@ export class KairosClient {
 
     this.rpcProvider = new rpc.Server(rpcUrl);
     this.networkPassphrase = config.networkPassphrase || netConfig?.networkPassphrase || '';
-    this.contracts = config.contracts;
+    this.contracts = {
+      ...config.contracts,
+      customAccount: config.contracts.customAccount || config.contracts.smartWallet,
+      smartWallet: config.contracts.smartWallet || config.contracts.customAccount,
+    };
+    this.defaultSource = config.defaultSource || Keypair.random().publicKey();
 
     this.wallet = new WalletModule(this);
     this.delegation = new DelegationModule(this);
@@ -121,37 +128,23 @@ export class KairosClient {
    * Polls Soroban RPC for the transaction confirmation.
    */
   async pollTransaction(hash: string, maxAttempts = 30, intervalMs = 2000): Promise<TransactionResult> {
-    const rpcUrl = String(this.rpcProvider.serverURL);
     for (let i = 0; i < maxAttempts; i++) {
       try {
-        const response = await fetch(rpcUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: 1,
-            method: 'getTransaction',
-            params: { hash },
-          }),
-        });
-        const json = await response.json() as { result?: { status: string; ledger?: number; resultXdr?: string; error?: string } };
-        if (json.result) {
-          const res = json.result;
-          if (res.status === 'SUCCESS') {
-            return {
-              hash,
-              status: 'SUCCESS',
-              ledger: res.ledger,
-              resultXdr: res.resultXdr,
-            };
-          }
-          if (res.status === 'FAILED') {
-            return {
-              hash,
-              status: 'FAILED',
-              error: res.resultXdr || 'Transaction execution failed',
-            };
-          }
+        const txRes = await this.rpcProvider.getTransaction(hash);
+        if (txRes.status === rpc.Api.GetTransactionStatus.SUCCESS) {
+          return {
+            hash,
+            status: 'SUCCESS',
+            ledger: txRes.ledger,
+            resultXdr: txRes.resultXdr.toXDR('base64'),
+          };
+        }
+        if (txRes.status === rpc.Api.GetTransactionStatus.FAILED) {
+          return {
+            hash,
+            status: 'FAILED',
+            error: txRes.resultXdr?.toXDR('base64') || 'Transaction execution failed',
+          };
         }
       } catch {
         // not ready yet, continue polling

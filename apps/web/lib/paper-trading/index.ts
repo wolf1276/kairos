@@ -1,3 +1,10 @@
+function generateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID().slice(0, 8);
+  }
+  return `${Date.now().toString(36)}${Math.random().toString(36).substr(2, 5)}`;
+}
+
 export interface Position {
     symbol: string;
     amount: number;
@@ -112,7 +119,7 @@ export class PaperTradingEngine {
         }
 
         const trade: Trade = {
-            id: `trade_${Math.random().toString(36).substr(2, 9)}`,
+            id: `trade_${generateId()}`,
             symbol: uSymbol,
             action: 'BUY',
             amount,
@@ -152,7 +159,7 @@ export class PaperTradingEngine {
         }
 
         const trade: Trade = {
-            id: `trade_${Math.random().toString(36).substr(2, 9)}`,
+            id: `trade_${generateId()}`,
             symbol: uSymbol,
             action: 'SELL',
             amount,

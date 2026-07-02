@@ -143,7 +143,7 @@ export class WalletModule {
    * Returns the balance of a token (e.g. Stellar Asset Contract) for the wallet.
    */
   async balance(address: string, tokenAddress: string): Promise<bigint> {
-    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
+    const sourceAccount = await this.client.getAccount(this.client.defaultSource);
     
     const balanceOp = Operation.invokeContractFunction({
       contract: tokenAddress,

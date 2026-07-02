@@ -54,20 +54,33 @@ impl CustomAccount {
     pub fn is_valid_signature(env: Env, hash: BytesN<32>, signature: BytesN<64>) -> bool {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         
-        let xdr = owner.to_xdr(&env);
+        let message = Bytes::from_array(&env, &hash.to_array());
+        let sig: Bytes = signature.into();
+
+        Self::verify_owner_ed25519(&env, &owner, &message, &sig)
+    }
+
+    fn verify_owner_ed25519(env: &Env, owner: &Address, message: &Bytes, signature: &Bytes) -> bool {
+        let xdr = owner.to_xdr(env);
         let mut key_bytes = [0u8; 32];
         for i in 0..32 {
             key_bytes[i] = xdr.get(xdr.len() - 32 + i as u32).unwrap();
         }
-        let public_key = BytesN::from_array(&env, &key_bytes);
+        let public_key = BytesN::from_array(env, &key_bytes);
 
-        let message = Bytes::from_array(&env, &hash.to_array());
-        env.crypto().ed25519_verify(
+        let sig_bytes: BytesN<64> = match signature.clone().try_into() {
+            Ok(b) => b,
+            Err(_) => return false,
+        };
+
+        match env.crypto().ed25519_verify(
             &public_key,
-            &message,
-            &signature,
-        );
-        true
+            message,
+            &sig_bytes,
+        ) {
+            Ok(()) => true,
+            Err(_) => false,
+        }
     }
 
     // Soroban custom verification hook
@@ -85,22 +98,13 @@ impl CustomAccount {
             for context in auth_context.iter() {
                 message.append(&context.to_xdr(&env));
             }
-            
-            let xdr = owner.to_xdr(&env);
-            let mut key_bytes = [0u8; 32];
-            for i in 0..32 {
-                key_bytes[i] = xdr.get(xdr.len() - 32 + i as u32).unwrap();
-            }
-            let public_key = BytesN::from_array(&env, &key_bytes);
 
-            env.crypto().ed25519_verify(
-                &public_key,
-                &message,
-                &sig_bytes.try_into().unwrap(),
-            );
-        } else {
-            delegation_manager.require_auth();
+            if Self::verify_owner_ed25519(&env, &owner, &message, &sig_bytes) {
+                return;
+            }
         }
+
+        delegation_manager.require_auth();
     }
 }
 mod test;
