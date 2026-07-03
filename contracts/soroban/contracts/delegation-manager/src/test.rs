@@ -446,6 +446,180 @@ fn test_redeem_delegation_rejects_disabled_delegation() {
     assert!(result.is_err(), "a disabled delegation must not be redeemable");
 }
 
+/// Registering a delegation records it as the wallet's single active delegation, and a
+/// second `register_delegation` call for the same wallet must be rejected while it's
+/// still active — this is the on-chain "one delegation per wallet" enforcement.
+#[test]
+fn test_register_delegation_enforces_one_per_wallet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
+    manager.init(&owner);
+
+    let delegator = Address::generate(&env);
+    let delegate_a = Address::generate(&env);
+    let delegate_b = Address::generate(&env);
+
+    let delegation_a = Delegation {
+        delegate: delegate_a,
+        delegator: delegator.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 1,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    manager.register_delegation(&delegator, &delegation_a);
+    let hash_a = manager.get_delegation_hash(&delegation_a);
+    assert_eq!(manager.get_wallet_delegation(&delegator), Some(hash_a));
+
+    // A second delegation for the same wallet, while the first is still active, must be
+    // rejected — a wallet gets exactly one delegation, shared across every execution mode.
+    let delegation_b = Delegation {
+        delegate: delegate_b,
+        delegator: delegator.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 2,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let result = manager.try_register_delegation(&delegator, &delegation_b);
+    assert!(result.is_err(), "registering a second active delegation for the same wallet must fail");
+
+    // Once the first is revoked by wallet, a new delegation can be registered.
+    manager.revoke_by_wallet(&delegator);
+    manager.register_delegation(&delegator, &delegation_b);
+    let hash_b = manager.get_delegation_hash(&delegation_b);
+    assert_eq!(manager.get_wallet_delegation(&delegator), Some(hash_b));
+}
+
+/// `revoke_by_wallet` disables the wallet's registered delegation without needing the
+/// caller to reconstruct the full `Delegation` struct.
+#[test]
+fn test_revoke_by_wallet() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
+    manager.init(&owner);
+
+    let delegator = Address::generate(&env);
+    let delegate = Address::generate(&env);
+    let delegation = Delegation {
+        delegate,
+        delegator: delegator.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 1,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    manager.register_delegation(&delegator, &delegation);
+    let hash = manager.get_delegation_hash(&delegation);
+    assert_eq!(manager.is_delegation_disabled(&hash), false);
+
+    manager.revoke_by_wallet(&delegator);
+    assert_eq!(manager.is_delegation_disabled(&hash), true);
+
+    // Revoking a wallet with no active delegation must fail cleanly.
+    let other_delegator = Address::generate(&env);
+    let result = manager.try_revoke_by_wallet(&other_delegator);
+    assert!(result.is_err(), "revoking a wallet with no registered delegation must fail");
+}
+
+/// `set_policy` updates a policy's terms in place — a caveat referencing that policy_id
+/// (via the `0xFE`-prefixed marker) picks up the new terms on the very next redemption,
+/// with no change to the delegation's hash or signature.
+#[test]
+fn test_set_policy_updates_terms_without_new_delegation() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner_admin = Address::generate(&env);
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+    manager.init(&owner_admin);
+
+    let (owner_key, owner_address) = generate_signing_identity(&env);
+    let wallet_id = env.register_contract(None, CustomAccount);
+    let wallet = CustomAccountClient::new(&env, &wallet_id);
+    wallet.init(&owner_address, &manager_id);
+
+    let policies_id = env.register_contract(None, Policies);
+
+    let redeemer = Address::generate(&env);
+    let receiver = Address::generate(&env);
+
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let token_client = token::Client::new(&env, &token_id);
+
+    let starting_balance: i128 = 1_000_000_000i128;
+    token_asset_client.mint(&wallet_id, &starting_balance);
+
+    // Seed a tight initial spend limit under policy_id 1.
+    let policy_id: u64 = 1;
+    let tight_limit: i128 = 10_000_000i128;
+    manager.set_policy(&wallet_id, &policy_id, &spend_limit_terms(&env, &token_id, tight_limit, 86_400));
+
+    // Caveat terms are the marker `0xFE ++ policy_id:u64_be`, not inline terms.
+    let mut marker_terms = Bytes::new(&env);
+    marker_terms.push_back(0xFEu32 as u8);
+    marker_terms.append(&Bytes::from_array(&env, &policy_id.to_be_bytes()));
+    let caveats = Vec::from_array(&env, [Caveat { enforcer: policies_id.clone(), terms: marker_terms }]);
+
+    let delegation_unsigned = Delegation {
+        delegate: redeemer.clone(),
+        delegator: wallet_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats,
+        salt: 9,
+        nonce: u64::MAX,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let hash = manager.get_delegation_hash(&delegation_unsigned);
+    let signature = sign_hash_sep53(&env, &owner_key, &hash);
+    let delegation = Delegation { signature, ..delegation_unsigned };
+
+    let make_transfer_execution = |amount: i128| {
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [wallet_id.clone().into_val(&env), receiver.clone().into_val(&env), amount.into_val(&env)],
+        );
+        Execution { target: token_id.clone(), function: Symbol::new(&env, "transfer"), args }
+    };
+
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation.clone()])]);
+
+    // An amount that exceeds the tight initial limit must be rejected.
+    let over_tight_limit: i128 = 50_000_000i128;
+    let blocked = manager.try_redeem_delegations(
+        &redeemer,
+        &contexts,
+        &Vec::from_array(&env, [make_transfer_execution(over_tight_limit)]),
+    );
+    assert!(blocked.is_err(), "transfer over the tight initial limit must be rejected");
+    assert_eq!(token_client.balance(&wallet_id), starting_balance);
+
+    // Raise the limit via set_policy — no new delegation, hash/signature untouched.
+    let raised_limit: i128 = 100_000_000i128;
+    manager.set_policy(&wallet_id, &policy_id, &spend_limit_terms(&env, &token_id, raised_limit, 86_400));
+
+    // The same delegation, unmodified, now permits the previously-blocked amount.
+    manager.redeem_delegations(
+        &redeemer,
+        &contexts,
+        &Vec::from_array(&env, [make_transfer_execution(over_tight_limit)]),
+    );
+    assert_eq!(token_client.balance(&wallet_id), starting_balance - over_tight_limit);
+}
+
 /// The spend-limit policy caveat must actually stop an over-limit token transfer.
 /// This exercises the caveat pipeline end-to-end (before_all -> before_hook) with a
 /// real SAC token, proving policy enforcement is wired into execution, not just

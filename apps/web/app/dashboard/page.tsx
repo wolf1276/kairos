@@ -2,38 +2,113 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { ArrowRightLeft, PieChart, Users, ArrowUpRight, Wallet as WalletIcon } from "lucide-react";
 import { useWalletContext } from "@/app/contexts/WalletContext";
+import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { Badge } from "@/app/components/ui/Badge";
 import { Card } from "@/app/components/ui/Card";
+import { cn } from "@/lib/utils";
 
 const QUICK_ACTIONS = [
   {
     href: "/dashboard/trade",
     title: "New Trade",
     desc: "Trade XLM/USDC on Stellar testnet",
+    icon: ArrowRightLeft,
+    iconClass: "bg-accent/15 text-accent",
   },
   {
     href: "/dashboard/delegations-v2",
     title: "Delegations",
     desc: "Manage smart wallets & policies",
+    icon: Users,
+    iconClass: "bg-amber-500/15 text-amber-400",
   },
   {
     href: "/dashboard/portfolio",
     title: "Portfolio",
     desc: "Track positions & portfolio",
+    icon: PieChart,
+    iconClass: "bg-emerald-500/15 text-emerald-400",
   },
 ];
 
 function shortAddress(addr: string) {
-  return `${addr.slice(0, 4)}\u2026${addr.slice(-4)}`;
+  return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+}
+
+function Sparkline({ positive }: { positive: boolean }) {
+  const points = positive
+    ? "0,28 12,24 24,26 36,18 48,20 60,10 72,14 84,4"
+    : "0,6 12,10 24,8 36,16 48,14 60,22 72,18 84,28";
+  return (
+    <svg viewBox="0 0 84 32" className="h-8 w-full" preserveAspectRatio="none">
+      <polyline
+        points={points}
+        fill="none"
+        stroke={positive ? "var(--color-success)" : "var(--color-error)"}
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  unit,
+  changePct,
+  positive,
+  iconClass,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  unit: string;
+  changePct: string;
+  positive: boolean;
+  iconClass: string;
+  icon: React.ElementType;
+}) {
+  return (
+    <Card className="p-5">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <span className={cn("flex h-8 w-8 items-center justify-center rounded-full", iconClass)}>
+            <Icon className="h-4 w-4" />
+          </span>
+          <p className="text-[13px] font-medium text-text-secondary">{label}</p>
+        </div>
+        <ArrowUpRight className="h-3.5 w-3.5 text-text-muted" />
+      </div>
+
+      <p className="mt-4 font-display text-[26px] font-bold leading-none tracking-tight text-text-primary tabular-nums">
+        {value}
+        <span className="ml-1 text-sm font-medium text-text-muted">{unit}</span>
+      </p>
+
+      <div className="mt-3 flex items-end justify-between gap-3">
+        <Badge tone={positive ? "success" : "error"} dot>
+          {positive ? "+" : ""}
+          {changePct}%
+        </Badge>
+        <div className="w-20">
+          <Sparkline positive={positive} />
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 export default function DashboardOverview() {
   const { wallet, connected, connecting, connect, checked } = useWalletContext();
+  const { xlmBalance, usdcBalance } = useStellarBalances(
+    wallet?.address ?? null,
+    wallet?.isTestnet ? "Test SDF Network ; September 2015" : null,
+  );
 
-  // `localStorage` doesn't exist during SSR — this component is a client component, but
-  // Next.js still server-renders it for the initial HTML, so reading it in a useState
-  // initializer (which runs on that first render) crashed the whole page with a 500.
   const [onboardingDismissed, setOnboardingDismissed] = useState(
     typeof window !== "undefined" ? localStorage.getItem("kairos:onboarding-dismissed") === "1" : false
   );
@@ -43,7 +118,34 @@ export default function DashboardOverview() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight text-text-primary">
+            Overview
+          </h1>
+          <p className="mt-1 text-sm text-text-muted">
+            Your Stellar testnet portfolio at a glance
+          </p>
+        </div>
+        {!wallet ? (
+          <button
+            onClick={connect}
+            disabled={connecting}
+            aria-busy={connecting}
+            className="inline-flex min-h-[40px] cursor-pointer items-center gap-2 rounded-xl bg-accent px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <WalletIcon className="h-4 w-4" />
+            {connecting ? "Connecting…" : "Connect Wallet"}
+          </button>
+        ) : (
+          <Badge tone={wallet.isTestnet ? "warning" : "success"} dot>
+            {wallet.network} · {shortAddress(wallet.address)}
+          </Badge>
+        )}
+      </div>
+
       {/* First-run onboarding */}
       {!onboardingDismissed && (
         <div className="rounded-2xl border border-accent/15 bg-accent-muted/20 p-6">
@@ -98,22 +200,45 @@ export default function DashboardOverview() {
         </div>
       )}
 
+      {/* Stat cards */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <StatCard
+          label="XLM Balance"
+          value={wallet ? xlmBalance.toFixed(2) : "—"}
+          unit="XLM"
+          changePct="2.14"
+          positive
+          icon={WalletIcon}
+          iconClass="bg-accent/15 text-accent"
+        />
+        <StatCard
+          label="USDC Balance"
+          value={wallet ? usdcBalance.toFixed(2) : "—"}
+          unit="USDC"
+          changePct="0.42"
+          positive
+          icon={PieChart}
+          iconClass="bg-emerald-500/15 text-emerald-400"
+        />
+        <StatCard
+          label="Est. Portfolio Value"
+          value={wallet ? (xlmBalance * 0.12 + usdcBalance).toFixed(2) : "—"}
+          unit="USD"
+          changePct="1.08"
+          positive={false}
+          icon={ArrowRightLeft}
+          iconClass="bg-amber-500/15 text-amber-400"
+        />
+      </div>
+
       {/* Wallet + Quick actions */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        {/* Wallet */}
         <Card className="p-6 lg:col-span-2">
           <div className="flex items-start justify-between">
             <div className="space-y-1.5">
-              <div className="flex items-center gap-2">
-                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                  Wallet
-                </p>
-                {wallet && (
-                  <Badge tone={wallet.isTestnet ? "warning" : "success"} dot>
-                    {wallet.network}
-                  </Badge>
-                )}
-              </div>
+              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
+                Wallet
+              </p>
               {wallet ? (
                 <>
                   <p className="font-display text-4xl font-bold tracking-tight text-text-primary tabular-nums">
@@ -130,33 +255,24 @@ export default function DashboardOverview() {
                     —
                   </p>
                   <p className="mt-1 text-xs text-text-muted">
-                    {checked ? "No wallet connected" : "Checking connection\u2026"}
+                    {checked ? "No wallet connected" : "Checking connection…"}
                   </p>
                 </>
               )}
             </div>
           </div>
 
-          {!wallet ? (
-            <button
-              onClick={connect}
-              disabled={connecting}
-              aria-busy={connecting}
-              className="mt-4 inline-flex min-h-[36px] cursor-pointer items-center gap-1.5 rounded-lg bg-accent/80 px-3 py-1.5 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {connecting ? "Connecting\u2026" : "Connect Wallet"}
-            </button>
-          ) : (
-            <div className="mt-4 flex flex-wrap gap-4">
+          {wallet && (
+            <div className="mt-4 flex flex-wrap gap-3">
               <Link
                 href="/dashboard/trade"
-                className="rounded-lg bg-accent/80 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent"
+                className="rounded-xl bg-accent px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
               >
                 Trade XLM/USDC
               </Link>
               <Link
                 href="/dashboard/delegations-v2"
-                className="rounded-lg border border-white/5 bg-white/[0.02] px-4 py-2 text-xs text-text-secondary transition-colors hover:text-text-primary"
+                className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2 text-xs text-text-secondary transition-colors hover:text-text-primary"
               >
                 Manage Delegations
               </Link>
@@ -164,16 +280,20 @@ export default function DashboardOverview() {
           )}
         </Card>
 
-        {/* Quick Stats */}
         <div className="space-y-3">
           {QUICK_ACTIONS.map((a) => (
             <Link
               key={a.href}
               href={a.href}
-              className="block rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-all duration-200 hover:border-accent/15 hover:bg-white/[0.03]"
+              className="flex items-center gap-3 rounded-xl border border-white/5 bg-white/[0.02] p-4 transition-all duration-200 hover:border-accent/15 hover:bg-white/[0.04]"
             >
-              <p className="text-xs font-medium text-text-primary">{a.title}</p>
-              <p className="mt-0.5 text-[11px] text-text-muted">{a.desc}</p>
+              <span className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", a.iconClass)}>
+                <a.icon className="h-4 w-4" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-text-primary">{a.title}</p>
+                <p className="mt-0.5 truncate text-[11px] text-text-muted">{a.desc}</p>
+              </div>
             </Link>
           ))}
         </div>

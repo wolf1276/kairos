@@ -72,7 +72,6 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner);
     CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
-    CREATE INDEX IF NOT EXISTS idx_agents_delegator ON agents(delegator);
     CREATE TABLE IF NOT EXISTS wallet_delegations (
       delegator TEXT PRIMARY KEY,
       delegation_hash TEXT NOT NULL,
@@ -96,6 +95,17 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_trades_agent ON trades(agent_id);
   `);
+
+  // Pre-existing databases (created before the shared wallet_delegations table) won't have
+  // this column from CREATE TABLE IF NOT EXISTS alone — add it if missing. Old
+  // delegation_hash/delegation_json columns, if present, are left in place; see
+  // scripts/migrate-wallet-delegations.ts for backfilling them into wallet_delegations.
+  const columns = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+  if (!columns.some((c) => c.name === 'delegator')) {
+    db.exec('ALTER TABLE agents ADD COLUMN delegator TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS idx_agents_delegator ON agents(delegator)');
+
   return db;
 }
 
