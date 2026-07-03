@@ -17,16 +17,13 @@ export interface DelegationRecord {
 
 export interface DelegationStats {
   activeCount: number;
-  totalValue: number;
-  activeAgents: number;
   policiesAttached: number;
   revokedCount: number;
-  pendingRequests: number;
 }
 
-export type DelegationStatus = 'active' | 'disabled' | 'pending' | 'expired';
+export type DelegationStatus = 'active' | 'disabled';
 
-export type DelegationSort = 'newest' | 'oldest' | 'value' | 'activity';
+export type DelegationSort = 'newest' | 'oldest';
 
 export interface DelegationFilters {
   search: string;

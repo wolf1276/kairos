@@ -54,6 +54,20 @@ export class PolicyModule {
     };
   }
 
+  /** True if the caveat's terms are an indirection marker (`0xFE ++ policy_id:u64_be`)
+   * created by `createIndexed`, pointing at on-chain Policy storage instead of inline terms. */
+  isIndexedCaveat(caveat: Caveat): boolean {
+    return caveat.terms.length === 9 && caveat.terms[0] === 0xfe;
+  }
+
+  /** Extracts the policy id an indexed caveat points at. Throws if the caveat isn't indexed. */
+  getIndexedPolicyId(caveat: Caveat): bigint {
+    if (!this.isIndexedCaveat(caveat)) {
+      throw new PolicyViolationError('decode', 'Caveat terms are not an indexed-policy marker');
+    }
+    return Buffer.from(caveat.terms).readBigUInt64BE(1);
+  }
+
   private encodeTerms(params: PolicyCreateParams): Uint8Array {
     let terms: Uint8Array;
 

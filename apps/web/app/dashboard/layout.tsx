@@ -42,7 +42,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Overview", exact: true, icon: Home },
   { href: "/dashboard/trade", label: "Trade", exact: false, icon: ArrowRightLeft },
   { href: "/dashboard/portfolio", label: "Portfolio", exact: false, icon: PieChart },
-  { href: "/dashboard/delegations-v2", label: "Delegations", exact: false, icon: Users },
+  { href: "/dashboard/delegations", label: "Delegations", exact: false, icon: Users },
   { href: "/dashboard/agents", label: "Agents", exact: false, icon: Bot },
   { href: "/dashboard/history", label: "History", exact: false, icon: History },
   { href: "/dashboard/settings", label: "Settings", exact: true, icon: Settings },
@@ -56,7 +56,7 @@ function WalletBar({ isCollapsed }: { isCollapsed: boolean }) {
     return (
       <div className={cols ? "flex justify-center" : "flex items-center gap-3"}>
         <span className="h-2 w-2 shrink-0 rounded-full bg-text-muted/30" />
-        {!cols && <span className="text-[13px] font-medium text-text-muted">Checking\u2026</span>}
+        {!cols && <span className="text-[13px] font-medium text-text-muted">Checking…</span>}
       </div>
     );
   }
@@ -99,7 +99,7 @@ function WalletBar({ isCollapsed }: { isCollapsed: boolean }) {
       {!cols && (
         <div className="flex items-center justify-between gap-2 rounded-xl bg-white/[0.02] px-3 py-2">
           <span className="font-mono text-[12px] text-text-secondary truncate">
-            {walletOwner ? `${walletOwner.slice(0, 4)}\u2026${walletOwner.slice(-4)}` : ""}
+            {walletOwner ? `${walletOwner.slice(0, 4)}…${walletOwner.slice(-4)}` : ""}
           </span>
           <button
             onClick={disconnect}
@@ -197,22 +197,22 @@ export default function DashboardLayout({
                 href={item.href}
                 onClick={() => !isDesktop && setSidebarOpen(false)}
                 className={cn(
-                  "group relative flex items-center gap-4 rounded-2xl px-4 py-3.5 text-[14px] font-medium transition-all duration-200",
+                  "group relative flex items-center gap-4 rounded-2xl px-4 py-3.5 text-[15px] font-medium transition-all duration-200",
                   active
-                    ? "bg-accent text-white shadow-[0_4px_20px_-4px_rgba(124,92,255,0.5)]"
-                    : "text-text-muted hover:bg-white/[0.05] hover:text-text-secondary",
+                    ? "bg-white/[0.08] text-text-primary"
+                    : "text-text-muted hover:bg-white/[0.04] hover:text-text-secondary",
                   isCollapsed && isDesktop && "justify-center px-0"
                 )}
                 title={isCollapsed && isDesktop ? item.label : undefined}
               >
                 <item.icon
                   className={cn(
-                    "shrink-0 h-[19px] w-[19px] transition-colors duration-200",
+                    "shrink-0 h-[22px] w-[22px] transition-colors duration-200",
                     active
-                      ? "text-white"
+                      ? "text-accent"
                       : "text-text-muted group-hover:text-text-secondary"
                   )}
-                  strokeWidth={active ? 2.25 : 2}
+                  strokeWidth={active ? 2.5 : 2}
                 />
                 {(!isCollapsed || !isDesktop) && (
                   <span className="truncate">{item.label}</span>

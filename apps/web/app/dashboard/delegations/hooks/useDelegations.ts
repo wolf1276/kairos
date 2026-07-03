@@ -30,11 +30,8 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
   const [error, setError] = useState<string | null>(null);
   const [stats, setStats] = useState<DelegationStats>({
     activeCount: 0,
-    totalValue: 0,
-    activeAgents: 0,
     policiesAttached: 0,
     revokedCount: 0,
-    pendingRequests: 0,
   });
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionErrors, setActionErrors] = useState<Record<string, string>>({});
@@ -80,11 +77,8 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
 
       setStats({
         activeCount: all.filter((d) => !d.disabled).length,
-        totalValue: 0,
-        activeAgents: 0,
         policiesAttached: all.reduce((acc, d) => acc + (d.full?.caveats.length ?? 0), 0),
         revokedCount: all.filter((d) => d.disabled).length,
-        pendingRequests: 0,
       });
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -461,10 +455,6 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
         break;
       case "oldest":
         result.sort((a, b) => a.hash.localeCompare(b.hash));
-        break;
-      case "value":
-        break;
-      case "activity":
         break;
     }
 

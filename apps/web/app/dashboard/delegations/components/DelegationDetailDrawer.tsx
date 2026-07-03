@@ -266,17 +266,38 @@ export function DelegationDetailDrawer({
             </h3>
             {delegation.full && delegation.full.caveats.length > 0 ? (
               <div className="space-y-2">
-                {delegation.full.caveats.map((c, i) => (
-                  <div key={i} className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-text-primary">{describeCaveat(c.terms)}</span>
-                      <span className="text-[10px] font-mono text-text-muted">{c.enforcer.slice(0, 6)}…{c.enforcer.slice(-4)}</span>
+                {delegation.full.caveats.map((c, i) => {
+                  const indexed = isIndexedPolicy(c.terms);
+                  const policyId = indexed ? decodePolicyId(c.terms) : null;
+                  return (
+                    <div key={i} className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-text-primary">{describeCaveat(c.terms)}</span>
+                        <span className="text-[10px] font-mono text-text-muted">{c.enforcer.slice(0, 6)}…{c.enforcer.slice(-4)}</span>
+                      </div>
+                      <p className="mt-1 text-[11px] text-text-muted">
+                        {indexed ? `policy_id ${policyId}` : `Terms: ${c.terms.length} bytes`}
+                      </p>
+                      {indexed && onUpdatePolicy && !delegation.disabled && (
+                        editingPolicyId === policyId ? (
+                          <PolicyEditForm
+                            policyId={policyId!}
+                            isSaving={savingPolicy}
+                            onCancel={() => setEditingPolicyId(null)}
+                            onSubmit={(params) => handleSavePolicy(policyId!, params)}
+                          />
+                        ) : (
+                          <button
+                            onClick={() => setEditingPolicyId(policyId)}
+                            className="mt-2 text-[11px] text-accent hover:underline cursor-pointer"
+                          >
+                            Edit policy
+                          </button>
+                        )
+                      )}
                     </div>
-                    <p className="mt-1 text-[11px] text-text-muted">
-                      Terms: {c.terms.length} bytes
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             ) : (
               <p className="text-xs text-text-muted">No policies attached (unrestricted)</p>

@@ -20,16 +20,23 @@ export async function spendFundsHandler(
   const sessionPubkey = sessionKeypair.publicKey();
 
   const eligible = await loadEligibleDelegations(client, sessionPubkey);
-  const withSpendLimit = eligible.filter(({ delegation }) =>
-    delegation.caveats.some((c) => {
+  // Resolve `0xFE` indexed caveats to their live on-chain policy terms before decoding —
+  // dashboard-minted delegations never carry inline terms (see executeAction.ts).
+  const withSpendLimit: typeof eligible = [];
+  for (const entry of eligible) {
+    for (const c of entry.delegation.caveats) {
       try {
-        const decoded = client.policy.decode(c);
-        return decoded.type === 'spend-limit' && decoded.token === input.token;
+        const resolved = await client.delegation.resolveCaveat(entry.delegation.delegator, c);
+        const decoded = client.policy.decode(resolved);
+        if (decoded.type === 'spend-limit' && decoded.token === input.token) {
+          withSpendLimit.push(entry);
+          break;
+        }
       } catch {
-        return false;
+        // unset policy (empty terms) or non-matching caveat
       }
-    })
-  );
+    }
+  }
 
   if (withSpendLimit.length === 0) {
     return {

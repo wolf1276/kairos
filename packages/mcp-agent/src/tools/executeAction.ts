@@ -43,16 +43,24 @@ export async function executeActionHandler(
   const sessionPubkey = sessionKeypair.publicKey();
 
   const eligible = await loadEligibleDelegations(client, sessionPubkey);
-  const withTargetAllowed = eligible.filter(({ delegation }) =>
-    delegation.caveats.some((c) => {
+  // Dashboard-minted delegations carry `0xFE` indexed caveats whose real terms live in the
+  // DelegationManager's on-chain Policy storage — resolve those before decoding, exactly as
+  // the contract's `resolve_terms` does at redemption time.
+  const withTargetAllowed: typeof eligible = [];
+  for (const entry of eligible) {
+    for (const c of entry.delegation.caveats) {
       try {
-        const decoded = client.policy.decode(c);
-        return decoded.type === 'target-whitelist' && decoded.target === input.target;
+        const resolved = await client.delegation.resolveCaveat(entry.delegation.delegator, c);
+        const decoded = client.policy.decode(resolved);
+        if (decoded.type === 'target-whitelist' && decoded.target === input.target) {
+          withTargetAllowed.push(entry);
+          break;
+        }
       } catch {
-        return false;
+        // unset policy (empty terms) or non-policy caveat — not a whitelist match
       }
-    })
-  );
+    }
+  }
 
   if (withTargetAllowed.length === 0) {
     return {

@@ -520,6 +520,49 @@ export class DelegationModule {
   }
 
   /**
+   * Reads the live policy terms stored on-chain for (delegator, policyId) — the blob that
+   * `resolve_terms` substitutes for a `0xFE`-marker caveat at redemption time. Returns an
+   * empty Uint8Array when no policy is set (which the enforcer treats as blocking).
+   */
+  async getPolicyTerms(delegator: string, policyId: bigint): Promise<Uint8Array> {
+    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'get_policy',
+      args: [
+        Address.fromString(delegator).toScVal(),
+        xdr.ScVal.scvU64(new xdr.Uint64(policyId)),
+      ],
+    });
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const simRes = await this.client.simulateTx(tx);
+    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
+      return new Uint8Array(simRes.result.retval.bytes());
+    }
+    return new Uint8Array(0);
+  }
+
+  /**
+   * Resolves a caveat the same way the contract's `resolve_terms` does: indexed (`0xFE`
+   * marker) caveats are replaced with the live on-chain policy terms for
+   * (delegator, policyId); inline caveats are returned as-is. The result can be fed to
+   * `PolicyModule.decode`.
+   */
+  async resolveCaveat(delegator: string, caveat: Caveat): Promise<Caveat> {
+    if (!this.client.policy.isIndexedCaveat(caveat)) return caveat;
+    const policyId = this.client.policy.getIndexedPolicyId(caveat);
+    const terms = await this.getPolicyTerms(delegator, policyId);
+    return { enforcer: caveat.enforcer, terms };
+  }
+
+  /**
    * Renews a delegation by incrementing the nonce or renewing parameters.
    */
   async renew(
@@ -543,7 +586,7 @@ export class DelegationModule {
   }
 
   async list(delegator?: string): Promise<string[]> {
-    const eventTypes = ['del_dis', 'del_en', 'redeemed'];
+    const eventTypes = ['del_reg', 'del_dis', 'del_en', 'redeemed'];
     const topicFilters = eventTypes.map(t => ({
       topics: [t],
     }));

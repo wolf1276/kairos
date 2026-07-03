@@ -4,7 +4,7 @@ import { KairosClient } from '../client';
 import { RpcError } from '../errors';
 
 export interface KairosEvent {
-  type: 'DelegationRevoked' | 'DelegationEnabled' | 'DelegationExecuted' | 'PolicyViolation' | 'ExecutionFailed' | 'ExecutionSucceeded';
+  type: 'DelegationRegistered' | 'DelegationRevoked' | 'DelegationEnabled' | 'DelegationExecuted' | 'PolicyViolation' | 'ExecutionFailed' | 'ExecutionSucceeded';
   contractId: string;
   id: string;
   ledger: number;
@@ -43,6 +43,18 @@ export class EventsModule {
       if (topics.length === 0) return null;
 
       const eventTypeSymbol = topics[0].sym().toString();
+
+      if (eventTypeSymbol === 'del_reg') {
+        const delegator = Address.fromScVal(topics[1]).toString();
+        const hash = value.bytes().toString('hex');
+        return {
+          type: 'DelegationRegistered',
+          contractId,
+          id: rawEvent.id,
+          ledger: rawEvent.ledger,
+          data: { delegator, hash },
+        };
+      }
 
       if (eventTypeSymbol === 'del_dis') {
         const delegator = Address.fromScVal(topics[1]).toString();

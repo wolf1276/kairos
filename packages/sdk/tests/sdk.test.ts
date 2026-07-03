@@ -164,6 +164,31 @@ describe('Kairos SDK Unit Tests', () => {
     expect(xdrBytes[3]).toBe(0);
   });
 
+  it('should round-trip indexed (0xFE marker) caveats', () => {
+    const { caveat, terms } = client.policy.createIndexed(7n, {
+      type: 'time-restriction',
+      start: 1000n,
+      expiry: 2000n,
+    });
+
+    expect(caveat.terms.length).toBe(9);
+    expect(caveat.terms[0]).toBe(0xfe);
+    expect(client.policy.isIndexedCaveat(caveat)).toBe(true);
+    expect(client.policy.getIndexedPolicyId(caveat)).toBe(7n);
+
+    // The real terms decode normally; the marker itself must not decode as a policy.
+    expect(client.policy.decode({ enforcer: caveat.enforcer, terms })).toMatchObject({
+      type: 'time-restriction',
+      start: 1000n,
+      expiry: 2000n,
+    });
+    expect(() => client.policy.decode(caveat)).toThrow();
+
+    // Inline caveats are not indexed.
+    expect(client.policy.isIndexedCaveat({ enforcer: caveat.enforcer, terms })).toBe(false);
+    expect(() => client.policy.getIndexedPolicyId({ enforcer: caveat.enforcer, terms })).toThrow();
+  });
+
   it('should correctly encode i128 values for spend limits', () => {
     const positive = 100n;
     const positiveBuf = i128ToBuffer(positive);

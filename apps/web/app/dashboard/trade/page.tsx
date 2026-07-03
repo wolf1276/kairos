@@ -979,7 +979,7 @@ function TradeInner() {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <a href="/dashboard/delegations-v2" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
+                      <a href="/dashboard/delegations" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
                       <button onClick={() => { setIntentResult(null); setIntentProfile(null); setIntentText(""); }} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Create Another</button>
                     </div>
                   </div>
@@ -1076,7 +1076,7 @@ function TradeInner() {
                       </button>
                     </div>
                     <div className="flex gap-2">
-                      <a href="/dashboard/delegations-v2" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
+                      <a href="/dashboard/delegations" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
                       <button
                         onClick={handleStopAgent}
                         disabled={stoppingAgent}

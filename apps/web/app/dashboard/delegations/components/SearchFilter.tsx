@@ -61,8 +61,6 @@ export function SearchFilter({
             <option value="all">All Status</option>
             <option value="active">Active</option>
             <option value="disabled">Disabled</option>
-            <option value="pending">Pending</option>
-            <option value="expired">Expired</option>
           </select>
 
           <select
@@ -72,8 +70,6 @@ export function SearchFilter({
           >
             <option value="newest">Newest</option>
             <option value="oldest">Oldest</option>
-            <option value="value">By Value</option>
-            <option value="activity">By Activity</option>
           </select>
         </div>
       </div>
