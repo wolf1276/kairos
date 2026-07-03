@@ -5,15 +5,16 @@ services:
       dockerfile: backend/Dockerfile
     ports:
       - "4001:4001"
+    env_file:
+      - backend/.env
     environment:
+      # override whatever the .env has, since these are container-internal paths
       PORT: 4001
       AGENTS_DB_PATH: /app/backend/data/agents.db
-      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
-      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-*}
-      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY}
-      CUSTOM_ACCOUNT_CONTRACT_ID: ${CUSTOM_ACCOUNT_CONTRACT_ID}
+      TURNKEY_CREDENTIALS_FILE: /app/secrets/kairos-api-turnkey.json
     volumes:
       - backend-data:/app/backend/data
+      - ./secrets:/app/secrets:ro
     restart: unless-stopped
 
   web:
@@ -21,9 +22,12 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_AGENTS_API_URL: ${NEXT_PUBLIC_AGENTS_API_URL:-http://localhost:4001}
+        # baked into the client bundle at build time, must match backend's exposed port above
+        NEXT_PUBLIC_AGENTS_BACKEND_URL: http://localhost:4001
     ports:
       - "3000:3000"
+    env_file:
+      - apps/web/.env.local
     depends_on:
       - backend
     restart: unless-stopped

@@ -11,8 +11,8 @@ COPY apps/web ./apps/web
 RUN pnpm install --frozen-lockfile --filter app... --filter @wolf1276/kairos-sdk...
 
 WORKDIR /repo/apps/web
-ARG NEXT_PUBLIC_AGENTS_API_URL
-ENV NEXT_PUBLIC_AGENTS_API_URL=$NEXT_PUBLIC_AGENTS_API_URL
+ARG NEXT_PUBLIC_AGENTS_BACKEND_URL
+ENV NEXT_PUBLIC_AGENTS_BACKEND_URL=$NEXT_PUBLIC_AGENTS_BACKEND_URL
 RUN pnpm build
 
 # --- runtime stage ---
