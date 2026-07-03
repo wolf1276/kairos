@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import type { PriceAlert } from "@/app/hooks/usePriceAlerts";
-import { formatPrice, formatDateTime } from "@/app/lib/format";
+import { formatPrice } from "@/app/lib/format";
 
 export function PriceAlertsPanel({
   alerts,

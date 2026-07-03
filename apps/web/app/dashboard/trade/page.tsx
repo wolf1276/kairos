@@ -142,7 +142,21 @@ function TradeInner() {
     }
   }, [connectedWallet]);
 
-  useEffect(() => { refreshRealBalances(); }, [refreshRealBalances]);
+  const connectEventSubscribed = useRef(false);
+
+  useSyncExternalStore(
+    (onStoreChange) => {
+      if (connectEventSubscribed.current || !connectedWallet) return () => { connectEventSubscribed.current = false; };
+      connectEventSubscribed.current = true;
+      (async () => {
+        await refreshRealBalances();
+        onStoreChange();
+      })();
+      return () => { connectEventSubscribed.current = false; };
+    },
+    () => realBalances,
+    () => [],
+  );
 
   useEffect(() => {
     if (!isRealPair) return;
@@ -319,7 +333,7 @@ function TradeInner() {
         ))}
       </div>
 
-      {/* Preview-mode disclosure — these modes don't execute anything yet */}
+      {/* Preview-mode disclosure — these modes don&apos;t execute anything yet */}
       {MODES.find((m) => m.value === mode)?.preview && (
         <div className="flex items-center gap-2 rounded-xl border border-amber-400/15 bg-amber-400/[0.05] px-4 py-2.5">
           <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />

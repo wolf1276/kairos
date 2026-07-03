@@ -109,8 +109,16 @@ export default function DashboardOverview() {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [checked, setChecked] = useState(false);
-  const [initialValue, setInitialValue] = useState(0);
-  const [defaultMode, setDefaultMode] = useState("AI_MANAGED");
+  const [defaultMode] = useState(() => {
+    try {
+      const raw = localStorage.getItem("kairos_settings");
+      if (raw) {
+        const s = JSON.parse(raw);
+        if (s.defaultMode) return s.defaultMode;
+      }
+    } catch {}
+    return "AI_MANAGED";
+  });
 
   const connect = useCallback(async () => {
     setConnecting(true);
@@ -129,36 +137,23 @@ export default function DashboardOverview() {
   }, [connect]);
 
   useEffect(() => {
-    const raw = localStorage.getItem("kairos_settings");
-    if (raw) {
-      try {
-        const s = JSON.parse(raw);
-        if (s.defaultMode) setDefaultMode(s.defaultMode);
-      } catch {}
-    }
-  }, []);
-
-  useEffect(() => {
     if (wallet && tickers["XLMUSDT"] && ready) {
       const xlmBalance = parseFloat(wallet.balance);
       const xlmPrice = tickers["XLMUSDT"].price;
       const usdBalance = Number((xlmBalance * xlmPrice).toFixed(2));
       if (usdBalance > 0 && totalValue === 0 && trades.length === 0) {
         reset(usdBalance);
-        setInitialValue(usdBalance);
-      } else if (initialValue === 0) {
-        setInitialValue(totalValue - trades.reduce((s, t) => s + (t.pnl ?? 0), 0));
       }
     }
-  }, [wallet, tickers, ready, totalValue, trades, reset, initialValue]);
+  }, [wallet, tickers, ready, totalValue, trades, reset]);
 
   const loading = !ready;
   const movers = MARKET_SYMBOLS.map((s) => tickers[s]).filter(Boolean);
   const recentTrades = trades.slice(0, 5);
 
-  const startRef = initialValue || (trades.length > 0
+  const startRef = totalValue > 0
     ? totalValue - trades.reduce((s, t) => s + (t.pnl ?? 0), 0)
-    : 0);
+    : 0;
 
   const totalReturn = startRef > 0 ? totalValue - startRef : 0;
   const totalReturnPct = startRef > 0 ? (totalReturn / startRef) * 100 : 0;
@@ -176,10 +171,9 @@ export default function DashboardOverview() {
   const todayEarnings = todayTrades.reduce((s, t) => s + (t.pnl ?? 0), 0);
   const hasWallet = wallet !== null;
 
-  const [onboardingDismissed, setOnboardingDismissed] = useState(true);
-  useEffect(() => {
-    setOnboardingDismissed(localStorage.getItem("kairos:onboarding-dismissed") === "1");
-  }, []);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(
+    () => localStorage.getItem("kairos:onboarding-dismissed") === "1",
+  );
   const dismissOnboarding = () => {
     localStorage.setItem("kairos:onboarding-dismissed", "1");
     setOnboardingDismissed(true);
@@ -397,7 +391,7 @@ export default function DashboardOverview() {
 
         <Card className="p-6">
           <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-            Today's Earnings
+            Today&apos;s Earnings
           </p>
           {!hasWallet ? (
             <>
