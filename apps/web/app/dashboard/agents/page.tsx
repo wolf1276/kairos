@@ -37,10 +37,9 @@ export default function AgentsPage() {
     connecting,
     connect,
     walletOwner,
-    smartWallets,
+    smartWalletAddress,
     deploying,
     deployError,
-    deployAnotherSmartWallet,
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
@@ -95,11 +94,11 @@ export default function AgentsPage() {
             </button>
           </CardBody>
         </Card>
-      ) : smartWallets.length === 0 ? (
+      ) : !smartWalletAddress ? (
         <Card>
           <CardBody className="text-center">
             <p className="text-xs text-text-muted">
-              {deploying ? "Deploying your smart wallet…" : "Your smart wallet hasn't finished deploying yet."}
+              {deploying ? "Deploying your capital wallet…" : "Your capital wallet hasn't finished deploying yet."}
             </p>
             {deployError && <p className="mt-2 text-xs text-error/90">{deployError}</p>}
           </CardBody>
@@ -132,10 +131,9 @@ export default function AgentsPage() {
                 <AgentCard
                   key={agent.id}
                   agent={agent}
-                  smartWallets={smartWallets}
+                  smartWalletAddress={smartWalletAddress}
                   walletOwner={walletOwner!}
                   networkPassphrase={networkPassphrase}
-                  onDeployAnotherWallet={deployAnotherSmartWallet}
                   onChanged={refresh}
                 />
               ))}
@@ -149,41 +147,29 @@ export default function AgentsPage() {
 
 function AgentCard({
   agent,
-  smartWallets,
+  smartWalletAddress,
   walletOwner,
   networkPassphrase,
-  onDeployAnotherWallet,
   onChanged,
 }: {
   agent: AgentSummary;
-  smartWallets: string[];
+  smartWalletAddress: string | null;
   walletOwner: string;
   networkPassphrase: string;
-  onDeployAnotherWallet: () => Promise<string | null>;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // ── Step 1: pick a delegator wallet + spend limit, then sign the delegation ──
-  const [selectedWallet, setSelectedWallet] = useState(smartWallets[0] ?? "");
+  // ── Step 1: grant this agent spend access from the capital wallet ──
   const [spendLimit, setSpendLimit] = useState("100");
   const [periodDays, setPeriodDays] = useState("1");
-
-  const handleDeployAnother = async () => {
-    setBusy(true);
-    setError(null);
-    const address = await onDeployAnotherWallet();
-    if (address) setSelectedWallet(address);
-    else setError("Failed to deploy a new smart wallet");
-    setBusy(false);
-  };
 
   const handleCreateDelegation = async () => {
     const amt = parseFloat(spendLimit) || 0;
     if (amt <= 0) { setError("Enter a valid spend limit"); return; }
-    if (!selectedWallet) { setError("Select which wallet this agent can use"); return; }
+    if (!smartWalletAddress) { setError("Capital wallet not ready yet"); return; }
     setBusy(true);
     setError(null);
     try {
@@ -193,7 +179,7 @@ function AgentCard({
         body: JSON.stringify({
           action: "PREPARE_DELEGATION",
           delegate: agent.publicKey,
-          delegator: selectedWallet,
+          delegator: smartWalletAddress,
           policies: [
             {
               type: "spend-limit",
@@ -319,26 +305,15 @@ function AgentCard({
         {!agent.delegationHash ? (
           <div className="space-y-2.5 rounded-xl bg-bg-elevated p-3.5">
             <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
-              Step 1 — Choose which wallet this agent can use
+              Step 1 — Grant this agent spend access from your capital wallet
             </p>
             <div>
-              <label className="mb-1 block text-[10px] text-text-muted">Delegation wallet</label>
-              <select
-                value={selectedWallet}
-                onChange={(e) => setSelectedWallet(e.target.value)}
+              <label className="mb-1 block text-[10px] text-text-muted">Capital wallet</label>
+              <input
+                value={smartWalletAddress ? shortKey(smartWalletAddress) : "—"}
+                disabled
                 className={INPUT_CLS}
-              >
-                {smartWallets.map((w) => (
-                  <option key={w} value={w}>{shortKey(w)}</option>
-                ))}
-              </select>
-              <button
-                onClick={handleDeployAnother}
-                disabled={busy}
-                className="mt-1.5 text-[10px] text-accent/70 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                + Deploy another smart wallet
-              </button>
+              />
             </div>
             <div className="grid grid-cols-2 gap-2">
               <div>
@@ -351,8 +326,8 @@ function AgentCard({
               </div>
             </div>
             <p className="text-[10px] text-text-muted">
-              This agent will only ever be able to spend from the wallet you pick above, up to
-              the limit you set — and anything it spends stays within that same wallet.
+              This agent will only ever be able to spend from your capital wallet, up to the limit
+              you set — and anything it spends stays within that same wallet.
             </p>
             <button
               onClick={handleCreateDelegation}

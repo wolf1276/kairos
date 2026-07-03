@@ -9,31 +9,31 @@ import {
   type WalletState,
 } from "@/app/lib/stellar";
 
-const LIST_KEY_PREFIX = "kairos:smart-wallets:";
-const LEGACY_KEY_PREFIX = "kairos:smart-wallet:"; // pre-multi-wallet single-address format
+const KEY_PREFIX = "kairos:smart-wallet:";
+const LEGACY_LIST_KEY_PREFIX = "kairos:smart-wallets:"; // pre-single-capital-wallet array format
 
-function loadWallets(owner: string): string[] {
+function loadWallet(owner: string): string | null {
   try {
-    const raw = localStorage.getItem(LIST_KEY_PREFIX + owner);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
-    }
-    // Migrate from the old single-wallet format so existing users don't lose their wallet.
-    const legacy = localStorage.getItem(LEGACY_KEY_PREFIX + owner);
+    const raw = localStorage.getItem(KEY_PREFIX + owner);
+    if (raw) return raw;
+    // Migrate from the old multi-wallet array format — keep only the first (primary) one.
+    const legacy = localStorage.getItem(LEGACY_LIST_KEY_PREFIX + owner);
     if (legacy) {
-      saveWallets(owner, [legacy]);
-      return [legacy];
+      const parsed = JSON.parse(legacy);
+      if (Array.isArray(parsed) && parsed[0]) {
+        saveWallet(owner, parsed[0]);
+        return parsed[0];
+      }
     }
   } catch {
     // fall through
   }
-  return [];
+  return null;
 }
 
-function saveWallets(owner: string, wallets: string[]) {
+function saveWallet(owner: string, address: string) {
   try {
-    localStorage.setItem(LIST_KEY_PREFIX + owner, JSON.stringify(wallets));
+    localStorage.setItem(KEY_PREFIX + owner, address);
   } catch {}
 }
 
@@ -43,19 +43,15 @@ export interface SmartWalletState {
   connected: boolean;
   connecting: boolean;
   checked: boolean;
-  /** All smart wallets deployed by this owner (delegator candidates). */
-  smartWallets: string[];
-  /** The first/primary smart wallet — kept for callers that only ever dealt with one. */
+  /** The single capital wallet (smart account) agents delegate from. */
   smartWalletAddress: string | null;
   smartWalletBalance: string | null;
   deploying: boolean;
   deployError: string | null;
   connect: () => Promise<{ success: boolean; wallet?: WalletState }>;
   disconnect: () => void;
-  /** Deploys a wallet only if this owner doesn't already have one. */
+  /** Deploys the capital wallet only if this owner doesn't already have one. */
   deploySmartWallet: () => Promise<void>;
-  /** Always deploys a brand-new smart wallet and adds it to the list. */
-  deployAnotherSmartWallet: () => Promise<string | null>;
   checkBalance: (address: string) => Promise<void>;
 }
 
@@ -63,14 +59,12 @@ export function useSmartWallet(): SmartWalletState {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [checked, setChecked] = useState(false);
-  const [smartWallets, setSmartWallets] = useState<string[]>([]);
+  const [smartWalletAddress, setSmartWalletAddress] = useState<string | null>(null);
   const [smartWalletBalance, setSmartWalletBalance] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
-  const autoDeployingRef = useRef(false);
 
   const walletOwner = wallet?.address ?? null;
-  const smartWalletAddress = smartWallets[0] ?? null;
 
   const checkBalance = useCallback(async (address: string) => {
     if (!wallet) return;
@@ -120,60 +114,37 @@ export function useSmartWallet(): SmartWalletState {
     setDeployError(null);
     try {
       const address = await deployWallet(walletOwner, wallet);
-      const next = [address, ...smartWallets];
-      setSmartWallets(next);
-      saveWallets(walletOwner, next);
+      setSmartWalletAddress(address);
+      saveWallet(walletOwner, address);
       await checkBalance(address);
     } catch (e) {
       setDeployError(e instanceof Error ? e.message : String(e));
     } finally {
       setDeploying(false);
     }
-  }, [walletOwner, wallet, smartWallets, deployWallet, checkBalance]);
-
-  const deployAnotherSmartWallet = useCallback(async (): Promise<string | null> => {
-    if (!walletOwner || !wallet) {
-      setDeployError("Connect Freighter wallet first");
-      return null;
-    }
-    setDeploying(true);
-    setDeployError(null);
-    try {
-      const address = await deployWallet(walletOwner, wallet);
-      const next = [...smartWallets, address];
-      setSmartWallets(next);
-      saveWallets(walletOwner, next);
-      return address;
-    } catch (e) {
-      setDeployError(e instanceof Error ? e.message : String(e));
-      return null;
-    } finally {
-      setDeploying(false);
-    }
-  }, [walletOwner, wallet, smartWallets, deployWallet]);
+  }, [walletOwner, wallet, deployWallet, checkBalance]);
 
   const connect = useCallback(async () => {
     setConnecting(true);
     const result = await connectWallet();
     if (result.success && result.wallet) {
       setWallet(result.wallet);
-      setSmartWallets([]);
+      setSmartWalletAddress(null);
       setSmartWalletBalance(null);
-      const saved = loadWallets(result.wallet.address);
-      if (saved.length > 0) {
-        setSmartWallets(saved);
+      const saved = loadWallet(result.wallet.address);
+      if (saved) {
+        setSmartWalletAddress(saved);
         try {
           const balance = await fetchSmartWalletBalance(
-            saved[0],
+            saved,
             result.wallet.networkPassphrase,
             result.wallet.sorobanRpcUrl,
           );
           setSmartWalletBalance(balance);
         } catch {}
-      } else {
-        // Auto-deploy if no smart wallet found
-        autoDeployingRef.current = true;
       }
+      // No capital wallet found — leave it undeployed until the user explicitly
+      // clicks "Create Capital Wallet".
     }
     setConnecting(false);
     return result;
@@ -181,18 +152,10 @@ export function useSmartWallet(): SmartWalletState {
 
   const disconnect = useCallback(() => {
     setWallet(null);
-    setSmartWallets([]);
+    setSmartWalletAddress(null);
     setSmartWalletBalance(null);
     setDeployError(null);
   }, []);
-
-  // Auto-deploy when connect completes and no smart wallet exists
-  useEffect(() => {
-    if (autoDeployingRef.current && walletOwner && wallet && smartWallets.length === 0 && !deploying) {
-      autoDeployingRef.current = false;
-      deploySmartWallet();
-    }
-  }, [walletOwner, wallet, smartWallets, deploying, deploySmartWallet]);
 
   // Auto-check connection on mount
   useEffect(() => {
@@ -212,7 +175,6 @@ export function useSmartWallet(): SmartWalletState {
     connected: !!wallet,
     connecting,
     checked,
-    smartWallets,
     smartWalletAddress,
     smartWalletBalance,
     deploying,
@@ -220,7 +182,6 @@ export function useSmartWallet(): SmartWalletState {
     connect,
     disconnect,
     deploySmartWallet,
-    deployAnotherSmartWallet,
     checkBalance,
   };
 }

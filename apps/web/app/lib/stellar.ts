@@ -470,6 +470,83 @@ async function transferXLMToContract(
   return { hash: sendResponse.hash, amount, destination };
 }
 
+/**
+ * Withdraws native XLM from a smart wallet (custom account contract) back to its owner's
+ * classic G-address, by invoking the wallet's own `execute` entrypoint against the native
+ * SAC's `transfer` function. The owner signs as the transaction's source account, which
+ * satisfies the contract's `owner.require_auth()` via source-account credentials — no
+ * separate signed auth entry (unlike deploy/delegation flows, where the funder pays fees
+ * on the owner's behalf) is needed here since the owner pays their own fee directly.
+ */
+export async function withdrawFromSmartWallet(
+  smartWalletAddress: string,
+  amount: string,
+  networkPassphrase: string,
+  sorobanRpcUrl?: string
+): Promise<DelegationResult> {
+  const ownerAddress = await getAddressFromFreighter();
+  const rpcUrl =
+    sorobanRpcUrl ||
+    SOROBAN_RPC_URLS[networkPassphrase] ||
+    SOROBAN_RPC_URLS[Networks.TESTNET];
+
+  const server = new rpc.Server(rpcUrl, {
+    allowHttp: !rpcUrl.startsWith("https"),
+  });
+
+  let account;
+  try {
+    account = await server.getAccount(ownerAddress);
+  } catch {
+    throw new Error("Could not load Stellar account. Is it funded with testnet XLM?");
+  }
+
+  const nativeSacId = Asset.native().contractId(networkPassphrase);
+  const execOp = Operation.invokeContractFunction({
+    contract: smartWalletAddress,
+    function: "execute",
+    args: [
+      Address.fromString(nativeSacId).toScVal(),
+      xdr.ScVal.scvSymbol("transfer"),
+      xdr.ScVal.scvVec([
+        Address.fromString(smartWalletAddress).toScVal(),
+        Address.fromString(ownerAddress).toScVal(),
+        nativeToScVal(amountToStroops(amount), { type: "i128" }),
+      ]),
+    ],
+  });
+
+  const builtTx = new TransactionBuilder(account, {
+    fee: BASE_FEE,
+    networkPassphrase,
+  })
+    .addOperation(execOp)
+    .setTimeout(30)
+    .build();
+
+  const simulated = await server.simulateTransaction(builtTx);
+  if (!rpc.Api.isSimulationSuccess(simulated)) {
+    const reason = rpc.Api.isSimulationError(simulated) ? simulated.error : "unknown simulation error";
+    throw new Error(`Failed to simulate smart wallet withdrawal: ${reason}`);
+  }
+  const assembled = rpc.assembleTransaction(builtTx, simulated).build();
+
+  const signedXDR = await signWithFreighter(assembled.toXDR(), networkPassphrase);
+  const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
+
+  const sendResponse = await server.sendTransaction(signedTx);
+  if (sendResponse.status === "ERROR") {
+    throw new Error("Failed to submit smart wallet withdrawal transaction");
+  }
+
+  const result = await pollSorobanTransaction(server, sendResponse.hash);
+  if (result.status !== "SUCCESS") {
+    throw new Error(result.error || `Smart wallet withdrawal ${result.status.toLowerCase()}`);
+  }
+
+  return { hash: sendResponse.hash, amount, destination: ownerAddress };
+}
+
 export async function delegateXLM(
   amount: string,
   destination: string,
