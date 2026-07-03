@@ -3,11 +3,11 @@
 // duplicates, so a page refresh or re-login always converges on exactly three. Each agent gets
 // a RoleStrategyConfig operating envelope and (in paper mode) is started immediately.
 //
-// Delegation note: the current wallet_delegations model is one delegation per wallet keyed by
-// the delegator, while each agent has its own key — so a single shared delegation cannot cover
-// three distinct agent keys. Paper mode (the default) therefore runs without an attached
-// delegation and the delegation check is advisory (see roleTick). Live mode requires a
-// per-agent delegation attached explicitly before starting that agent.
+// Delegation note: wallet_delegations is keyed per (delegator, delegate) pair, so each role
+// agent holds its own independent delegation from the wallet and can each be live at once.
+// Paper mode (the default) runs without an attached delegation and the delegation check is
+// advisory (see roleTick). Live mode requires a per-agent delegation attached explicitly
+// before starting that agent (see the Autonomous page's "Add Agent" flow).
 import { getDb, type AgentMode, type AgentRole, type AgentRow } from './db.js';
 import { createAgent, getAgent, getAgentRow, setStrategy, startAgent } from './agentService.js';
 import { getRoleIntervalSeconds } from './config.js';

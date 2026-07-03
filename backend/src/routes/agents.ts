@@ -89,10 +89,10 @@ agentsRouter.post('/:id/delegation', async (req, res) => {
   const parsed = jsonSafeDelegationSchema.safeParse(req.body.delegation);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
-    const existing = getWalletDelegation(parsed.data.delegator);
+    const existing = getWalletDelegation(parsed.data.delegator, parsed.data.delegate);
     if (existing && !existing.disabled && !req.body.force) {
       return res.status(409).json({
-        error: 'Wallet already has a non-disabled delegation. Revoke it first via POST /:id/delegation/revoke, or resubmit with { force: true, delegation: ... } to replace it.',
+        error: 'This agent already has a non-disabled delegation from this wallet. Revoke it first via POST /:id/delegation/revoke, or resubmit with { force: true, delegation: ... } to replace it.',
       });
     }
     res.json({ success: true, agent: await attachDelegation(req.params.id, parsed.data) });
@@ -134,14 +134,15 @@ const limitStrategySchema = z.object({
 
 const strategySchema = z.discriminatedUnion('type', [dcaStrategySchema, quantStrategySchema, limitStrategySchema]);
 
-// Revokes the wallet's shared delegation, blocking every agent (any exec mode) tied to it —
-// call before/alongside the on-chain `revoke_by_wallet` to keep backend state in sync.
+// Revokes this specific agent's delegation from its wallet — other agents delegated from the
+// same wallet keep working. Call before/alongside the on-chain `revoke_by_wallet` (which is
+// per-delegate too) to keep backend state in sync.
 agentsRouter.post('/:id/delegation/revoke', (req, res) => {
   const row = loadOwnedAgent(req, res);
   if (!row) return;
   if (!row.delegator) return res.status(400).json({ error: 'Agent has no delegation attached' });
   try {
-    revokeWalletDelegation(row.delegator);
+    revokeWalletDelegation(row.delegator, row.public_key);
     res.json({ success: true, agent: getAgent(req.params.id) });
   } catch (error) {
     handleError(res, error);

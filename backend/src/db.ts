@@ -125,9 +125,12 @@ export interface AuditLogRow {
   created_at: number;
 }
 
-/** One delegation per wallet, shared across every agent (autonomous/strategy/intent) for that wallet. */
+/** One delegation per (delegator wallet, delegate agent) pair — each agent tied to a wallet
+ *  holds its own independent spend delegation, so multiple agents (e.g. the 3 autonomous role
+ *  agents) can each have live spend authority from the same capital wallet simultaneously. */
 export interface WalletDelegationRow {
   delegator: string;
+  delegate: string;
   delegation_hash: string;
   delegation_json: string;
   disabled: 0 | 1;
@@ -233,6 +236,60 @@ let db: Database.Database | null = null;
  * this migration existed) must not block startup — then back on before the process serves
  * any traffic.
  */
+/**
+ * `wallet_delegations` used to be keyed by `delegator` alone (one delegation per wallet, shared
+ * across every agent) — that meant a second agent could never get its own live delegation from
+ * the same wallet without first revoking the first agent's, breaking every other agent that
+ * wallet had already delegated to. Rebuilds the table keyed by (delegator, delegate) instead,
+ * backfilling `delegate` from each row's own `delegation_json.delegate` field (the delegation
+ * struct always carries its own delegate address, so no data is lost). Skipped on fresh DBs —
+ * the CREATE TABLE above already creates the new shape directly.
+ */
+function migrateWalletDelegationsToPerAgent(db: Database.Database): void {
+  const columns = db.prepare("PRAGMA table_info(wallet_delegations)").all() as { name: string }[];
+  if (columns.some((c) => c.name === 'delegate')) return; // already migrated (or fresh DB)
+
+  const rows = db.prepare('SELECT * FROM wallet_delegations').all() as {
+    delegator: string;
+    delegation_hash: string;
+    delegation_json: string;
+    disabled: 0 | 1;
+    updated_at: number;
+  }[];
+
+  db.exec(`
+    CREATE TABLE wallet_delegations_new (
+      delegator TEXT NOT NULL,
+      delegate TEXT NOT NULL,
+      delegation_hash TEXT NOT NULL,
+      delegation_json TEXT NOT NULL,
+      disabled INTEGER NOT NULL DEFAULT 0,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (delegator, delegate)
+    );
+  `);
+
+  const insert = db.prepare(
+    `INSERT INTO wallet_delegations_new (delegator, delegate, delegation_hash, delegation_json, disabled, updated_at)
+     VALUES (@delegator, @delegate, @delegation_hash, @delegation_json, @disabled, @updated_at)`
+  );
+  const migrate = db.transaction(() => {
+    for (const row of rows) {
+      let delegate: string | null = null;
+      try {
+        delegate = (JSON.parse(row.delegation_json) as { delegate?: string }).delegate ?? null;
+      } catch {
+        // malformed JSON — unrecoverable, drop this row rather than fail the whole migration.
+      }
+      if (!delegate) continue;
+      insert.run({ ...row, delegate });
+    }
+    db.exec('DROP TABLE wallet_delegations');
+    db.exec('ALTER TABLE wallet_delegations_new RENAME TO wallet_delegations');
+  });
+  migrate();
+}
+
 function addForeignKeys(db: Database.Database): void {
   const hasFk = (table: string): boolean => (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as unknown[]).length > 0;
 
@@ -404,11 +461,13 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner);
     CREATE INDEX IF NOT EXISTS idx_agents_status ON agents(status);
     CREATE TABLE IF NOT EXISTS wallet_delegations (
-      delegator TEXT PRIMARY KEY,
+      delegator TEXT NOT NULL,
+      delegate TEXT NOT NULL,
       delegation_hash TEXT NOT NULL,
       delegation_json TEXT NOT NULL,
       disabled INTEGER NOT NULL DEFAULT 0,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (delegator, delegate)
     );
     CREATE TABLE IF NOT EXISTS trades (
       id TEXT PRIMARY KEY,
@@ -580,6 +639,7 @@ export function getDb(): Database.Database {
     db.exec("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
   }
 
+  migrateWalletDelegationsToPerAgent(db);
   addForeignKeys(db);
 
   return db;
@@ -614,25 +674,32 @@ export function deleteAuthChallenge(publicKey: string): void {
   getDb().prepare('DELETE FROM auth_challenges WHERE public_key = ?').run(publicKey);
 }
 
-export function getWalletDelegation(delegator: string): WalletDelegationRow | undefined {
-  return getDb().prepare('SELECT * FROM wallet_delegations WHERE delegator = ?').get(delegator) as WalletDelegationRow | undefined;
+export function getWalletDelegation(delegator: string, delegate: string): WalletDelegationRow | undefined {
+  return getDb().prepare('SELECT * FROM wallet_delegations WHERE delegator = ? AND delegate = ?').get(delegator, delegate) as
+    | WalletDelegationRow
+    | undefined;
 }
 
-/** Creates or replaces the single active delegation for a wallet (one per wallet, shared by all agents). */
-export function upsertWalletDelegation(delegator: string, hash: string, delegationJson: string): void {
+export function listWalletDelegationsForDelegator(delegator: string): WalletDelegationRow[] {
+  return getDb().prepare('SELECT * FROM wallet_delegations WHERE delegator = ?').all(delegator) as WalletDelegationRow[];
+}
+
+/** Creates or replaces this agent's delegation from this wallet — independent of any other
+ *  agent's delegation from the same wallet (see WalletDelegationRow's composite key doc). */
+export function upsertWalletDelegation(delegator: string, delegate: string, hash: string, delegationJson: string): void {
   getDb()
     .prepare(
-      `INSERT INTO wallet_delegations (delegator, delegation_hash, delegation_json, disabled, updated_at)
-       VALUES (@delegator, @hash, @delegationJson, 0, @now)
-       ON CONFLICT(delegator) DO UPDATE SET delegation_hash = @hash, delegation_json = @delegationJson, disabled = 0, updated_at = @now`
+      `INSERT INTO wallet_delegations (delegator, delegate, delegation_hash, delegation_json, disabled, updated_at)
+       VALUES (@delegator, @delegate, @hash, @delegationJson, 0, @now)
+       ON CONFLICT(delegator, delegate) DO UPDATE SET delegation_hash = @hash, delegation_json = @delegationJson, disabled = 0, updated_at = @now`
     )
-    .run({ delegator, hash, delegationJson, now: Date.now() });
+    .run({ delegator, delegate, hash, delegationJson, now: Date.now() });
 }
 
-export function setWalletDelegationDisabled(delegator: string, disabled: boolean): void {
+export function setWalletDelegationDisabled(delegator: string, delegate: string, disabled: boolean): void {
   getDb()
-    .prepare('UPDATE wallet_delegations SET disabled = ?, updated_at = ? WHERE delegator = ?')
-    .run(disabled ? 1 : 0, Date.now(), delegator);
+    .prepare('UPDATE wallet_delegations SET disabled = ?, updated_at = ? WHERE delegator = ? AND delegate = ?')
+    .run(disabled ? 1 : 0, Date.now(), delegator, delegate);
 }
 
 export function getPortfolioState(owner: string): PortfolioStateRow | undefined {

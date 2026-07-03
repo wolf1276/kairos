@@ -38,7 +38,7 @@ async function buildDashboard(row: AgentRow) {
   const totalPnl = parseFloat(pnl.realizedPnl) + parseFloat(pnl.unrealizedPnl);
   const totalReturn = capital && capital > 0 ? totalPnl / capital : null;
 
-  const walletDelegation = row.delegator ? getWalletDelegation(row.delegator) : undefined;
+  const walletDelegation = row.delegator ? getWalletDelegation(row.delegator, row.public_key) : undefined;
   const lastTrade = trades[trades.length - 1];
 
   const since = Date.now() - DAY_MS;

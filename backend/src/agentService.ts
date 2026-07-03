@@ -11,7 +11,7 @@ import type { AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.j
 import { logEvent } from './auditService.js';
 
 function toSummary(row: AgentRow): AgentSummary {
-  const walletDelegation = row.delegator ? getWalletDelegation(row.delegator) : undefined;
+  const walletDelegation = row.delegator ? getWalletDelegation(row.delegator, row.public_key) : undefined;
   return {
     id: row.id,
     owner: row.owner,
@@ -32,10 +32,11 @@ function toSummary(row: AgentRow): AgentSummary {
   };
 }
 
-/** Resolves the active, non-disabled delegation shared by every agent tied to this wallet. */
+/** Resolves this agent's own active, non-disabled delegation from its wallet — independent of
+ *  any other agent's delegation from the same wallet. */
 export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation | null {
   if (!row.delegator) return null;
-  const walletDelegation = getWalletDelegation(row.delegator);
+  const walletDelegation = getWalletDelegation(row.delegator, row.public_key);
   if (!walletDelegation || walletDelegation.disabled) return null;
   return JSON.parse(walletDelegation.delegation_json);
 }
@@ -117,10 +118,10 @@ export async function getAgentSigner(row: AgentRow): Promise<Signer> {
 }
 
 /**
- * Attaches the wallet's single shared delegation to an agent — verifies delegate/hash match
- * before storing. All execution modes (autonomous/strategy/user-intent) for the same wallet
- * share this one delegation row; attaching a second agent to the same wallet reuses it rather
- * than minting a new one.
+ * Attaches a delegation to this agent — verifies delegate/hash match before storing. Each
+ * agent tied to a wallet holds its own independent delegation row (keyed by delegator+delegate,
+ * see WalletDelegationRow), so multiple agents can each have live spend authority from the same
+ * wallet at once without stepping on each other.
  */
 export async function attachDelegation(id: string, delegation: JsonSafeDelegation): Promise<AgentSummary> {
   const row = getAgentRow(id);
@@ -140,14 +141,15 @@ export async function attachDelegation(id: string, delegation: JsonSafeDelegatio
   const status = await client.delegation.get(hash);
   if (status.disabled) throw new Error('This delegation is disabled on-chain');
 
-  upsertWalletDelegation(delegation.delegator, hash, JSON.stringify(delegation));
+  upsertWalletDelegation(delegation.delegator, delegation.delegate, hash, JSON.stringify(delegation));
   getDb().prepare('UPDATE agents SET delegator = ? WHERE id = ?').run(delegation.delegator, id);
   return getAgent(id)!;
 }
 
-/** Revokes the shared delegation for a wallet — every agent tied to that wallet is blocked. */
-export function revokeWalletDelegation(delegator: string): void {
-  setWalletDelegationDisabled(delegator, true);
+/** Revokes this specific agent's delegation from its wallet — other agents delegated from the
+ *  same wallet are unaffected. */
+export function revokeWalletDelegation(delegator: string, delegate: string): void {
+  setWalletDelegationDisabled(delegator, delegate, true);
 }
 
 export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary {
