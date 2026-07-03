@@ -620,6 +620,39 @@ fn test_set_policy_updates_terms_without_new_delegation() {
     assert_eq!(token_client.balance(&wallet_id), starting_balance - over_tight_limit);
 }
 
+/// `set_policies` seeds/updates several policy ids in a single signed call — used right
+/// after registering a delegation whose caveats reference those ids.
+#[test]
+fn test_set_policies_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
+    manager.init(&owner);
+
+    let delegator = Address::generate(&env);
+    let terms_a = Bytes::from_array(&env, &[1, 2, 3]);
+    let terms_b = Bytes::from_array(&env, &[4, 5, 6]);
+
+    manager.set_policies(
+        &delegator,
+        &Vec::from_array(&env, [1u64, 2u64]),
+        &Vec::from_array(&env, [terms_a.clone(), terms_b.clone()]),
+    );
+
+    assert_eq!(manager.get_policy(&delegator, &1u64), terms_a);
+    assert_eq!(manager.get_policy(&delegator, &2u64), terms_b);
+
+    // Mismatched batch lengths must be rejected.
+    let result = manager.try_set_policies(
+        &delegator,
+        &Vec::from_array(&env, [3u64]),
+        &Vec::from_array(&env, [terms_a.clone(), terms_b.clone()]),
+    );
+    assert!(result.is_err(), "mismatched policy_ids/terms_list lengths must fail");
+}
+
 /// The spend-limit policy caveat must actually stop an over-limit token transfer.
 /// This exercises the caveat pipeline end-to-end (before_all -> before_hook) with a
 /// real SAC token, proving policy enforcement is wired into execution, not just

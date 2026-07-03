@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Spinner } from "@/app/components/ui/Spinner";
 import type { DelegationRecord } from "../types/delegation";
 
@@ -8,8 +8,21 @@ function shortHash(hash: string) {
   return `${hash.slice(0, 8)}…${hash.slice(-6)}`;
 }
 
+/** True if a caveat's terms are the `0xFE ++ policy_id:u64_be` indirection marker rather
+ *  than inline policy bytes — only these are editable via `set_policy` without minting a
+ *  new delegation (see packages/sdk PolicyModule.createIndexed). */
+function isIndexedPolicy(terms: number[]): boolean {
+  return terms.length === 9 && terms[0] === 0xfe;
+}
+
+function decodePolicyId(terms: number[]): number {
+  const buf = Buffer.from(terms.slice(1));
+  return Number(buf.readBigUInt64BE(0));
+}
+
 function describeCaveat(terms: number[]): string {
   try {
+    if (isIndexedPolicy(terms)) return "Editable policy";
     const buf = Buffer.from(terms);
     if (buf.length === 0) return "Unknown policy";
     const typeTag = buf.readUInt8(0);
@@ -20,6 +33,114 @@ function describeCaveat(terms: number[]): string {
   } catch {
     return "Unreadable policy";
   }
+}
+
+/** Inline form to update an indirected policy's terms in place — no new delegation minted. */
+function PolicyEditForm({
+  policyId,
+  onSubmit,
+  onCancel,
+  isSaving,
+}: {
+  policyId: number;
+  onSubmit: (params: Record<string, unknown>) => void;
+  onCancel: () => void;
+  isSaving: boolean;
+}) {
+  const [type, setType] = useState<"spend-limit" | "time-restriction" | "target-whitelist">("spend-limit");
+  const [token, setToken] = useState("");
+  const [spendLimit, setSpendLimit] = useState("");
+  const [period, setPeriod] = useState("86400");
+  const [target, setTarget] = useState("");
+  const [start, setStart] = useState("0");
+  const [expiry, setExpiry] = useState("");
+
+  const handleSubmit = () => {
+    if (type === "spend-limit") {
+      onSubmit({ type, token, spendLimit, period: Number(period) });
+    } else if (type === "target-whitelist") {
+      onSubmit({ type, target });
+    } else {
+      onSubmit({ type, start: Number(start), expiry: Number(expiry) });
+    }
+  };
+
+  return (
+    <div className="mt-2 space-y-2 rounded-lg border border-white/5 bg-white/[0.02] p-3">
+      <select
+        value={type}
+        onChange={(e) => setType(e.target.value as typeof type)}
+        className="w-full rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] text-text-primary"
+      >
+        <option value="spend-limit">Spend Limit</option>
+        <option value="target-whitelist">Target Whitelist</option>
+        <option value="time-restriction">Time Restriction</option>
+      </select>
+      {type === "spend-limit" && (
+        <>
+          <input
+            placeholder="Token contract address"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            className="w-full rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] font-mono text-text-primary"
+          />
+          <div className="flex gap-2">
+            <input
+              placeholder="Limit (stroops)"
+              value={spendLimit}
+              onChange={(e) => setSpendLimit(e.target.value)}
+              className="w-1/2 rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] text-text-primary"
+            />
+            <input
+              placeholder="Period (seconds)"
+              value={period}
+              onChange={(e) => setPeriod(e.target.value)}
+              className="w-1/2 rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] text-text-primary"
+            />
+          </div>
+        </>
+      )}
+      {type === "target-whitelist" && (
+        <input
+          placeholder="Allowed target address"
+          value={target}
+          onChange={(e) => setTarget(e.target.value)}
+          className="w-full rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] font-mono text-text-primary"
+        />
+      )}
+      {type === "time-restriction" && (
+        <div className="flex gap-2">
+          <input
+            placeholder="Start (unix seconds)"
+            value={start}
+            onChange={(e) => setStart(e.target.value)}
+            className="w-1/2 rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] text-text-primary"
+          />
+          <input
+            placeholder="Expiry (unix seconds)"
+            value={expiry}
+            onChange={(e) => setExpiry(e.target.value)}
+            className="w-1/2 rounded-md border border-white/10 bg-bg-primary px-2 py-1 text-[11px] text-text-primary"
+          />
+        </div>
+      )}
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={handleSubmit}
+          disabled={isSaving}
+          className="flex-1 rounded-md bg-emerald-600/80 hover:bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition-colors disabled:opacity-40 cursor-pointer"
+        >
+          {isSaving ? "Saving…" : `Save (policy_id ${policyId})`}
+        </button>
+        <button
+          onClick={onCancel}
+          className="rounded-md border border-white/10 px-3 py-1.5 text-[11px] text-text-muted hover:text-text-secondary cursor-pointer"
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function DetailRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
@@ -39,6 +160,7 @@ export function DelegationDetailDrawer({
   onRevoke,
   onEnable,
   onDuplicate,
+  onUpdatePolicy,
   actionLoading,
   actionErrors,
 }: {
@@ -47,11 +169,30 @@ export function DelegationDetailDrawer({
   onRevoke: (d: DelegationRecord) => void;
   onEnable: (d: DelegationRecord) => void;
   onDuplicate?: (d: DelegationRecord) => void;
+  onUpdatePolicy?: (policyId: number, policy: Record<string, unknown>) => Promise<void>;
   actionLoading: string | null;
   actionErrors: Record<string, string>;
 }) {
   const isLoading = actionLoading === delegation.hash;
   const error = actionErrors[delegation.hash];
+  const [editingPolicyId, setEditingPolicyId] = useState<number | null>(null);
+  const [savingPolicy, setSavingPolicy] = useState(false);
+
+  const handleSavePolicy = useCallback(
+    async (policyId: number, params: Record<string, unknown>) => {
+      if (!onUpdatePolicy) return;
+      setSavingPolicy(true);
+      try {
+        await onUpdatePolicy(policyId, params);
+        setEditingPolicyId(null);
+      } catch {
+        // error surfaced via actionErrors, form stays open so the user can retry
+      } finally {
+        setSavingPolicy(false);
+      }
+    },
+    [onUpdatePolicy]
+  );
 
   const handleCopyHash = useCallback(() => {
     navigator.clipboard.writeText(delegation.hash);

@@ -176,6 +176,43 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
       const registerData = await registerSubmitRes.json();
       if (!registerSubmitRes.ok) throw new Error(registerData.error);
 
+      // 5. Seed the actual policy terms on-chain — the delegation's caveats only carry
+      // `0xFE`-marker pointers (see PREPARE_DELEGATION), so without this the policies
+      // resolve to empty terms and every redemption is blocked. One more signed auth entry.
+      if (prepared.pendingPolicies?.length) {
+        const seedPrepareRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "PREPARE_SEED_POLICIES",
+            delegator: smartWalletAddress,
+            policies: prepared.pendingPolicies,
+          }),
+        });
+        const seedPrepared = await seedPrepareRes.json();
+        if (!seedPrepareRes.ok) throw new Error(seedPrepared.error);
+
+        const seedSignedEntryXdr = await signAuthEntryWithFreighter(
+          seedPrepared.unsignedEntryXdr,
+          seedPrepared.validUntilLedgerSeq,
+          networkPassphrase,
+          walletOwner
+        );
+
+        const seedSubmitRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "SUBMIT_SEED_POLICIES",
+            delegator: smartWalletAddress,
+            policies: prepared.pendingPolicies,
+            signedEntryXdr: seedSignedEntryXdr,
+          }),
+        });
+        const seedData = await seedSubmitRes.json();
+        if (!seedSubmitRes.ok) throw new Error(seedData.error);
+      }
+
       fullDelegationsRef.current.set(data.hash, data.delegation as JsonSafeDelegation);
       saveDelegations(walletOwner, fullDelegationsRef.current);
       await refresh();
@@ -293,6 +330,65 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
     [walletOwner, networkPassphrase, refreshSingle]
   );
 
+  /**
+   * Updates one policy's terms in place (by caveat index, used as policy_id) without minting
+   * a new delegation — only works for delegations created with policy-indirected (`0xFE`
+   * marker) caveats, i.e. anything created via createDelegation after this refactor. `policy`
+   * is a structured PolicyCreateParams object (same shape createDelegation's `policies` take).
+   */
+  const updatePolicy = useCallback(
+    async (policyId: number, policy: Record<string, unknown>): Promise<void> => {
+      if (!smartWalletAddress || !walletOwner) {
+        throw new Error("Connect your wallet and deploy a smart wallet first.");
+      }
+      setActionLoading(smartWalletAddress);
+      setActionErrors((prev) => ({ ...prev, [smartWalletAddress]: "" }));
+      try {
+        const prepareRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "PREPARE_SET_POLICY",
+            delegator: smartWalletAddress,
+            policyId: policyId.toString(),
+            policy,
+          }),
+        });
+        const prepared = await prepareRes.json();
+        if (!prepareRes.ok) throw new Error(prepared.error);
+
+        const signedEntryXdr = await signAuthEntryWithFreighter(
+          prepared.unsignedEntryXdr,
+          prepared.validUntilLedgerSeq,
+          networkPassphrase,
+          walletOwner
+        );
+
+        const submitRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "SUBMIT_SET_POLICY",
+            delegator: smartWalletAddress,
+            policyId: policyId.toString(),
+            policy,
+            signedEntryXdr,
+          }),
+        });
+        const data = await submitRes.json();
+        if (!submitRes.ok) throw new Error(data.error);
+
+        await refresh();
+      } catch (e) {
+        setActionErrors((prev) => ({ ...prev, [smartWalletAddress]: e instanceof Error ? e.message : String(e) }));
+        throw e;
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [smartWalletAddress, walletOwner, networkPassphrase, refresh]
+  );
+
   const revoke = useCallback((d: DelegationRecord) => setDelegationDisabled(d, true), [setDelegationDisabled]);
   const enable = useCallback((d: DelegationRecord) => setDelegationDisabled(d, false), [setDelegationDisabled]);
 
@@ -384,6 +480,7 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
     actionErrors,
     refresh,
     createDelegation,
+    updatePolicy,
     revoke,
     revokeByWallet,
     enable,

@@ -258,6 +258,24 @@ impl DelegationManager {
         env.storage().persistent().get(&key).unwrap_or(Bytes::new(&env))
     }
 
+    // Seeds/updates several policies for a wallet in one signed call — used right after a
+    // new delegation is registered (its caveats reference these policy_ids via the marker),
+    // and for the wizard's "update policy" path when several caveats change together.
+    pub fn set_policies(env: Env, delegator: Address, policy_ids: Vec<u64>, terms_list: Vec<Bytes>) {
+        delegator.require_auth();
+        if policy_ids.len() != terms_list.len() {
+            panic_with_error!(&env, ManagerError::BatchLengthMismatch);
+        }
+        for i in 0..policy_ids.len() {
+            let policy_id = policy_ids.get(i).unwrap();
+            let terms = terms_list.get(i).unwrap();
+            let key = DataKey::Policy(delegator.clone(), policy_id);
+            env.storage().persistent().set(&key, &terms);
+            env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+        }
+        env.events().publish((symbol_short!("pol_set"),), policy_ids.len());
+    }
+
     // Resolve a caveat's terms: if terms is `0xFE ++ policy_id:u64_be`, look up the
     // live policy blob for (delegator, policy_id); otherwise use terms literally
     // (backward compatible with existing inline-terms delegations).

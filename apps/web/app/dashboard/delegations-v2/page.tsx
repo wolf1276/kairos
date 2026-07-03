@@ -350,6 +350,7 @@ export default function DelegationsV2Page() {
           onRevoke={handleRevokeClick}
           onEnable={handleEnable}
           onDuplicate={handleDuplicate}
+          onUpdatePolicy={delegationsApi.updatePolicy}
           actionLoading={delegationsApi.actionLoading}
           actionErrors={delegationsApi.actionErrors}
         />

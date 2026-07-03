@@ -129,11 +129,17 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'delegate and delegator addresses are required' }, { status: 400 });
         }
 
-        const caveats: Caveat[] = policies
-          ? await Promise.all(
-              (policies as Array<Parameters<typeof client.policy.create>[0]>).map((p) => client.policy.create(p))
-            )
-          : [];
+        // Caveats reference policy storage via the `0xFE` marker (policy_id = array index)
+        // instead of embedding terms inline — this is what lets a policy's limits/assets/
+        // expiry be edited later via SET_POLICY/SEED_POLICIES without touching this
+        // delegation's hash or signature. `pendingPolicies` must be seeded on-chain via
+        // PREPARE_SEED_POLICIES/SUBMIT_SEED_POLICIES right after SUBMIT_DELEGATION +
+        // PREPARE_REGISTER_DELEGATION, or the caveats resolve to empty terms.
+        const indexed = (policies as Array<Parameters<typeof client.policy.create>[0]>)?.map((p, i) =>
+          client.policy.createIndexed(BigInt(i), p)
+        ) ?? [];
+        const caveats: Caveat[] = indexed.map((x) => x.caveat);
+        const pendingPolicies = indexed.map((x, i) => ({ policyId: i.toString(), terms: Array.from(x.terms) }));
 
         const nonce = await client.delegation.getNonce(delegator);
         const salt = BigInt(Math.floor(Math.random() * 1_000_000));
@@ -151,6 +157,7 @@ export async function POST(request: Request) {
           success: true,
           hashHex,
           unsignedDelegation: serializeDelegation({ ...unsigned, signature: '' } as Delegation),
+          pendingPolicies,
         });
       }
 
@@ -279,36 +286,71 @@ export async function POST(request: Request) {
       // Updates a policy's terms in place for (delegator, policyId) — no new delegation minted,
       // the delegation's hash/signature are untouched. `terms` is the raw policy-encoding bytes
       // (same format `client.policy.create` produces), sent as a plain number array over JSON.
+      // `policy` is a structured PolicyCreateParams object (same shape PREPARE_DELEGATION's
+      // `policies` array takes) — the server encodes it into terms bytes, same as it does
+      // for a brand-new delegation's caveats, so the client never has to know the wire format.
       case 'PREPARE_SET_POLICY': {
-        const { delegator, policyId, terms } = body;
-        if (!delegator || policyId === undefined || !terms) {
-          return NextResponse.json({ error: 'delegator, policyId, and terms are required' }, { status: 400 });
+        const { delegator, policyId, policy } = body;
+        if (!delegator || policyId === undefined || !policy) {
+          return NextResponse.json({ error: 'delegator, policyId, and policy are required' }, { status: 400 });
         }
         await client.ensureFundedTestnetAccount(funder.publicKey());
+        const caveat = await client.policy.create(policy as Parameters<typeof client.policy.create>[0]);
         const prepared = await client.delegation.prepareSponsoredSetPolicy(
           delegator,
           BigInt(policyId),
-          new Uint8Array(terms),
+          caveat.terms,
           funder.publicKey()
         );
         return NextResponse.json({ success: true, ...prepared });
       }
 
       case 'SUBMIT_SET_POLICY': {
-        const { delegator, policyId, terms, signedEntryXdr } = body;
-        if (!delegator || policyId === undefined || !terms || !signedEntryXdr) {
+        const { delegator, policyId, policy, signedEntryXdr } = body;
+        if (!delegator || policyId === undefined || !policy || !signedEntryXdr) {
           return NextResponse.json(
-            { error: 'delegator, policyId, terms, and signedEntryXdr are required' },
+            { error: 'delegator, policyId, policy, and signedEntryXdr are required' },
             { status: 400 }
           );
         }
+        const caveat = await client.policy.create(policy as Parameters<typeof client.policy.create>[0]);
         const result = await client.delegation.submitSponsoredSetPolicy(
           delegator,
           BigInt(policyId),
-          new Uint8Array(terms),
+          caveat.terms,
           funder,
           signedEntryXdr
         );
+        return NextResponse.json({ success: true, txHash: result.hash });
+      }
+
+      // Seeds/updates several (policyId, terms) pairs in one signed call — used right after
+      // registering a delegation whose caveats reference these ids (see PREPARE_DELEGATION's
+      // `pendingPolicies`), and for the wizard's "update policy" path when multiple caveats
+      // change together.
+      case 'PREPARE_SEED_POLICIES': {
+        const { delegator, policies: pendingPolicies } = body;
+        if (!delegator || !Array.isArray(pendingPolicies) || pendingPolicies.length === 0) {
+          return NextResponse.json({ error: 'delegator and a non-empty policies array are required' }, { status: 400 });
+        }
+        await client.ensureFundedTestnetAccount(funder.publicKey());
+        const policyIds = pendingPolicies.map((p: { policyId: string }) => BigInt(p.policyId));
+        const termsList = pendingPolicies.map((p: { terms: number[] }) => new Uint8Array(p.terms));
+        const prepared = await client.delegation.prepareSponsoredSetPolicies(delegator, policyIds, termsList, funder.publicKey());
+        return NextResponse.json({ success: true, ...prepared });
+      }
+
+      case 'SUBMIT_SEED_POLICIES': {
+        const { delegator, policies: pendingPolicies, signedEntryXdr } = body;
+        if (!delegator || !Array.isArray(pendingPolicies) || pendingPolicies.length === 0 || !signedEntryXdr) {
+          return NextResponse.json(
+            { error: 'delegator, a non-empty policies array, and signedEntryXdr are required' },
+            { status: 400 }
+          );
+        }
+        const policyIds = pendingPolicies.map((p: { policyId: string }) => BigInt(p.policyId));
+        const termsList = pendingPolicies.map((p: { terms: number[] }) => new Uint8Array(p.terms));
+        const result = await client.delegation.submitSponsoredSetPolicies(delegator, policyIds, termsList, funder, signedEntryXdr);
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 

@@ -24,6 +24,37 @@ export class PolicyModule {
    * Helper to create a Caveat structure for a policy.
    */
   async create(params: PolicyCreateParams): Promise<Caveat> {
+    const terms = this.encodeTerms(params);
+    return { enforcer: this.enforcerAddress, terms };
+  }
+
+  /**
+   * Builds a caveat whose terms are an indirection marker (`0xFE ++ policy_id:u64_be`)
+   * pointing at (delegator, policyId) in the DelegationManager's on-chain Policy storage,
+   * instead of embedding the terms inline. This is what makes a policy editable later via
+   * `client.delegation.prepareSponsoredSetPolicy`/`set_policies` — the delegation's hash and
+   * signature never change when the policy's limits/assets/expiry are updated.
+   *
+   * Returns both the marker caveat (to put in the Delegation) and the actual encoded terms
+   * (to seed into on-chain Policy storage via `set_policy`/`set_policies` once the delegation
+   * is registered).
+   */
+  createIndexed(policyId: bigint, params: PolicyCreateParams): { caveat: Caveat; terms: Uint8Array } {
+    const actualTerms = this.encodeTerms(params);
+
+    const marker = new Uint8Array(9);
+    marker[0] = 0xfe;
+    const idBuf = Buffer.alloc(8);
+    idBuf.writeBigUInt64BE(policyId, 0);
+    marker.set(idBuf, 1);
+
+    return {
+      caveat: { enforcer: this.enforcerAddress, terms: marker },
+      terms: actualTerms,
+    };
+  }
+
+  private encodeTerms(params: PolicyCreateParams): Uint8Array {
     let terms: Uint8Array;
 
     switch (params.type) {
@@ -68,10 +99,7 @@ export class PolicyModule {
         throw new PolicyViolationError(params.type, `Unsupported policy type: ${params.type}`);
     }
 
-    return {
-      enforcer: this.enforcerAddress,
-      terms,
-    };
+    return terms;
   }
 
   /**
