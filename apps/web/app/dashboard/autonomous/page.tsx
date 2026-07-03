@@ -37,13 +37,6 @@ function num(v: string | number | null | undefined, dp = 2): string {
   return n.toLocaleString(undefined, { maximumFractionDigits: dp });
 }
 
-function pnlTone(v: string | number | null): "success" | "error" | "neutral" {
-  const n = typeof v === "string" ? parseFloat(v) : v ?? 0;
-  if (n > 0.0000001) return "success";
-  if (n < -0.0000001) return "error";
-  return "neutral";
-}
-
 function timeAgo(ts: number | null): string {
   if (!ts) return "—";
   const s = Math.floor((Date.now() - ts) / 1000);

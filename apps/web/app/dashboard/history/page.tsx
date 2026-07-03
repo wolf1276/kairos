@@ -48,7 +48,7 @@ function eventTone(type: string): "success" | "error" | "warning" | "neutral" {
 }
 
 export default function HistoryPage() {
-  const { wallet, connected, connecting, connect, ensureAgentAuth, walletOwner } = useWalletContext();
+  const { connected, connecting, connect, ensureAgentAuth, walletOwner } = useWalletContext();
 
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [trades, setTrades] = useState<TradeRow[]>([]);

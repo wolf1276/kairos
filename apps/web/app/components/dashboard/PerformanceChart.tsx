@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useEffect, useRef, useState } from "react";
-import { createChart, ColorType, IChartApi, Time, UTCTimestamp, LineSeries } from "lightweight-charts";
+import { createChart, ColorType, IChartApi, Time, LineSeries } from "lightweight-charts";
 import { cn } from "@/lib/utils";
 
 type Range = "1D" | "7D" | "30D" | "90D" | "1Y" | "ALL";

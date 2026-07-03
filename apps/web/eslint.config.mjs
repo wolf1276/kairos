@@ -13,6 +13,15 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
   ]),
+  {
+    rules: {
+      // React Compiler readiness rules (eslint-plugin-react-hooks v7). We don't use the
+      // React Compiler, and these flag the standard "set loading flag, fetch, set state"
+      // effect idiom and Date.now() timestamps as errors even though both are correct here.
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/purity": "off",
+    },
+  },
 ]);
 
 export default eslintConfig;

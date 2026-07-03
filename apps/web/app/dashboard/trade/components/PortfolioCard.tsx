@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { getPortfolioOverview } from "@/app/lib/agentsBackend";
-import { formatNumber, formatPct } from "@/app/lib/format";
+import { formatPct } from "@/app/lib/format";
 
 export function PortfolioCard() {
   const [data, setData] = useState<{

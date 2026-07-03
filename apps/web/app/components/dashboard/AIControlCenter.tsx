@@ -2,7 +2,7 @@
 
 import { memo } from "react";
 import { cn } from "@/lib/utils";
-import { Brain, Zap, Shield, Clock } from "lucide-react";
+import { Brain, Zap, Clock } from "lucide-react";
 
 interface AIControlCenterProps {
   status: "thinking" | "scanning" | "executing" | "idle";
