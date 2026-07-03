@@ -88,9 +88,12 @@ export default function AutonomousPage() {
 
   useEffect(() => {
     if (!walletOwner) return;
-    const id = setInterval(refresh, 6000);
+    // Re-run ensureAgentAuth each poll (cheap no-op if the cached token is still valid) — a
+    // 401 partway through the session clears that cache (see agentsBackend.ts), and only
+    // re-auth on the next tick actually recovers instead of every poll failing forever.
+    const id = setInterval(() => { ensureAgentAuth().then(refresh); }, 6000);
     return () => clearInterval(id);
-  }, [walletOwner, refresh]);
+  }, [walletOwner, ensureAgentAuth, refresh]);
 
   const handleProvision = async () => {
     setProvisioning(true);

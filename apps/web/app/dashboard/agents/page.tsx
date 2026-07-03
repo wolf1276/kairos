@@ -74,9 +74,12 @@ export default function AgentsPage() {
   // elsewhere still show up here without a manual refresh.
   useEffect(() => {
     if (!walletOwner) return;
-    const id = setInterval(refresh, 8000);
+    // Re-run ensureAgentAuth each poll (cheap no-op if the cached token is still valid) — a
+    // 401 partway through the session clears that cache (see agentsBackend.ts), and only
+    // re-auth on the next tick actually recovers instead of every poll failing forever.
+    const id = setInterval(() => { ensureAgentAuth().then(refresh); }, 8000);
     return () => clearInterval(id);
-  }, [walletOwner, refresh]);
+  }, [walletOwner, ensureAgentAuth, refresh]);
 
   return (
     <div className="space-y-5">

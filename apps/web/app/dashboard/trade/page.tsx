@@ -343,9 +343,13 @@ function TradeInner() {
   // a manual refresh.
   useEffect(() => {
     if (mode !== "strategy" && mode !== "intent") return;
-    const interval = window.setInterval(refreshActiveAgents, 10_000);
+    // Re-run the auth handshake each poll, not just on mount — ensureAgentAuth() is a cheap
+    // no-op when a cached token is still valid, but if a prior request's 401 cleared it (see
+    // agentsBackend.ts's request()), this is what re-establishes a session instead of every
+    // subsequent poll failing the same way indefinitely.
+    const interval = window.setInterval(() => { ensureAgentAuth().then(refreshActiveAgents); }, 10_000);
     return () => window.clearInterval(interval);
-  }, [mode, refreshActiveAgents]);
+  }, [mode, refreshActiveAgents, ensureAgentAuth]);
 
   const strategyGroups = strategies.reduce<Record<string, StrategyMeta[]>>((acc, s) => {
     (acc[s.category] ??= []).push(s);

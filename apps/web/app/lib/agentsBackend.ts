@@ -139,6 +139,23 @@ function backendUrl(path: string): string {
 // token rather than trusting a client-supplied owner string.
 let authToken: string | null = null;
 
+/** Drops every cached session token (see agentsAuth.ts's `kairos:session:<publicKey>` keys) —
+ *  called on a 401 so a rejected/expired token can't keep getting resent by ensureAgentAuth's
+ *  cache-first check. Scans by prefix rather than taking a publicKey so it works regardless of
+ *  which wallet's token was rejected. */
+function clearAllStoredSessionTokens(): void {
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < sessionStorage.length; i++) {
+      const key = sessionStorage.key(i);
+      if (key?.startsWith("kairos:session:")) keys.push(key);
+    }
+    keys.forEach((k) => sessionStorage.removeItem(k));
+  } catch {
+    // sessionStorage unavailable — nothing to clear.
+  }
+}
+
 export function setAuthToken(token: string | null): void {
   authToken = token;
 }
@@ -154,7 +171,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    if (res.status === 401) authToken = null;
+    if (res.status === 401) {
+      authToken = null;
+      // Also drop the sessionStorage cache (see agentsAuth.ts) — ensureAgentAuth() checks
+      // that cache *before* re-challenging, so leaving a rejected token in it would make
+      // every page/poll keep resending the same dead token forever with no way to self-heal.
+      clearAllStoredSessionTokens();
+    }
     throw new Error(data.error || `Agent backend request failed (${res.status})`);
   }
   return data;

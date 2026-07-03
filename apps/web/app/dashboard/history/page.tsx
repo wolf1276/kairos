@@ -87,7 +87,10 @@ export default function HistoryPage() {
     // actually needs a token.
     ensureAgentAuth().then(() => refresh(true));
     // Full activity/trade history is backend-persisted — poll so this page stays live while open.
-    const id = setInterval(() => refresh(false), 8000);
+    // Re-run ensureAgentAuth each poll (cheap no-op if the cached token is still valid) — a 401
+    // partway through the session clears that cache (see agentsBackend.ts), and only re-auth on
+    // the next tick actually recovers instead of every poll failing forever.
+    const id = setInterval(() => { ensureAgentAuth().then(() => refresh(false)); }, 8000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [walletOwner, ensureAgentAuth]);
