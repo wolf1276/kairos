@@ -9,6 +9,7 @@ COPY packages ./packages
 COPY backend ./backend
 
 RUN pnpm install --frozen-lockfile --filter @wolf1276/kairos-agent-backend... --filter @wolf1276/kairos-sdk...
+RUN pnpm --filter @wolf1276/kairos-sdk --filter @wolf1276/kairos-turnkey-signer build
 
 WORKDIR /repo/backend
 RUN pnpm build

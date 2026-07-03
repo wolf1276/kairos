@@ -9,6 +9,7 @@ COPY packages ./packages
 COPY apps/web ./apps/web
 
 RUN pnpm install --frozen-lockfile --filter app... --filter @wolf1276/kairos-sdk...
+RUN pnpm --filter @wolf1276/kairos-sdk build
 
 WORKDIR /repo/apps/web
 ARG NEXT_PUBLIC_AGENTS_BACKEND_URL
