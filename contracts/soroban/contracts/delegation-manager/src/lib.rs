@@ -51,7 +51,7 @@ pub enum DataKey {
     Owner,
     Paused,
     Locked,
-    WalletDelegation(Address), // delegator wallet -> active delegation hash (one per wallet)
+    WalletDelegation(Address, Address), // (delegator, delegate) -> active delegation hash; one per pair, so a wallet can delegate to multiple agents concurrently
     Policy(Address, u64),      // (delegator, policy_id) -> terms bytes, updatable in place
 }
 
@@ -194,14 +194,16 @@ impl DelegationManager {
         );
     }
 
-    // Register the single active delegation for a wallet. Enforces one delegation
-    // per wallet; reject if an active (non-disabled) delegation already exists.
+    // Register the single active delegation for a (delegator, delegate) pair. Enforces one
+    // delegation per pair; reject if an active (non-disabled) delegation already exists for
+    // this delegate. A wallet may hold one active delegation per distinct delegate, so it can
+    // fund multiple agents concurrently.
     pub fn register_delegation(env: Env, delegator: Address, delegation: Delegation) {
         delegator.require_auth();
         if delegation.delegator != delegator {
             panic_with_error!(&env, ManagerError::NotAuthorized);
         }
-        let key = DataKey::WalletDelegation(delegator.clone());
+        let key = DataKey::WalletDelegation(delegator.clone(), delegation.delegate.clone());
         if let Some(existing_hash) = env.storage().persistent().get::<_, BytesN<32>>(&key) {
             if !Self::is_delegation_disabled(env.clone(), existing_hash) {
                 panic_with_error!(&env, ManagerError::WalletAlreadyDelegated);
@@ -214,16 +216,18 @@ impl DelegationManager {
         env.events().publish((symbol_short!("del_reg"), delegator), hash);
     }
 
-    // Get the active delegation hash for a wallet, if any.
-    pub fn get_wallet_delegation(env: Env, delegator: Address) -> Option<BytesN<32>> {
-        let key = DataKey::WalletDelegation(delegator);
+    // Get the active delegation hash for a (delegator, delegate) pair, if any.
+    pub fn get_wallet_delegation(env: Env, delegator: Address, delegate: Address) -> Option<BytesN<32>> {
+        let key = DataKey::WalletDelegation(delegator, delegate);
         env.storage().persistent().get(&key)
     }
 
-    // Revoke by wallet, without needing to reconstruct the Delegation struct.
-    pub fn revoke_by_wallet(env: Env, delegator: Address) {
+    // Revoke a (delegator, delegate) pair's active delegation, without needing to reconstruct
+    // the Delegation struct. Only disables this delegate's delegation, leaving other delegates
+    // funded by the same wallet untouched.
+    pub fn revoke_by_wallet(env: Env, delegator: Address, delegate: Address) {
         delegator.require_auth();
-        let key = DataKey::WalletDelegation(delegator.clone());
+        let key = DataKey::WalletDelegation(delegator.clone(), delegate);
         let hash: BytesN<32> = match env.storage().persistent().get(&key) {
             Some(h) => h,
             None => panic_with_error!(&env, ManagerError::NoActiveDelegation),

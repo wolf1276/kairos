@@ -233,9 +233,11 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 
-      // Records this delegation as the wallet's single active one (enforced on-chain via the
-      // WalletDelegation map — rejects if one is already active). Called once right after
-      // SUBMIT_DELEGATION, before the delegation can be looked up via GET_WALLET_DELEGATION.
+      // Records this delegation as the active one for this (delegator, delegate) pair
+      // (enforced on-chain via the WalletDelegation map — rejects if one is already active
+      // for the same pair; other delegates funded by the same wallet are unaffected). Called
+      // once right after SUBMIT_DELEGATION, before the delegation can be looked up via
+      // GET_WALLET_DELEGATION.
       case 'PREPARE_REGISTER_DELEGATION': {
         const { delegation } = body;
         if (!delegation) {
@@ -256,30 +258,30 @@ export async function POST(request: Request) {
       }
 
       case 'GET_WALLET_DELEGATION': {
-        const { delegator } = body;
-        if (!delegator) {
-          return NextResponse.json({ error: 'delegator address is required' }, { status: 400 });
+        const { delegator, delegate } = body;
+        if (!delegator || !delegate) {
+          return NextResponse.json({ error: 'delegator and delegate addresses are required' }, { status: 400 });
         }
-        const hash = await client.delegation.getWalletDelegation(delegator);
+        const hash = await client.delegation.getWalletDelegation(delegator, delegate);
         return NextResponse.json({ success: true, hash });
       }
 
       case 'PREPARE_REVOKE_BY_WALLET': {
-        const { delegator } = body;
-        if (!delegator) {
-          return NextResponse.json({ error: 'delegator address is required' }, { status: 400 });
+        const { delegator, delegate } = body;
+        if (!delegator || !delegate) {
+          return NextResponse.json({ error: 'delegator and delegate addresses are required' }, { status: 400 });
         }
         await client.ensureFundedTestnetAccount(funder.publicKey());
-        const prepared = await client.delegation.prepareSponsoredRevokeByWallet(delegator, funder.publicKey());
+        const prepared = await client.delegation.prepareSponsoredRevokeByWallet(delegator, delegate, funder.publicKey());
         return NextResponse.json({ success: true, ...prepared });
       }
 
       case 'SUBMIT_REVOKE_BY_WALLET': {
-        const { delegator, signedEntryXdr } = body;
-        if (!delegator || !signedEntryXdr) {
-          return NextResponse.json({ error: 'delegator and signedEntryXdr are required' }, { status: 400 });
+        const { delegator, delegate, signedEntryXdr } = body;
+        if (!delegator || !delegate || !signedEntryXdr) {
+          return NextResponse.json({ error: 'delegator, delegate, and signedEntryXdr are required' }, { status: 400 });
         }
-        const result = await client.delegation.submitSponsoredRevokeByWallet(delegator, funder, signedEntryXdr);
+        const result = await client.delegation.submitSponsoredRevokeByWallet(delegator, delegate, funder, signedEntryXdr);
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 

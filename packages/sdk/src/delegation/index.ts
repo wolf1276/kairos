@@ -267,9 +267,10 @@ export class DelegationModule {
   }
 
   /**
-   * Sponsored `register_delegation` — records this as the wallet's single active delegation
-   * (rejects if one is already active). Must be called once after a delegation is signed,
-   * before it can be looked up via `getWalletDelegation`.
+   * Sponsored `register_delegation` — records this as the active delegation for this
+   * (delegator, delegate) pair (rejects if one is already active for the same pair; a
+   * different delegate for the same delegator may register concurrently). Must be called
+   * once after a delegation is signed, before it can be looked up via `getWalletDelegation`.
    */
   async prepareSponsoredRegister(delegation: Delegation, funderAddress: string) {
     return this.prepareSponsoredOp('register_delegation', delegation, funderAddress);
@@ -296,15 +297,17 @@ export class DelegationModule {
   }
 
   /**
-   * Sponsored `revoke_by_wallet` — revokes the wallet's single active delegation without
-   * needing to reconstruct the full `Delegation` struct (the manager resolves it via the
-   * `WalletDelegation` map). Same sponsored-auth-entry pattern as disable/enable.
+   * Sponsored `revoke_by_wallet` — revokes the active delegation for a (delegator, delegate)
+   * pair without needing to reconstruct the full `Delegation` struct (the manager resolves it
+   * via the `WalletDelegation` map). Only affects this delegate; other delegates funded by the
+   * same wallet keep their own active delegation. Same sponsored-auth-entry pattern as
+   * disable/enable.
    */
-  async prepareSponsoredRevokeByWallet(delegator: string, funderAddress: string) {
+  async prepareSponsoredRevokeByWallet(delegator: string, delegate: string, funderAddress: string) {
     const op = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'revoke_by_wallet',
-      args: [Address.fromString(delegator).toScVal()],
+      args: [Address.fromString(delegator).toScVal(), Address.fromString(delegate).toScVal()],
     });
     const sourceAccount = await this.client.waitForAccount(funderAddress);
     const tx = new TransactionBuilder(sourceAccount, {
@@ -331,12 +334,12 @@ export class DelegationModule {
     return { unsignedEntryXdr: entry.toXDR('base64'), validUntilLedgerSeq };
   }
 
-  async submitSponsoredRevokeByWallet(delegator: string, funder: Keypair, signedEntryXdr: string) {
+  async submitSponsoredRevokeByWallet(delegator: string, delegate: string, funder: Keypair, signedEntryXdr: string) {
     const signedEntry = xdr.SorobanAuthorizationEntry.fromXDR(signedEntryXdr, 'base64');
     const op = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'revoke_by_wallet',
-      args: [Address.fromString(delegator).toScVal()],
+      args: [Address.fromString(delegator).toScVal(), Address.fromString(delegate).toScVal()],
       auth: [signedEntry],
     });
     const sourceAccount = await this.client.waitForAccount(funder.publicKey());
@@ -494,13 +497,13 @@ export class DelegationModule {
     return this.client.submitTransaction(tx, funder);
   }
 
-  /** True if the wallet already has an active (non-disabled) delegation registered. */
-  async getWalletDelegation(delegator: string): Promise<string | null> {
+  /** True if this (delegator, delegate) pair already has an active (non-disabled) delegation registered. */
+  async getWalletDelegation(delegator: string, delegate: string): Promise<string | null> {
     const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
     const op = Operation.invokeContractFunction({
       contract: this.client.contracts.delegationManager,
       function: 'get_wallet_delegation',
-      args: [Address.fromString(delegator).toScVal()],
+      args: [Address.fromString(delegator).toScVal(), Address.fromString(delegate).toScVal()],
     });
     const tx = new TransactionBuilder(sourceAccount, {
       fee: '100000',

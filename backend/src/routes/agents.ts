@@ -134,9 +134,12 @@ const limitStrategySchema = z.object({
 
 const strategySchema = z.discriminatedUnion('type', [dcaStrategySchema, quantStrategySchema, limitStrategySchema]);
 
-// Revokes this specific agent's delegation from its wallet — other agents delegated from the
-// same wallet keep working. Call before/alongside the on-chain `revoke_by_wallet` (which is
-// per-delegate too) to keep backend state in sync.
+// Revokes this specific agent's delegation from its wallet in the backend's mirror only —
+// other agents delegated from the same wallet keep working. This does NOT touch on-chain
+// state: the caller must separately submit the on-chain `revoke_by_wallet(delegator,
+// delegate)` (now keyed per-delegate, see contracts/soroban/contracts/delegation-manager)
+// to actually revoke spend authority, or this agent's old signed delegation remains
+// redeemable on-chain despite being marked disabled here.
 agentsRouter.post('/:id/delegation/revoke', (req, res) => {
   const row = loadOwnedAgent(req, res);
   if (!row) return;

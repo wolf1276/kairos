@@ -446,11 +446,13 @@ fn test_redeem_delegation_rejects_disabled_delegation() {
     assert!(result.is_err(), "a disabled delegation must not be redeemable");
 }
 
-/// Registering a delegation records it as the wallet's single active delegation, and a
-/// second `register_delegation` call for the same wallet must be rejected while it's
-/// still active — this is the on-chain "one delegation per wallet" enforcement.
+/// Registering a delegation records it as the active delegation for that (delegator,
+/// delegate) pair, and a second `register_delegation` call for the *same* pair must be
+/// rejected while it's still active — this is the on-chain "one delegation per pair"
+/// enforcement. A second delegate for the *same* delegator wallet must succeed
+/// concurrently — this is the multi-agent-per-wallet guarantee.
 #[test]
-fn test_register_delegation_enforces_one_per_wallet() {
+fn test_register_delegation_enforces_one_per_delegate_pair() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -463,7 +465,7 @@ fn test_register_delegation_enforces_one_per_wallet() {
     let delegate_b = Address::generate(&env);
 
     let delegation_a = Delegation {
-        delegate: delegate_a,
+        delegate: delegate_a.clone(),
         delegator: delegator.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
         caveats: Vec::new(&env),
@@ -473,12 +475,12 @@ fn test_register_delegation_enforces_one_per_wallet() {
     };
     manager.register_delegation(&delegator, &delegation_a);
     let hash_a = manager.get_delegation_hash(&delegation_a);
-    assert_eq!(manager.get_wallet_delegation(&delegator), Some(hash_a));
+    assert_eq!(manager.get_wallet_delegation(&delegator, &delegate_a), Some(hash_a.clone()));
 
-    // A second delegation for the same wallet, while the first is still active, must be
-    // rejected — a wallet gets exactly one delegation, shared across every execution mode.
+    // A second delegation for a *different* delegate from the same wallet must succeed
+    // while the first is still active — one wallet, two concurrently-funded agents.
     let delegation_b = Delegation {
-        delegate: delegate_b,
+        delegate: delegate_b.clone(),
         delegator: delegator.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
         caveats: Vec::new(&env),
@@ -486,18 +488,38 @@ fn test_register_delegation_enforces_one_per_wallet() {
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
     };
-    let result = manager.try_register_delegation(&delegator, &delegation_b);
-    assert!(result.is_err(), "registering a second active delegation for the same wallet must fail");
-
-    // Once the first is revoked by wallet, a new delegation can be registered.
-    manager.revoke_by_wallet(&delegator);
     manager.register_delegation(&delegator, &delegation_b);
     let hash_b = manager.get_delegation_hash(&delegation_b);
-    assert_eq!(manager.get_wallet_delegation(&delegator), Some(hash_b));
+    assert_eq!(manager.get_wallet_delegation(&delegator, &delegate_b), Some(hash_b.clone()));
+    // delegate_a's delegation is untouched by registering delegate_b's.
+    assert_eq!(manager.get_wallet_delegation(&delegator, &delegate_a), Some(hash_a));
+
+    // A second delegation for the *same* delegate (delegate_a), while the first is still
+    // active, must be rejected.
+    let delegation_a2 = Delegation {
+        delegate: delegate_a.clone(),
+        delegator: delegator.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 3,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let result = manager.try_register_delegation(&delegator, &delegation_a2);
+    assert!(result.is_err(), "registering a second active delegation for the same (delegator, delegate) pair must fail");
+
+    // Once delegate_a's delegation is revoked, a new one for delegate_a can be registered
+    // without disturbing delegate_b's still-active delegation.
+    manager.revoke_by_wallet(&delegator, &delegate_a);
+    manager.register_delegation(&delegator, &delegation_a2);
+    let hash_a2 = manager.get_delegation_hash(&delegation_a2);
+    assert_eq!(manager.get_wallet_delegation(&delegator, &delegate_a), Some(hash_a2));
+    assert_eq!(manager.get_wallet_delegation(&delegator, &delegate_b), Some(hash_b));
 }
 
-/// `revoke_by_wallet` disables the wallet's registered delegation without needing the
-/// caller to reconstruct the full `Delegation` struct.
+/// `revoke_by_wallet` disables only the given (delegator, delegate) pair's registered
+/// delegation without needing the caller to reconstruct the full `Delegation` struct, and
+/// without touching any other delegate funded by the same wallet.
 #[test]
 fn test_revoke_by_wallet() {
     let env = Env::default();
@@ -509,8 +531,9 @@ fn test_revoke_by_wallet() {
 
     let delegator = Address::generate(&env);
     let delegate = Address::generate(&env);
+    let other_delegate = Address::generate(&env);
     let delegation = Delegation {
-        delegate,
+        delegate: delegate.clone(),
         delegator: delegator.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
         caveats: Vec::new(&env),
@@ -518,17 +541,31 @@ fn test_revoke_by_wallet() {
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
     };
+    let other_delegation = Delegation {
+        delegate: other_delegate.clone(),
+        delegator: delegator.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 2,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
     manager.register_delegation(&delegator, &delegation);
+    manager.register_delegation(&delegator, &other_delegation);
     let hash = manager.get_delegation_hash(&delegation);
+    let other_hash = manager.get_delegation_hash(&other_delegation);
     assert_eq!(manager.is_delegation_disabled(&hash), false);
+    assert_eq!(manager.is_delegation_disabled(&other_hash), false);
 
-    manager.revoke_by_wallet(&delegator);
+    manager.revoke_by_wallet(&delegator, &delegate);
     assert_eq!(manager.is_delegation_disabled(&hash), true);
+    // The other delegate's delegation from the same wallet stays live.
+    assert_eq!(manager.is_delegation_disabled(&other_hash), false);
 
-    // Revoking a wallet with no active delegation must fail cleanly.
+    // Revoking a (delegator, delegate) pair with no active delegation must fail cleanly.
     let other_delegator = Address::generate(&env);
-    let result = manager.try_revoke_by_wallet(&other_delegator);
-    assert!(result.is_err(), "revoking a wallet with no registered delegation must fail");
+    let result = manager.try_revoke_by_wallet(&other_delegator, &delegate);
+    assert!(result.is_err(), "revoking a pair with no registered delegation must fail");
 }
 
 /// `set_policy` updates a policy's terms in place — a caveat referencing that policy_id
