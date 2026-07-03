@@ -18,6 +18,7 @@ import { getLatestPrice } from '../priceHistory.js';
 import { executeQuantTrade } from '../tick.js';
 import { executePaperQuantTrade } from '../paperExecutor.js';
 import { upsertPosition } from '../positionService.js';
+import { getWalletDelegation } from '../db.js';
 import type { QuantStrategyConfig } from '../types.js';
 
 export const agentsRouter = Router();
@@ -88,6 +89,12 @@ agentsRouter.post('/:id/delegation', async (req, res) => {
   const parsed = jsonSafeDelegationSchema.safeParse(req.body.delegation);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
+    const existing = getWalletDelegation(parsed.data.delegator);
+    if (existing && !existing.disabled && !req.body.force) {
+      return res.status(409).json({
+        error: 'Wallet already has a non-disabled delegation. Revoke it first via POST /:id/delegation/revoke, or resubmit with { force: true, delegation: ... } to replace it.',
+      });
+    }
     res.json({ success: true, agent: await attachDelegation(req.params.id, parsed.data) });
   } catch (error) {
     handleError(res, error);

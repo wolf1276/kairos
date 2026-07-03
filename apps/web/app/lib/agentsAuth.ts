@@ -42,8 +42,8 @@ export async function challengeAndVerify(publicKey: string, networkPassphrase: s
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ publicKey }),
   });
+  if (!challengeRes.ok) throw new Error(`Backend returned ${challengeRes.status} for challenge`);
   const challenge = await challengeRes.json();
-  if (!challengeRes.ok) throw new Error(challenge.error || "Failed to request login challenge");
 
   const signed = await signMessage(challenge.message, { networkPassphrase, address: publicKey });
   if (signed.error) throw new Error(`Freighter signing error: ${signed.error}`);
@@ -59,8 +59,8 @@ export async function challengeAndVerify(publicKey: string, networkPassphrase: s
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ publicKey, signature }),
   });
+  if (!verifyRes.ok) throw new Error(`Backend returned ${verifyRes.status} for verification`);
   const verified = await verifyRes.json();
-  if (!verifyRes.ok) throw new Error(verified.error || "Failed to verify login signature");
 
   storeSessionToken(publicKey, verified.token);
   return verified.token as string;

@@ -384,7 +384,9 @@ function AgentCard({
                   ? `DCA — ${Number(agent.strategy.amountPerTick) / 1e7} XLM every ${agent.strategy.intervalSeconds / 60}m`
                   : agent.strategy.type === "limit"
                       ? `Order — ${agent.strategy.side} ${agent.strategy.quantity} ${agent.strategy.asset} @ ${agent.strategy.triggerComparator === "lte" ? "<=" : ">="} ${agent.strategy.triggerPrice}`
-                      : `Quant (${agent.strategy.strategyId}) every ${agent.strategy.intervalSeconds / 60}m`}
+                      : agent.strategy.type === "role"
+                          ? `Role — ${agent.strategy.role}`
+                          : `Quant (${agent.strategy.strategyId}) every ${agent.strategy.intervalSeconds / 60}m`}
               </span>
             </div>
             <div className="flex items-center justify-between">

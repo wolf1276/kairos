@@ -3,39 +3,9 @@
 // /api/delegate-sdk (a Next.js API route proxying the Kairos SDK), this talks directly to
 // that standalone service over HTTP.
 
-export interface DcaStrategyConfig {
-  type: "dca";
-  token: string;
-  amountPerTick: string;
-  intervalSeconds: number;
-  /** Always forced server-side to the delegation's delegator — see backend/src/agentService.ts. */
-  destination: string;
-}
+import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType } from '@kairos/types';
 
-export interface QuantStrategyConfig {
-  type: "quant";
-  strategyId: string;
-  pair: string;
-  amountPerTrade: string;
-  intervalSeconds: number;
-  /** Always forced server-side to the delegation's delegator — see backend/src/agentService.ts. */
-  destination: string;
-}
-
-export interface LimitStrategyConfig {
-  type: "limit";
-  pair: string;
-  asset: "XLM" | "USDC";
-  side: "buy" | "sell";
-  quantity: string;
-  triggerComparator: "lte" | "gte";
-  triggerPrice: string;
-  intervalSeconds: number;
-  /** Always forced server-side to the delegation's delegator — see backend/src/agentService.ts. */
-  destination: string;
-}
-
-export type StrategyConfig = DcaStrategyConfig | QuantStrategyConfig | LimitStrategyConfig;
+export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType };
 
 export interface StrategyMeta {
   id: string;
@@ -43,71 +13,6 @@ export interface StrategyMeta {
   category: string;
   description: string;
 }
-
-export interface TradeRow {
-  id: string;
-  agent_id: string;
-  strategy_id: string;
-  side: "buy" | "sell";
-  pair: string;
-  amount: string;
-  price: string;
-  tx_hash: string | null;
-  status: "success" | "failed";
-  realized_pnl: string | null;
-  reversed_trade_id: string | null;
-  created_at: number;
-  mode: "paper" | "live";
-}
-
-export interface PnlSummary {
-  realizedPnl: string;
-  unrealizedPnl: string;
-  openPosition: string;
-}
-
-export type AgentMode = "paper" | "live";
-
-export interface AgentSummary {
-  id: string;
-  owner: string;
-  publicKey: string;
-  status: "new" | "running" | "stopped" | "error";
-  delegationHash: string | null;
-  /** The smart wallet this agent is authorized to spend from — set once a delegation is attached. */
-  delegator: string | null;
-  strategy: StrategyConfig | null;
-  lastTickAt: number | null;
-  lastResult: string | null;
-  lastError: string | null;
-  createdAt: number;
-  /** Set at creation, immutable — switch to live by creating a new agent, not by mutating a running one. */
-  mode: AgentMode;
-  capital: string | null;
-  riskLevel: string | null;
-  startedAt: number | null;
-}
-
-export interface PositionRow {
-  id: string;
-  agent_id: string;
-  pair: string;
-  side: "long";
-  open_amount: string;
-  avg_cost: string;
-  realized_pnl_total: string;
-  updated_at: number;
-}
-
-export type AuditEventType =
-  | "strategy_started"
-  | "strategy_stopped"
-  | "strategy_error"
-  | "signal_generated"
-  | "policy_violation"
-  | "delegation_invalid"
-  | "trade_executed"
-  | "position_updated";
 
 export interface AuditLogRow {
   id: string;
@@ -133,6 +38,7 @@ export interface AuditLogRow {
 
 export interface AgentDashboard {
   agent: AgentSummary;
+  role: AgentRole | null;
   position: PositionRow | null;
   pnl: PnlSummary;
   tradeCount: number;
@@ -144,6 +50,80 @@ export interface AgentDashboard {
   mode: AgentMode;
   capital: string | null;
   riskLevel: string | null;
+  todayPnl: string;
+  lifetimePnl: string;
+  currentTask: string | null;
+  currentDecision: string | null;
+  currentConfidence: number | null;
+  currentReasoning: string | null;
+  currentStrategy: string | null;
+  lastDecisionTime: number | null;
+}
+
+export interface DecisionRecord {
+  id: string;
+  agent_id: string;
+  owner: string;
+  role: AgentRole;
+  mode: string;
+  pair: string;
+  market_snapshot_json: string | null;
+  oracle_json: string | null;
+  indicators_json: string | null;
+  regime_json: string | null;
+  llm_model: string | null;
+  llm_prompt_summary: string | null;
+  llm_response_json: string | null;
+  action: string;
+  selected_strategy: string | null;
+  confidence: number;
+  reasoning: string;
+  policy_validation_json: string | null;
+  delegation_validation_json: string | null;
+  risk_json: string | null;
+  execution_result: string | null;
+  trade_id: string | null;
+  position_before_json: string | null;
+  position_after_json: string | null;
+  pnl_before_json: string | null;
+  pnl_after_json: string | null;
+  created_at: number;
+}
+
+export interface PerformanceSnapshot {
+  id: string;
+  agent_id: string;
+  owner: string;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  open_position: string;
+  trade_count: number;
+  win_rate: number;
+  capital_managed: string | null;
+  created_at: number;
+}
+
+export interface YieldVenue {
+  id: string;
+  name: string;
+  baseApyPct: number;
+  effectiveApyPct: number;
+}
+
+export interface PortfolioOverview {
+  price: number;
+  allocation: {
+    xlmValue: number;
+    usdcValue: number;
+    totalValue: number;
+    xlmPct: number;
+    usdcPct: number;
+    idleUsd: number;
+    xlmAmount: number;
+  };
+  targets: { xlmPct: number; usdcPct: number; driftThresholdPct: number };
+  managedCapital: number;
+  yieldVenues: YieldVenue[];
 }
 
 function backendBase(): string {
@@ -297,4 +277,67 @@ export async function getAgentDashboard(id: string): Promise<AgentDashboard> {
 export async function getAgentsSummary(): Promise<AgentDashboard[]> {
   const data = await request<{ agents: AgentDashboard[] }>("/api/agents/summary");
   return data.agents;
+}
+
+// ── Autonomous multi-agent system ──
+
+/** Idempotently creates + starts the 3 fixed role agents (yield/strategic/balancer) for the caller. */
+export async function provisionRoleAgents(opts?: { mode?: AgentMode; capital?: string }): Promise<AgentSummary[]> {
+  const data = await request<{ agents: AgentSummary[] }>("/api/agents/provision", {
+    method: "POST",
+    body: JSON.stringify(opts ?? {}),
+  });
+  return data.agents;
+}
+
+export async function getOwnerDecisions(opts?: { limit?: number; before?: number }): Promise<DecisionRecord[]> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.before) params.set("before", String(opts.before));
+  const qs = params.toString();
+  const data = await request<{ decisions: DecisionRecord[] }>(`/api/decisions${qs ? `?${qs}` : ""}`);
+  return data.decisions;
+}
+
+export async function getAgentDecisions(id: string, opts?: { limit?: number }): Promise<DecisionRecord[]> {
+  const qs = opts?.limit ? `?limit=${opts.limit}` : "";
+  const data = await request<{ decisions: DecisionRecord[] }>(`/api/agents/${id}/decisions${qs}`);
+  return data.decisions;
+}
+
+export async function getDecision(decisionId: string): Promise<DecisionRecord> {
+  const data = await request<{ decision: DecisionRecord }>(`/api/decisions/${decisionId}`);
+  return data.decision;
+}
+
+export async function getAgentPerformance(id: string, opts?: { limit?: number }): Promise<PerformanceSnapshot[]> {
+  const qs = opts?.limit ? `?limit=${opts.limit}` : "";
+  const data = await request<{ snapshots: PerformanceSnapshot[] }>(`/api/agents/${id}/performance${qs}`);
+  return data.snapshots;
+}
+
+export async function getPortfolioOverview(): Promise<PortfolioOverview> {
+  return request<PortfolioOverview>("/api/portfolio");
+}
+
+export async function setPortfolioTarget(opts: { targetXlmPct?: number; driftThresholdPct?: number }): Promise<PortfolioOverview["targets"]> {
+  const data = await request<{ targets: PortfolioOverview["targets"] }>("/api/portfolio/target", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+  return data.targets;
+}
+
+export async function recordManualTrade(trade: {
+  side: 'buy' | 'sell';
+  pair: string;
+  amount: string;
+  price: string;
+  txHash: string;
+}): Promise<TradeRow> {
+  const data = await request<{ trade: TradeRow }>("/api/trades/manual", {
+    method: "POST",
+    body: JSON.stringify(trade),
+  });
+  return data.trade;
 }

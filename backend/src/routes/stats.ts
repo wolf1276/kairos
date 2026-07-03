@@ -5,8 +5,11 @@ import { listTradesForAgent } from '../tradeService.js';
 import { computePnlSummary } from '../pnl.js';
 import { getPosition } from '../positionService.js';
 import { getLatestPrice } from '../priceHistory.js';
+import { listDecisionsForAgent } from '../decisionService.js';
 import type { AgentRow } from '../db.js';
 import type { StrategyConfig } from '../types.js';
+
+const DAY_MS = 86_400_000;
 
 export const statsRouter = Router();
 export const agentStatsRouter = Router();
@@ -38,8 +41,18 @@ async function buildDashboard(row: AgentRow) {
   const walletDelegation = row.delegator ? getWalletDelegation(row.delegator) : undefined;
   const lastTrade = trades[trades.length - 1];
 
+  const since = Date.now() - DAY_MS;
+  const todayPnl = trades
+    .filter((t) => t.side === 'sell' && t.realized_pnl !== null && t.created_at >= since)
+    .reduce((s, t) => s + parseFloat(t.realized_pnl as string), 0);
+  const lifetimePnl = parseFloat(pnl.realizedPnl) + parseFloat(pnl.unrealizedPnl);
+
+  // Latest decision drives the "what is this agent doing right now" fields on the ops dashboard.
+  const lastDecision = row.role ? listDecisionsForAgent(row.id, 1)[0] : undefined;
+
   return {
     agent: getAgent(row.id),
+    role: row.role,
     position,
     pnl,
     tradeCount: trades.length,
@@ -51,6 +64,14 @@ async function buildDashboard(row: AgentRow) {
     mode: row.mode,
     capital: row.capital,
     riskLevel: row.risk_level,
+    todayPnl: String(todayPnl),
+    lifetimePnl: String(lifetimePnl),
+    currentTask: row.last_result ?? row.last_error ?? (row.status === 'running' ? 'Analyzing market…' : 'Idle'),
+    currentDecision: lastDecision?.action ?? null,
+    currentConfidence: lastDecision?.confidence ?? null,
+    currentReasoning: lastDecision?.reasoning ?? null,
+    currentStrategy: lastDecision?.selected_strategy ?? (strategy?.type === 'quant' ? strategy.strategyId : null),
+    lastDecisionTime: lastDecision?.created_at ?? null,
   };
 }
 

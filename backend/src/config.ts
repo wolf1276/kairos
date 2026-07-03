@@ -48,3 +48,13 @@ export function getSchedulerIntervalMs(): number {
 export function getAuthJwtSecret(): string {
   return readRequiredEnv('AUTH_JWT_SECRET');
 }
+
+/** Optional — when unset, the decision engine falls back to deterministic heuristic reasoning. */
+export function getHuggingFaceApiKey(): string | undefined {
+  return process.env.HUGGINGFACE_API_KEY || undefined;
+}
+
+/** How often each autonomous role agent may act, in seconds (its own tick still gated by this). */
+export function getRoleIntervalSeconds(): number {
+  return Number(process.env.ROLE_INTERVAL_SECONDS) || 120;
+}

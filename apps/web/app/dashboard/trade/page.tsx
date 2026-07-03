@@ -28,6 +28,7 @@ import {
 import { TokenSearchSelect } from "./components/TokenSearchSelect";
 import { TickerTape } from "./components/TickerTape";
 import { LiveTradeCard } from "./components/LiveTradeCard";
+import { PortfolioCard } from "./components/PortfolioCard";
 import {
   createAgentWallet,
   attachAgentDelegation,
@@ -35,6 +36,7 @@ import {
   startAgentWallet,
   listStrategies,
   listAgentWallets,
+  recordManualTrade,
   type StrategyMeta,
   type AgentSummary,
 } from "@/app/lib/agentsBackend";
@@ -185,6 +187,13 @@ function TradeInner() {
       flash("ok", `Swapped ${formatNumber(amountNum)} ${sendAsset.code} — tx ${result.hash.slice(0, 8)}…`);
       setAmount("");
       await refreshBalances();
+      recordManualTrade({
+        side: destAsset.code === "XLM" ? "buy" : "sell",
+        pair: "XLM/USDC",
+        amount: amountNum.toFixed(7),
+        price: dexQuote.price.toFixed(7),
+        txHash: result.hash,
+      }).catch(() => {});
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setSwapError(msg);
@@ -329,6 +338,15 @@ function TradeInner() {
     if (!walletOwner) return;
     ensureAgentAuth().then(refreshActiveAgents);
   }, [walletOwner, ensureAgentAuth, refreshActiveAgents]);
+
+  // Poll for agent status updates while in strategy or intent mode — agents transition between
+  // running/error/stopped server-side and the trade page needs to reflect that without requiring
+  // a manual refresh.
+  useEffect(() => {
+    if (mode !== "strategy" && mode !== "intent") return;
+    const interval = window.setInterval(refreshActiveAgents, 10_000);
+    return () => window.clearInterval(interval);
+  }, [mode, refreshActiveAgents]);
 
   const strategyGroups = strategies.reduce<Record<string, StrategyMeta[]>>((acc, s) => {
     (acc[s.category] ??= []).push(s);
@@ -616,6 +634,13 @@ function TradeInner() {
       setIntentResult({ hash: swapResult.hash });
       flash("ok", `Traded ${formatNumber(sendAmountNum)} ${tradeSendAsset.code} → ${tradeDestAsset.code} per your intent — tx ${swapResult.hash.slice(0, 8)}…`);
       await refreshBalances();
+      recordManualTrade({
+        side: tradeDestAsset.code === "XLM" ? "buy" : "sell",
+        pair: "XLM/USDC",
+        amount: sendAmountNum.toFixed(7),
+        price: quote.price.toFixed(7),
+        txHash: swapResult.hash,
+      }).catch(() => {});
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       flash("err", msg);
@@ -1541,6 +1566,8 @@ function TradeInner() {
                       </div>
                     </div>
                   )}
+
+                  {smartWalletAddress && <PortfolioCard />}
 
                   <button
                     onClick={disconnect}

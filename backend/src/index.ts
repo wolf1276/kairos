@@ -6,6 +6,8 @@ import { authRouter } from './routes/auth.js';
 import { positionsRouter, agentPositionsRouter } from './routes/positions.js';
 import { auditRouter, agentAuditRouter } from './routes/audit.js';
 import { statsRouter, agentStatsRouter } from './routes/stats.js';
+import { autonomousRouter, autonomousAgentRouter } from './routes/autonomous.js';
+import { tradesRouter } from './routes/trades.js';
 import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { getPriceFeedService } from './priceFeed.js';
@@ -25,10 +27,17 @@ app.use('/api/strategies', strategiesRouter);
 // that catch-all treats "summary" as an agent id and 404s (see agentStatsRouter/etc. below,
 // which are safe since their patterns need an extra /:id/segment that "summary" alone can't match).
 app.use('/api', requireAuth, statsRouter);
+// Owner-scoped autonomous routes (/api/decisions, /api/portfolio). Registered before the broad
+// nothing-else here needs it, but keep it above the catch-alls for clarity.
+app.use('/api', requireAuth, autonomousRouter);
 app.use('/api/agents', requireAuth, agentStatsRouter);
 app.use('/api/agents', requireAuth, agentPositionsRouter);
 app.use('/api/agents', requireAuth, agentAuditRouter);
+// Autonomous agent-scoped routes (/provision, /:id/decisions, /:id/performance) must precede
+// agentsRouter's GET /:id catch-all.
+app.use('/api/agents', requireAuth, autonomousAgentRouter);
 app.use('/api/agents', requireAuth, agentsRouter);
+app.use('/api/trades', requireAuth, tradesRouter);
 app.use('/api/positions', requireAuth, positionsRouter);
 app.use('/api/audit', requireAuth, auditRouter);
 

@@ -2,7 +2,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import type { Signer } from '@wolf1276/kairos-sdk';
 import { TurnkeySigner } from '@wolf1276/kairos-turnkey-signer';
 import { randomUUID } from 'crypto';
-import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow, type AgentMode } from './db.js';
+import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow, type AgentMode, type AgentRole } from './db.js';
 import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
@@ -16,6 +16,7 @@ function toSummary(row: AgentRow): AgentSummary {
     id: row.id,
     owner: row.owner,
     publicKey: row.public_key,
+    role: row.role,
     status: row.status,
     delegationHash: walletDelegation && !walletDelegation.disabled ? walletDelegation.delegation_hash : null,
     delegator: row.delegator,
@@ -46,7 +47,7 @@ export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation |
  * agent's key can never be used to sign for another, and each can be revoked independently
  * (via Turnkey, in addition to revoking its Kairos delegation on-chain).
  */
-export async function createAgent(owner: string, options?: { mode?: AgentMode; capital?: string; riskLevel?: string }): Promise<AgentSummary> {
+export async function createAgent(owner: string, options?: { mode?: AgentMode; capital?: string; riskLevel?: string; role?: AgentRole }): Promise<AgentSummary> {
   const id = randomUUID();
   const signer = await TurnkeySigner.forNewAgent(getTurnkeyClient(), getTurnkeyOrganizationId(), id);
 
@@ -62,6 +63,7 @@ export async function createAgent(owner: string, options?: { mode?: AgentMode; c
     id,
     owner,
     public_key: signer.publicKey(),
+    role: options?.role ?? null,
     encrypted_secret: '',
     turnkey_private_key_id: signer.id,
     status: 'new',
@@ -79,8 +81,8 @@ export async function createAgent(owner: string, options?: { mode?: AgentMode; c
   };
   getDb()
     .prepare(
-      `INSERT INTO agents (id, owner, public_key, encrypted_secret, turnkey_private_key_id, status, created_at, mode, capital, risk_level, started_at)
-       VALUES (@id, @owner, @public_key, @encrypted_secret, @turnkey_private_key_id, @status, @created_at, @mode, @capital, @risk_level, @started_at)`
+      `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, created_at, mode, capital, risk_level, started_at)
+       VALUES (@id, @owner, @public_key, @role, @encrypted_secret, @turnkey_private_key_id, @status, @created_at, @mode, @capital, @risk_level, @started_at)`
     )
     .run(row);
   return toSummary(row);

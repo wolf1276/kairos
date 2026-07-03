@@ -4,15 +4,13 @@ import { getKairosClient } from './kairos.js';
 import { getAgentSigner, getActiveDelegationForAgent, recordTick, stopAgent } from './agentService.js';
 import { mapExecutionError, mapThrownError } from './errors.js';
 import type { AgentRow } from './db.js';
-import type { DcaStrategyConfig, JsonSafeDelegation, LimitStrategyConfig, QuantStrategyConfig } from './types.js';
+import type { DcaStrategyConfig, JsonSafeDelegation, LimitStrategyConfig, QuantStrategyConfig, RoleStrategyConfig } from './types.js';
 import { getCandles, getLatestPrice, TESTNET_USDC_ISSUER } from './priceHistory.js';
 import { getStrategy } from './strategies/index.js';
-import { insertTrade } from './tradeService.js';
-import { computeAvgCostAndRealize, computePnlSummary } from './pnl.js';
 import { getNetwork } from './config.js';
 import { logEvent } from './auditService.js';
-import { upsertPosition } from './positionService.js';
 import { executePaperQuantTrade, executePaperLimitOrder } from './paperExecutor.js';
+import { recordCompletedTrade } from './executionEngine.js';
 
 const HORIZON_TESTNET_URL = 'https://horizon-testnet.stellar.org';
 
@@ -35,11 +33,18 @@ function deserializeDelegation(d: JsonSafeDelegation) {
  */
 export async function runAgentTick(row: AgentRow): Promise<void> {
   if (!row.strategy_config_json) return;
-  const strategy: DcaStrategyConfig | QuantStrategyConfig | LimitStrategyConfig = JSON.parse(row.strategy_config_json);
+  const strategy: DcaStrategyConfig | QuantStrategyConfig | LimitStrategyConfig | RoleStrategyConfig = JSON.parse(row.strategy_config_json);
 
   const now = Date.now();
   if (row.last_tick_at && now - row.last_tick_at < strategy.intervalSeconds * 1000) {
     return; // not due yet
+  }
+
+  if (strategy.type === 'role') {
+    // Autonomous role agents (yield/strategic/balancer) run their own decision pipeline.
+    const { runRoleTick } = await import('./roleTick.js');
+    await runRoleTick(row, strategy);
+    return;
   }
 
   if (strategy.type === 'quant') {
@@ -123,6 +128,12 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
       return;
     }
 
+    if (row.mode === 'live' && !getActiveDelegationForAgent(row)) {
+      logEvent({ agentId: row.id, owner: row.owner, eventType: 'delegation_invalid', mode: row.mode, mpcAccount: row.public_key, pair: strategy.pair, message: 'Live quant agent has no active delegation — cannot trade without on-chain authority' });
+      recordTick(row.id, { ok: false, message: 'No active delegation — attach one before starting a live quant agent' });
+      return;
+    }
+
     const price = candles.length ? candles[candles.length - 1].close : null;
     if (price === null) {
       recordTick(row.id, { ok: false, message: 'No price data available to trade against' });
@@ -152,39 +163,18 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
         ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal)
         : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal);
 
-    const { realizedPnl } = computeAvgCostAndRealize(row.id, strategy.pair, signal, amount, String(price));
-    insertTrade({
-      agentId: row.id,
+    recordCompletedTrade({
+      row,
       strategyId: strategy.strategyId,
       side: signal,
       pair: strategy.pair,
       amount,
       price: String(price),
       txHash,
-      status: 'success',
-      realizedPnl,
       mode: row.mode,
-    });
-    const position = upsertPosition(row.id, strategy.pair);
-    const pnl = computePnlSummary(row.id, strategy.pair, price);
-
-    logEvent({
-      agentId: row.id,
-      owner: row.owner,
       eventType: 'trade_executed',
-      mode: row.mode,
-      strategyId: strategy.strategyId,
-      mpcAccount: row.public_key,
-      pair: strategy.pair,
-      signal,
-      executionStatus: 'success',
-      txHash,
-      positionAfter: position,
-      pnlAfter: pnl,
       message: `${def.name}: ${signal} ${amount} at ${price}. Tx: ${txHash}`,
     });
-
-    recordTick(row.id, { ok: true, message: `${def.name}: ${signal} ${amount} at ${price}. Tx: ${txHash}` });
   } catch (error) {
     recordTick(row.id, { ok: false, message: mapThrownError(error) });
   }
@@ -221,41 +211,26 @@ export async function runLimitTick(row: AgentRow, strategy: LimitStrategyConfig)
       message: `Limit trigger met: price ${price} vs ${strategy.triggerComparator} ${trigger}`,
     });
 
+    if (row.mode === 'live' && !getActiveDelegationForAgent(row)) {
+      logEvent({ agentId: row.id, owner: row.owner, eventType: 'delegation_invalid', mode: row.mode, mpcAccount: row.public_key, pair: strategy.pair, message: 'Live limit agent has no active delegation — cannot trade without on-chain authority' });
+      recordTick(row.id, { ok: false, message: 'No active delegation — attach one before starting a live limit agent' });
+      return;
+    }
+
     const txHash = row.mode === 'paper' ? await executePaperLimitOrder(row, strategy, price) : await executeLimitOrder(row, strategy, price);
 
-    const { realizedPnl } = computeAvgCostAndRealize(row.id, strategy.pair, strategy.side, strategy.quantity, String(price));
-    insertTrade({
-      agentId: row.id,
+    recordCompletedTrade({
+      row,
       strategyId: 'limit',
       side: strategy.side,
       pair: strategy.pair,
       amount: strategy.quantity,
       price: String(price),
       txHash,
-      status: 'success',
-      realizedPnl,
       mode: row.mode,
-    });
-    const position = upsertPosition(row.id, strategy.pair);
-    const pnl = computePnlSummary(row.id, strategy.pair, price);
-
-    logEvent({
-      agentId: row.id,
-      owner: row.owner,
       eventType: 'trade_executed',
-      mode: row.mode,
-      strategyId: 'limit',
-      mpcAccount: row.public_key,
-      pair: strategy.pair,
-      signal: strategy.side,
-      executionStatus: 'success',
-      txHash,
-      positionAfter: position,
-      pnlAfter: pnl,
       message: `Order filled: ${strategy.side} ${strategy.quantity} ${strategy.asset} at ${price}. Tx: ${txHash}`,
     });
-
-    recordTick(row.id, { ok: true, message: `Order filled: ${strategy.side} ${strategy.quantity} ${strategy.asset} at ${price}. Tx: ${txHash}` });
     stopAgent(row.id);
   } catch (error) {
     recordTick(row.id, { ok: false, message: mapThrownError(error) });

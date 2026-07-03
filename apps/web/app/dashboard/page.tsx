@@ -1,25 +1,63 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { useDelegations } from "@/app/dashboard/delegations/hooks/useDelegations";
-import { Badge } from "@/app/components/ui/Badge";
-import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import {
   listAgentWallets,
   getAgentTrades,
+  getAgentsSummary,
+  getPortfolioOverview,
+  getAuditLog,
   type AgentSummary,
   type TradeRow,
+  type AgentDashboard,
+  type PortfolioOverview,
+  type AuditLogRow,
 } from "@/app/lib/agentsBackend";
 import { delegateXLM, withdrawFromSmartWallet } from "@/app/lib/stellar";
 import { usePrices } from "@/app/hooks/usePrices";
 import { usePortfolioSnapshots } from "@/app/hooks/usePortfolioSnapshots";
+import type { Time } from "lightweight-charts";
+
+import { PortfolioHero } from "@/app/components/dashboard/PortfolioHero";
+import { MetricCard } from "@/app/components/dashboard/MetricCard";
+import { PerformanceChart } from "@/app/components/dashboard/PerformanceChart";
+import { AIControlCenter } from "@/app/components/dashboard/AIControlCenter";
+import { AllocationChart } from "@/app/components/dashboard/AllocationChart";
+import { AgentStatusCard } from "@/app/components/dashboard/AgentStatusCard";
+import { ExecutionTimeline } from "@/app/components/dashboard/ExecutionTimeline";
+import { InsightCard } from "@/app/components/dashboard/InsightCard";
+import { PolicySummary } from "@/app/components/dashboard/PolicySummary";
+import { ActivityFeed } from "@/app/components/dashboard/ActivityFeed";
+import { QuickStatCard } from "@/app/components/dashboard/QuickStatCard";
 
 function shortAddress(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
+}
+
+function formatCurrency(value: number): string {
+  if (value >= 1_000_000) return `$${(value / 1_000_000).toFixed(2)}M`;
+  if (value >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(2)}`;
+}
+
+function toRiskLevel(riskLevel: string | null | undefined): "Low" | "Medium" | "High" {
+  const normalized = riskLevel?.toLowerCase();
+  if (normalized === "low") return "Low";
+  if (normalized === "high") return "High";
+  return "Medium";
+}
+
+function toRiskProfile(riskLevel: string | null | undefined): "Conservative" | "Moderate" | "Aggressive" | "Medium" {
+  const normalized = riskLevel?.toLowerCase();
+  if (normalized === "low") return "Conservative";
+  if (normalized === "high") return "Aggressive";
+  if (normalized === "medium") return "Moderate";
+  return "Medium";
 }
 
 function statusTone(status: AgentSummary["status"]): "success" | "error" | "warning" | "neutral" {
@@ -27,41 +65,6 @@ function statusTone(status: AgentSummary["status"]): "success" | "error" | "warn
   if (status === "error") return "error";
   if (status === "stopped") return "neutral";
   return "warning";
-}
-
-function strategyLabel(agent: AgentSummary): string {
-  if (!agent.strategy) return "Unconfigured";
-  if (agent.strategy.type === "dca") return "Strategy — DCA";
-  if (agent.strategy.type === "limit") return "Intent — Order";
-  return `Intent — ${agent.strategy.strategyId}`;
-}
-
-function GrowthSparkline({ history }: { history: { t: number; v: number }[] }) {
-  if (history.length < 2) return null;
-  const values = history.map((s) => s.v);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const range = max - min || 1;
-  const w = 100;
-  const h = 32;
-  const points = history.map((s, i) => {
-    const x = (i / (history.length - 1)) * w;
-    const y = h - ((s.v - min) / range) * h;
-    return `${x},${y}`;
-  });
-  const up = values[values.length - 1] >= values[0];
-  return (
-    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0" preserveAspectRatio="none">
-      <polyline
-        points={points.join(" ")}
-        fill="none"
-        stroke={up ? "var(--success)" : "var(--error)"}
-        strokeWidth={1.5}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
 }
 
 export default function DashboardOverview() {
@@ -79,21 +82,13 @@ export default function DashboardOverview() {
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
-  // Smart wallets are Soroban contracts (C-addresses) — their balances must be read via each
-  // token's SAC `balance` entrypoint, not classic Horizon (which only understands G-addresses).
-  // This is the single source of truth for capital-wallet balances, shared with the Trade page.
   const {
     xlmBalance,
     usdcBalance,
     loading: balancesLoading,
     refresh: refreshBalances,
   } = useSmartWalletBalances(smartWalletAddress, wallet?.networkPassphrase ?? null, wallet?.sorobanRpcUrl);
-  const allBalances = [
-    { code: "XLM", balance: xlmBalance.toFixed(7) },
-    { code: "USDC", balance: usdcBalance.toFixed(7) },
-  ].filter((b) => parseFloat(b.balance) > 0);
 
-  // The connected Freighter wallet (EOA) is a classic G-address — Horizon works fine here.
   const {
     xlmBalance: freighterXlmBalance,
     loading: freighterBalanceLoading,
@@ -107,12 +102,6 @@ export default function DashboardOverview() {
   const portfolioUsd = pricesReady ? xlmBalance * xlmPrice + usdcBalance * usdcPrice : null;
 
   const growth = usePortfolioSnapshots(walletOwner, smartWalletAddress ? portfolioUsd : null);
-
-  function priceForCode(code: string): number | undefined {
-    if (code === "XLM") return xlmPrice;
-    if (code === "USDC") return usdcPrice;
-    return undefined;
-  }
 
   const [transferMode, setTransferMode] = useState<"deposit" | "withdraw" | null>(null);
   const [transferAmount, setTransferAmount] = useState("");
@@ -159,6 +148,9 @@ export default function DashboardOverview() {
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [tradesLoading, setTradesLoading] = useState(false);
+  const [dashboards, setDashboards] = useState<AgentDashboard[]>([]);
+  const [portfolio, setPortfolio] = useState<PortfolioOverview | null>(null);
+  const [auditEvents, setAuditEvents] = useState<AuditLogRow[]>([]);
 
   useEffect(() => {
     if (!walletOwner) return;
@@ -184,8 +176,146 @@ export default function DashboardOverview() {
       .finally(() => setTradesLoading(false));
   }, [agents]);
 
-  const totalRealizedPnl = trades.reduce((acc, t) => acc + (t.realized_pnl ? parseFloat(t.realized_pnl) : 0), 0);
-  const insights = agents.filter((a) => a.lastResult || a.lastError).slice(0, 4);
+  useEffect(() => {
+    if (!walletOwner || agents.length === 0) {
+      setDashboards([]);
+      return;
+    }
+    getAgentsSummary()
+      .then(setDashboards)
+      .catch(() => setDashboards([]));
+  }, [walletOwner, agents]);
+
+  useEffect(() => {
+    if (!walletOwner) return;
+    getPortfolioOverview()
+      .then(setPortfolio)
+      .catch(() => setPortfolio(null));
+  }, [walletOwner, portfolioUsd]);
+
+  useEffect(() => {
+    if (!walletOwner) return;
+    getAuditLog({ limit: 5 })
+      .then(setAuditEvents)
+      .catch(() => setAuditEvents([]));
+  }, [walletOwner, trades]);
+
+  const totalRealizedPnl = useMemo(
+    () => trades.reduce((acc, t) => acc + (t.realized_pnl ? parseFloat(t.realized_pnl) : 0), 0),
+    [trades]
+  );
+
+  const insights = useMemo(
+    () => agents.filter((a) => a.lastResult || a.lastError).slice(0, 4),
+    [agents]
+  );
+
+  const dailyReturn = useMemo(() => {
+    if (growth.changePct == null || !portfolioUsd) return "0.00";
+    return `${growth.changePct >= 0 ? "+" : ""}${growth.changePct.toFixed(2)}%`;
+  }, [growth.changePct, portfolioUsd]);
+
+  const dailyReturnPositive = (growth.changePct ?? 0) >= 0;
+
+  const activeAgentCount = agents.filter((a) => a.status === "running").length;
+  const automationUptime = agents.length > 0 ? `${((activeAgentCount / agents.length) * 100).toFixed(1)}%` : "—";
+
+  const successfulTrades = trades.filter((t) => t.status === "success").length;
+  const executionSuccess = trades.length > 0 ? `${((successfulTrades / trades.length) * 100).toFixed(1)}%` : "—";
+
+  const avgWinRate = useMemo(() => {
+    if (dashboards.length === 0) return null;
+    return dashboards.reduce((acc, d) => acc + d.winRate, 0) / dashboards.length;
+  }, [dashboards]);
+  const winRateDisplay = avgWinRate != null ? `${(avgWinRate * 100).toFixed(1)}%` : "—";
+
+  const avgConfidence = useMemo(() => {
+    const withConfidence = dashboards.filter((d) => d.currentConfidence != null);
+    if (withConfidence.length === 0) return null;
+    return withConfidence.reduce((acc, d) => acc + (d.currentConfidence ?? 0), 0) / withConfidence.length;
+  }, [dashboards]);
+  const aiAccuracy = avgConfidence != null ? `${(avgConfidence * 100).toFixed(1)}%` : "—";
+
+  const idleUsd = portfolio?.allocation.idleUsd ?? 0;
+  const riskExposure = portfolio && portfolio.allocation.totalValue > 0
+    ? `${(100 - (idleUsd / portfolio.allocation.totalValue) * 100).toFixed(1)}%`
+    : "—";
+
+  const lifetimePnl = useMemo(
+    () => dashboards.reduce((acc, d) => acc + parseFloat(d.lifetimePnl || "0"), 0),
+    [dashboards]
+  );
+
+  const allocationData = useMemo(() => {
+    if (!portfolio || portfolio.allocation.totalValue === 0) return [];
+    return [
+      { label: "XLM", value: portfolio.allocation.xlmValue, color: "#7851e9" },
+      { label: "USDC", value: portfolio.allocation.usdcValue, color: "#2dd4a0" },
+      { label: "Idle", value: portfolio.allocation.idleUsd, color: "#a8a6a2" },
+    ];
+  }, [portfolio]);
+
+  const performanceData = useMemo(() => {
+    if (!growth.history.length) return [];
+    return growth.history.map((s) => ({
+      time: Math.floor(s.t / 1000) as Time,
+      value: s.v,
+    }));
+  }, [growth.history]);
+
+  const delegatedCapital = portfolio ? portfolio.allocation.xlmValue + portfolio.allocation.usdcValue : 0;
+  const availableCapital = portfolio ? portfolio.allocation.idleUsd : 0;
+
+  const policies = useMemo(() => {
+    if (!portfolio) return [];
+    const driftUsage = Math.round(Math.abs(portfolio.allocation.xlmPct - portfolio.targets.xlmPct) * 10) / 10;
+    return [
+      {
+        id: "xlm-target",
+        name: "XLM Allocation Drift",
+        usage: driftUsage,
+        limit: portfolio.targets.driftThresholdPct,
+        status: (driftUsage >= portfolio.targets.driftThresholdPct ? "warning" : "active") as "active" | "warning",
+      },
+      {
+        id: "delegations",
+        name: "Active Delegations",
+        usage: delegationStats.activeCount,
+        limit: Math.max(agents.length, delegationStats.activeCount, 1),
+        status: "active" as const,
+      },
+      {
+        id: "managed-capital",
+        name: "Managed Capital",
+        usage: Math.round(portfolio.managedCapital),
+        limit: Math.max(Math.round(portfolio.allocation.totalValue), 1),
+        status: "active" as const,
+      },
+    ];
+  }, [portfolio, delegationStats.activeCount, agents.length]);
+
+  const activityItems = useMemo(
+    () =>
+      auditEvents.map((e) => ({
+        id: e.id,
+        message: e.message || e.event_type.replace(/_/g, " "),
+        timestamp: e.created_at,
+        type: (e.event_type === "strategy_error" || e.event_type === "policy_violation" || e.event_type === "delegation_invalid"
+          ? "warning"
+          : e.event_type === "trade_executed" || e.event_type === "trade_closed"
+            ? "success"
+            : "info") as "info" | "success" | "warning",
+      })),
+    [auditEvents]
+  );
+
+  const latestDecision = useMemo(() => {
+    const withDecisions = dashboards.filter((d) => d.lastDecisionTime != null);
+    if (withDecisions.length === 0) return null;
+    return withDecisions.reduce((latest, d) =>
+      (d.lastDecisionTime ?? 0) > (latest.lastDecisionTime ?? 0) ? d : latest
+    );
+  }, [dashboards]);
 
   if (!checked) {
     return (
@@ -198,7 +328,7 @@ export default function DashboardOverview() {
   if (!connected) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
-        <Card className="max-w-sm p-8 text-center">
+        <div className="max-w-sm rounded-2xl border border-white/[0.06] bg-bg-card p-8 text-center">
           <h2 className="font-display text-base font-medium text-text-primary">Connect your wallet</h2>
           <p className="mt-2 text-xs text-text-muted">
             Connect Freighter to view your portfolio, delegations, and agents.
@@ -210,7 +340,7 @@ export default function DashboardOverview() {
           >
             {connecting ? "Connecting…" : "Connect Freighter"}
           </button>
-        </Card>
+        </div>
       </div>
     );
   }
@@ -241,371 +371,167 @@ export default function DashboardOverview() {
         </div>
       </div>
 
-      {/* ── Your Wallet + Capital (smart) wallet detection ── */}
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-        <Card className="p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                Your Wallet
-              </p>
-              <p className="mt-1 font-mono text-xs text-text-secondary">
-                {wallet ? shortAddress(wallet.address) : "—"}
-              </p>
-            </div>
-            {freighterBalanceLoading ? (
-              <div className="h-7 w-20 animate-pulse rounded-md bg-bg-elevated/60" />
-            ) : (
-              <p className="font-display text-2xl font-bold tracking-tight text-text-primary tabular-nums">
-                {freighterXlmBalance.toFixed(2)} <span className="text-sm font-medium text-text-muted">XLM</span>
-              </p>
-            )}
-          </div>
-        </Card>
+      {/* ── Portfolio Hero ── */}
+      <PortfolioHero
+        portfolioValue={portfolioUsd ? formatCurrency(portfolioUsd) : "—"}
+        changePct={growth.changePct ?? 0}
+        delegatedCapital={formatCurrency(delegatedCapital)}
+        availableCapital={formatCurrency(availableCapital)}
+        automationStatus={delegationStats.activeCount > 0 ? "active" : "idle"}
+        currentStrategy={agents.length > 0 ? `${activeAgentCount} Active` : "None"}
+        riskProfile={toRiskProfile(agents.find((a) => a.riskLevel)?.riskLevel)}
+        marketRegime={riskExposure !== "—" && parseFloat(riskExposure) > 50 ? "Volatile" : "Stable"}
+        aiConfidence={avgConfidence ?? 0}
+        sparklineData={growth.history}
+      />
 
-        {!smartWalletAddress ? (
-          <Card className="p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                  Capital Wallet
-                </p>
-                <p className="mt-1 text-xs text-text-muted">
-                  No capital wallet found. Deploy one to enable delegations and agent trading.
-                </p>
-                {deployError && <p className="mt-1.5 text-xs text-error/90">{deployError}</p>}
-              </div>
-              <button
-                onClick={deploySmartWallet}
-                disabled={deploying}
-                className="shrink-0 rounded-xl bg-accent/80 px-4 py-2.5 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {deploying ? "Deploying…" : "Create Capital Wallet"}
-              </button>
-            </div>
-          </Card>
-        ) : (
-          <Card className="p-6">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                  Capital Wallet
-                </p>
-                <p className="mt-1 font-mono text-xs text-text-secondary">{shortAddress(smartWalletAddress)}</p>
-              </div>
-              {balancesLoading ? (
-                <div className="h-7 w-20 animate-pulse rounded-md bg-bg-elevated/60" />
-              ) : (
-                <p className="font-display text-2xl font-bold tracking-tight text-text-primary tabular-nums">
-                  {xlmBalance.toFixed(2)} <span className="text-sm font-medium text-text-muted">XLM</span>
-                </p>
-              )}
-            </div>
-            <div className="mt-4 grid grid-cols-2 gap-2">
-              <button
-                onClick={() => setTransferMode(transferMode === "deposit" ? null : "deposit")}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
-                  transferMode === "deposit"
-                    ? "bg-accent text-white"
-                    : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                Deposit
-              </button>
-              <button
-                onClick={() => setTransferMode(transferMode === "withdraw" ? null : "withdraw")}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
-                  transferMode === "withdraw"
-                    ? "bg-accent text-white"
-                    : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
-                }`}
-              >
-                Withdraw
-              </button>
-            </div>
-          </Card>
-        )}
+      {/* ── Metrics Row ── */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <MetricCard
+          title="Portfolio Value"
+          value={portfolioUsd ? formatCurrency(portfolioUsd) : "—"}
+          change={{ value: dailyReturn, positive: dailyReturnPositive }}
+          sparklineData={growth.history}
+          href="/dashboard/portfolio"
+        />
+        <MetricCard
+          title="Delegated Capital"
+          value={formatCurrency(delegatedCapital)}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>}
+          href="/dashboard/delegations"
+        />
+        <MetricCard
+          title="Available Funds"
+          value={formatCurrency(availableCapital)}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v16"/></svg>}
+        />
+        <MetricCard
+          title="Automation Uptime"
+          value={automationUptime}
+          icon={<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>}
+        />
       </div>
 
-      {/* ── Deposit / Withdraw panel ── */}
-      {transferMode && smartWalletAddress && (
-        <Card className="p-6">
-          <div className="flex items-center justify-between">
-            <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-              {transferMode === "deposit" ? "Transfer to Capital Wallet" : "Withdraw to Freighter Wallet"}
-            </p>
-            <button onClick={closeTransfer} className="text-text-muted hover:text-text-primary">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-                <line x1="18" y1="6" x2="6" y2="18" />
-                <line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
-            </button>
-          </div>
-          <p className="mt-2 text-xs text-text-muted">
-            {transferMode === "deposit"
-              ? `From ${wallet ? shortAddress(wallet.address) : "your wallet"} to ${shortAddress(smartWalletAddress)}`
-              : `From ${shortAddress(smartWalletAddress)} to ${wallet ? shortAddress(wallet.address) : "your wallet"}`}
-          </p>
-          <div className="mt-1 flex items-center justify-between text-[11px] text-text-muted">
-            <span>Available</span>
-            <button
-              onClick={() =>
-                setTransferAmount(
-                  (transferMode === "deposit" ? freighterXlmBalance : xlmBalance).toString()
-                )
-              }
-              className="font-mono text-text-secondary hover:text-accent"
-            >
-              {transferMode === "deposit"
-                ? `${freighterBalanceLoading ? "…" : freighterXlmBalance.toFixed(2)} XLM`
-                : `${xlmBalance.toFixed(2)} XLM`}
-            </button>
-          </div>
-          {transferError && <p className="mt-2 text-xs text-error/90">{transferError}</p>}
-          <div className="mt-3 flex gap-2">
-            <input
-              value={transferAmount}
-              onChange={(e) => setTransferAmount(e.target.value)}
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="Amount (XLM)"
-              className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30"
-            />
-            <button
-              onClick={submitTransfer}
-              disabled={transferBusy}
-              className="shrink-0 rounded-lg bg-accent/80 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {transferBusy ? "Signing…" : transferMode === "deposit" ? "Deposit" : "Withdraw"}
-            </button>
-          </div>
-        </Card>
-      )}
-
-      {/* ── Portfolio Summary + Delegation ── */}
+      {/* ── Performance Chart + AI Control Center ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <Card className="p-6 lg:col-span-2">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                Portfolio Summary
-              </p>
-              {!smartWalletAddress ? (
-                <p className="mt-1.5 text-sm text-text-muted">No capital wallet deployed yet.</p>
-              ) : balancesLoading || pricesLoading || !pricesReady ? (
-                <div className="mt-2 h-10 w-40 animate-pulse rounded-md bg-bg-elevated/60" />
+        <div className="lg:col-span-2">
+          <PerformanceChart data={performanceData} />
+        </div>
+        <div>
+          <AIControlCenter
+            status={delegationStats.activeCount > 0 ? "executing" : "idle"}
+            currentDecision={latestDecision?.currentDecision ?? (agents.length > 0 ? "Monitoring market conditions" : "Awaiting agent configuration")}
+            reasoning={latestDecision?.currentReasoning ?? "No recent decisions recorded yet."}
+            confidence={latestDecision?.currentConfidence ?? 0}
+            riskLevel={toRiskLevel(latestDecision?.riskLevel)}
+            marketSentiment="Neutral"
+            nextAnalysis={latestDecision?.lastDecisionTime ? new Date(latestDecision.lastDecisionTime).toLocaleTimeString() : "—"}
+            latency={latestDecision?.lastExecution ? Math.max(0, Date.now() - latestDecision.lastExecution) : 0}
+            agentHealth={agents.length > 0 ? activeAgentCount / agents.length : 0}
+            modelStatus={agents.length === 0 ? "offline" : "online"}
+          />
+        </div>
+      </div>
+
+      {/* ── Portfolio Allocation + Agent Status ── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <AllocationChart assets={allocationData} total={portfolioUsd ?? 0} />
+        </div>
+        <div>
+          <div className="rounded-2xl border border-white/[0.06] bg-bg-card p-5">
+            <h3 className="font-display text-sm font-medium text-text-primary mb-4">Agent Status</h3>
+            <div className="space-y-3">
+              {agentsLoading ? (
+                Array.from({ length: 3 }).map((_, i) => (
+                  <div key={i} className="h-24 animate-pulse rounded-xl bg-bg-elevated/60" />
+                ))
+              ) : agents.length === 0 ? (
+                <p className="text-xs text-text-muted text-center py-4">
+                  No agents yet. Create one from the{" "}
+                  <Link href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</Link>.
+                </p>
               ) : (
-                <p className="mt-1.5 font-display text-4xl font-bold tracking-tight text-text-primary tabular-nums">
-                  ${portfolioUsd!.toFixed(2)} <span className="text-lg font-medium text-text-muted">USD</span>
-                </p>
+                agents.slice(0, 4).map((agent) => {
+                  const dashboard = dashboards.find((d) => d.agent.id === agent.id);
+                  return (
+                    <AgentStatusCard
+                      key={agent.id}
+                      name={shortAddress(agent.publicKey)}
+                      status={agent.status === "new" ? "idle" : agent.status === "stopped" ? "stopped" : agent.status === "error" ? "error" : "running"}
+                      health={agent.status === "running" ? 0.95 : agent.status === "error" ? 0.3 : 0.7}
+                      confidence={dashboard?.currentConfidence ?? 0}
+                      currentTask={dashboard?.currentTask ?? (agent.strategy ? agent.strategy.type.toUpperCase() : "Unconfigured")}
+                      successRate={dashboard ? dashboard.winRate * 100 : 0}
+                      lastAction={agent.lastTickAt ? new Date(agent.lastTickAt).toLocaleTimeString() : "Never"}
+                      latency={dashboard?.lastExecution ? Math.max(0, Date.now() - dashboard.lastExecution) : 0}
+                    />
+                  );
+                })
               )}
-              {pricesError && !pricesReady && (
-                <p className="mt-1 text-[11px] text-error/80">Live prices unavailable — showing balances only.</p>
-              )}
-              {smartWalletAddress && growth.changePct != null && (
-                <p className={`mt-1 text-xs ${growth.changePct >= 0 ? "text-success" : "text-error"}`}>
-                  {growth.changePct >= 0 ? "+" : ""}
-                  {growth.changePct.toFixed(2)}%{" "}
-                  <span className="text-text-muted">
-                    {growth.windowLabel === "24h" ? "24h" : "since you started tracking"}
-                  </span>
-                </p>
-              )}
-            </div>
-            {smartWalletAddress && growth.history.length >= 2 && (
-              <GrowthSparkline history={growth.history} />
-            )}
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-white/[0.02] p-3">
-              <p className="text-[10px] uppercase tracking-widest text-text-muted">XLM</p>
-              <p className="mt-1 font-mono text-sm text-text-primary tabular-nums">{xlmBalance.toFixed(2)}</p>
-            </div>
-            <div className="rounded-xl bg-white/[0.02] p-3">
-              <p className="text-[10px] uppercase tracking-widest text-text-muted">USDC</p>
-              <p className="mt-1 font-mono text-sm text-text-primary tabular-nums">{usdcBalance.toFixed(2)}</p>
-            </div>
-            <div className="rounded-xl bg-white/[0.02] p-3">
-              <p className="text-[10px] uppercase tracking-widest text-text-muted">Realized PnL</p>
-              <p
-                className={`mt-1 font-mono text-sm tabular-nums ${
-                  totalRealizedPnl > 0 ? "text-success" : totalRealizedPnl < 0 ? "text-error" : "text-text-primary"
-                }`}
-              >
-                {totalRealizedPnl >= 0 ? "+" : ""}
-                {totalRealizedPnl.toFixed(2)}
-              </p>
             </div>
           </div>
-        </Card>
-
-        <Card className="p-6">
-          <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-            Delegation
-          </p>
-          {delegationsLoading ? (
-            <div className="mt-2 h-8 w-20 animate-pulse rounded-md bg-bg-elevated/60" />
-          ) : (
-            <p className="mt-1.5 font-display text-3xl font-bold tracking-tight text-text-primary tabular-nums">
-              {delegationStats.activeCount}
-              <span className="text-lg font-medium text-text-muted"> active</span>
-            </p>
-          )}
-          <div className="mt-3 space-y-1.5 text-xs text-text-muted">
-            <div className="flex justify-between">
-              <span>Policies attached</span>
-              <span className="text-text-secondary">{delegationStats.policiesAttached}</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Revoked</span>
-              <span className="text-text-secondary">{delegationStats.revokedCount}</span>
-            </div>
-          </div>
-          <Link
-            href="/dashboard/delegations"
-            className="mt-4 block rounded-lg border border-white/5 bg-white/[0.02] px-3 py-2 text-center text-xs text-text-secondary transition-colors hover:text-text-primary"
-          >
-            Manage
-          </Link>
-        </Card>
+        </div>
       </div>
 
-      {/* ── Agent Cards ── */}
-      <div>
-        <h2 className="mb-3 font-display text-sm font-medium text-text-primary">Agents</h2>
-        {agentsLoading ? (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="h-32 animate-pulse rounded-2xl bg-bg-elevated/60" />
-            ))}
-          </div>
-        ) : agents.length === 0 ? (
-          <Card>
-            <CardBody className="py-8 text-center">
-              <p className="text-xs text-text-muted">
-                No agents yet — launch one from the{" "}
-                <Link href="/dashboard/trade" className="text-accent/80 hover:text-accent">
-                  Trade page
-                </Link>
-                .
-              </p>
-            </CardBody>
-          </Card>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            {agents.slice(0, 3).map((agent) => (
-              <Card key={agent.id} className="p-4">
-                <div className="flex items-center justify-between">
-                  <span className="font-mono text-xs text-text-secondary">{shortAddress(agent.publicKey)}</span>
-                  <Badge tone={statusTone(agent.status)} dot>
-                    {agent.status}
-                  </Badge>
-                </div>
-                <p className="mt-3 text-xs font-medium text-text-primary">{strategyLabel(agent)}</p>
-                <p className="mt-1 text-[11px] text-text-muted">
-                  {agent.lastTickAt ? `Last tick ${new Date(agent.lastTickAt).toLocaleTimeString()}` : "Never ticked"}
-                </p>
-              </Card>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* ── Active Positions ── */}
-      <div>
-        <h2 className="mb-3 font-display text-sm font-medium text-text-primary">Active Positions</h2>
-        <Card>
-          {balancesLoading ? (
-            <CardBody className="py-8 text-center">
-              <span className="h-4 w-4 mx-auto inline-block animate-spin rounded-full border-2 border-accent border-t-transparent" />
-            </CardBody>
-          ) : allBalances.length === 0 ? (
-            <CardBody className="py-8 text-center">
-              <p className="text-xs text-text-muted">No positions in your capital wallet yet.</p>
-            </CardBody>
-          ) : (
-            <div className="divide-y divide-white/5">
-              {allBalances.map((b, i) => {
-                const p = priceForCode(b.code);
-                return (
-                  <div key={i} className="flex items-center justify-between px-6 py-3">
-                    <span className="text-xs font-medium text-text-primary">{b.code}</span>
-                    <div className="text-right">
-                      <span className="block font-mono text-xs text-text-secondary tabular-nums">
-                        {parseFloat(b.balance).toFixed(4)}
-                      </span>
-                      {p != null &&
-                        (pricesLoading ? (
-                          <span className="text-[10px] text-text-muted">loading…</span>
-                        ) : (
-                          <span className="text-[10px] text-text-muted tabular-nums">
-                            ${(parseFloat(b.balance) * p).toFixed(2)}
-                          </span>
-                        ))}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-      </div>
-
-      {/* ── AI Insights + Recent Activity ── */}
+      {/* ── Recent Executions + AI Insights ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader title="AI Insights" />
-          <CardBody className="space-y-2.5 pt-3">
+        <ExecutionTimeline
+          items={trades.map((t) => ({
+            id: t.id,
+            action: `${t.side.toUpperCase()} ${t.pair}`,
+            asset: t.pair,
+            amount: t.amount,
+            timestamp: t.created_at,
+            reason: t.side === "buy" ? "Strategy execution" : "Rebalancing",
+            policy: t.strategy_id,
+            result: t.status,
+          }))}
+        />
+        <div className="rounded-2xl border border-white/[0.06] bg-bg-card p-5">
+          <h3 className="font-display text-sm font-medium text-text-primary mb-4">AI Insights</h3>
+          <div className="space-y-3">
             {insights.length === 0 ? (
-              <p className="text-xs text-text-muted">No agent activity to analyze yet.</p>
+              <p className="text-xs text-text-muted text-center py-4">No insights available yet.</p>
             ) : (
-              insights.map((agent) => (
-                <div key={agent.id} className="rounded-xl bg-white/[0.02] px-3.5 py-2.5">
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono text-[11px] text-text-secondary">{shortAddress(agent.publicKey)}</span>
-                    <span className="text-[10px] text-text-muted">
-                      {agent.lastTickAt && new Date(agent.lastTickAt).toLocaleTimeString()}
-                    </span>
-                  </div>
-                  <p className={`mt-1 truncate text-xs ${agent.lastError ? "text-error/85" : "text-success/85"}`}>
-                    {agent.lastError || agent.lastResult}
-                  </p>
-                </div>
-              ))
+              insights.map((agent) => {
+                const dashboard = dashboards.find((d) => d.agent.id === agent.id);
+                return (
+                  <InsightCard
+                    key={agent.id}
+                    type={agent.lastError ? "risk" : "opportunity"}
+                    title={agent.lastError ? "Execution Issue Detected" : "Strategy Update Available"}
+                    summary={agent.lastError || agent.lastResult || "Agent produced a result."}
+                    confidence={dashboard?.currentConfidence ?? 0}
+                    timestamp={agent.lastTickAt ?? Date.now()}
+                    actionLabel={agent.lastError ? "Review" : "Details"}
+                    onAction={() => {}}
+                  />
+                );
+              })
             )}
-          </CardBody>
-        </Card>
-
-        <Card>
-          <CardHeader title="Recent Activity" />
-          <CardBody className="space-y-2 pt-3">
-            {tradesLoading ? (
-              <div className="space-y-2">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="h-10 animate-pulse rounded-lg bg-bg-elevated/60" />
-                ))}
-              </div>
-            ) : trades.length === 0 ? (
-              <p className="text-xs text-text-muted">No trades yet.</p>
-            ) : (
-              trades.map((t) => (
-                <div key={t.id} className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3 py-2">
-                  <div className="flex items-center gap-2">
-                    <Badge tone={t.side === "buy" ? "buy" : "sell"}>{t.side}</Badge>
-                    <span className="text-xs text-text-secondary">{t.pair}</span>
-                  </div>
-                  <div className="text-right">
-                    <p className="font-mono text-xs text-text-primary tabular-nums">{t.amount}</p>
-                    <p className="text-[10px] text-text-muted">{new Date(t.created_at).toLocaleTimeString()}</p>
-                  </div>
-                </div>
-              ))
-            )}
-          </CardBody>
-        </Card>
+          </div>
+        </div>
       </div>
 
+      {/* ── Policy Summary + Activity Feed ── */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <PolicySummary policies={policies} />
+        <ActivityFeed items={activityItems} />
+      </div>
+
+      {/* ── Quick Stats ── */}
+      <div>
+        <h3 className="font-display text-sm font-medium text-text-primary mb-3">Executive KPIs</h3>
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+          <QuickStatCard label="Execution Success" value={executionSuccess} />
+          <QuickStatCard label="Win Rate" value={winRateDisplay} />
+          <QuickStatCard label="Avg AI Confidence" value={aiAccuracy} />
+          <QuickStatCard label="Idle Capital Exposure" value={riskExposure} />
+          <QuickStatCard label="Lifetime PnL" value={formatCurrency(lifetimePnl)} change={{ value: lifetimePnl >= 0 ? "+" : "-", positive: lifetimePnl >= 0 }} />
+          <QuickStatCard label="Active Agents" value={`${activeAgentCount}/${agents.length}`} />
+        </div>
+      </div>
     </div>
   );
 }

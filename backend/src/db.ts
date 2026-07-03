@@ -26,10 +26,16 @@ export interface TradeRow {
 
 export type AgentMode = 'paper' | 'live';
 
+/** Autonomous role of an agent. `null` = a legacy/manual agent (strategy/intent launcher),
+ *  kept working unchanged. The three fixed roles are auto-provisioned per wallet. */
+export type AgentRole = 'yield' | 'strategic' | 'balancer';
+
 export interface AgentRow {
   id: string;
   owner: string;
   public_key: string;
+  /** null for legacy manual agents; one of the three roles for autonomous agents. */
+  role: AgentRole | null;
   // Exactly one of these two identifies how to sign for this agent. New agents are always
   // Turnkey-backed (turnkey_private_key_id set, encrypted_secret ''); encrypted_secret is
   // kept only so agents created before Turnkey integration keep working — see
@@ -83,7 +89,19 @@ export type AuditEventType =
   | 'policy_violation'
   | 'delegation_invalid'
   | 'trade_executed'
-  | 'position_updated';
+  | 'position_updated'
+  // Autonomous multi-agent lifecycle events (see roleTick.ts).
+  | 'agent_provisioned'
+  | 'market_analysis'
+  | 'decision_made'
+  | 'strategy_selected'
+  | 'yield_opportunity'
+  | 'portfolio_rebalanced'
+  | 'policy_check'
+  | 'delegation_check'
+  | 'risk_check'
+  | 'trade_opened'
+  | 'trade_closed';
 
 export interface AuditLogRow {
   id: string;
@@ -113,6 +131,61 @@ export interface WalletDelegationRow {
   delegation_hash: string;
   delegation_json: string;
   disabled: 0 | 1;
+  updated_at: number;
+}
+
+/** One persisted LLM/heuristic decision — the full replayable reasoning record for a role tick.
+ *  Superset of what audit_log captures: stores the prompt/response and structured action. */
+export interface DecisionRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  role: AgentRole;
+  mode: string;
+  pair: string;
+  market_snapshot_json: string | null;
+  oracle_json: string | null;
+  indicators_json: string | null;
+  regime_json: string | null;
+  llm_model: string | null;
+  llm_prompt_summary: string | null;
+  llm_response_json: string | null;
+  action: string;
+  selected_strategy: string | null;
+  confidence: number;
+  reasoning: string;
+  policy_validation_json: string | null;
+  delegation_validation_json: string | null;
+  risk_json: string | null;
+  execution_result: string | null;
+  trade_id: string | null;
+  position_before_json: string | null;
+  position_after_json: string | null;
+  pnl_before_json: string | null;
+  pnl_after_json: string | null;
+  created_at: number;
+}
+
+export interface PerformanceSnapshotRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  realized_pnl: string;
+  unrealized_pnl: string;
+  open_position: string;
+  trade_count: number;
+  win_rate: number;
+  capital_managed: string | null;
+  created_at: number;
+}
+
+/** Per-owner portfolio target + last-known allocation. One row per owner. */
+export interface PortfolioStateRow {
+  owner: string;
+  target_xlm_pct: number;
+  target_usdc_pct: number;
+  drift_threshold_pct: number;
+  last_allocation_json: string | null;
   updated_at: number;
 }
 
@@ -208,7 +281,64 @@ export function getDb(): Database.Database {
     );
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_log(owner, created_at);
+    CREATE TABLE IF NOT EXISTS decisions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      role TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      pair TEXT NOT NULL,
+      market_snapshot_json TEXT,
+      oracle_json TEXT,
+      indicators_json TEXT,
+      regime_json TEXT,
+      llm_model TEXT,
+      llm_prompt_summary TEXT,
+      llm_response_json TEXT,
+      action TEXT NOT NULL,
+      selected_strategy TEXT,
+      confidence REAL NOT NULL DEFAULT 0,
+      reasoning TEXT NOT NULL DEFAULT '',
+      policy_validation_json TEXT,
+      delegation_validation_json TEXT,
+      risk_json TEXT,
+      execution_result TEXT,
+      trade_id TEXT,
+      position_before_json TEXT,
+      position_after_json TEXT,
+      pnl_before_json TEXT,
+      pnl_after_json TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_decisions_owner ON decisions(owner, created_at);
+    CREATE TABLE IF NOT EXISTS performance_snapshots (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      realized_pnl TEXT NOT NULL,
+      unrealized_pnl TEXT NOT NULL,
+      open_position TEXT NOT NULL,
+      trade_count INTEGER NOT NULL,
+      win_rate REAL NOT NULL,
+      capital_managed TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_perf_agent ON performance_snapshots(agent_id, created_at);
+    CREATE TABLE IF NOT EXISTS portfolio_state (
+      owner TEXT PRIMARY KEY,
+      target_xlm_pct REAL NOT NULL DEFAULT 50,
+      target_usdc_pct REAL NOT NULL DEFAULT 50,
+      drift_threshold_pct REAL NOT NULL DEFAULT 10,
+      last_allocation_json TEXT,
+      updated_at INTEGER NOT NULL
+    );
   `);
+
+  const agentCols0 = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+  if (!agentCols0.some((c) => c.name === 'role')) {
+    db.exec('ALTER TABLE agents ADD COLUMN role TEXT');
+  }
 
   // Pre-existing databases (created before the shared wallet_delegations table) won't have
   // this column from CREATE TABLE IF NOT EXISTS alone — add it if missing. Old
@@ -291,4 +421,27 @@ export function setWalletDelegationDisabled(delegator: string, disabled: boolean
   getDb()
     .prepare('UPDATE wallet_delegations SET disabled = ?, updated_at = ? WHERE delegator = ?')
     .run(disabled ? 1 : 0, Date.now(), delegator);
+}
+
+export function getPortfolioState(owner: string): PortfolioStateRow | undefined {
+  return getDb().prepare('SELECT * FROM portfolio_state WHERE owner = ?').get(owner) as PortfolioStateRow | undefined;
+}
+
+export function upsertPortfolioState(
+  owner: string,
+  fields: { targetXlmPct?: number; targetUsdcPct?: number; driftThresholdPct?: number; lastAllocationJson?: string }
+): void {
+  const existing = getPortfolioState(owner);
+  const targetXlmPct = fields.targetXlmPct ?? existing?.target_xlm_pct ?? 50;
+  const targetUsdcPct = fields.targetUsdcPct ?? existing?.target_usdc_pct ?? 50;
+  const driftThresholdPct = fields.driftThresholdPct ?? existing?.drift_threshold_pct ?? 10;
+  const lastAllocationJson = fields.lastAllocationJson ?? existing?.last_allocation_json ?? null;
+  getDb()
+    .prepare(
+      `INSERT INTO portfolio_state (owner, target_xlm_pct, target_usdc_pct, drift_threshold_pct, last_allocation_json, updated_at)
+       VALUES (@owner, @targetXlmPct, @targetUsdcPct, @driftThresholdPct, @lastAllocationJson, @now)
+       ON CONFLICT(owner) DO UPDATE SET target_xlm_pct = @targetXlmPct, target_usdc_pct = @targetUsdcPct,
+         drift_threshold_pct = @driftThresholdPct, last_allocation_json = @lastAllocationJson, updated_at = @now`
+    )
+    .run({ owner, targetXlmPct, targetUsdcPct, driftThresholdPct, lastAllocationJson, now: Date.now() });
 }
