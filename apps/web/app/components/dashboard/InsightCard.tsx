@@ -10,8 +10,6 @@ interface InsightCardProps {
   summary: string;
   confidence: number;
   timestamp: number;
-  actionLabel?: string;
-  onAction?: () => void;
 }
 
 const TYPE_CONFIG = {
@@ -21,7 +19,7 @@ const TYPE_CONFIG = {
   optimization: { icon: ArrowUpRight, color: "text-accent", bg: "bg-accent-muted/70", border: "border-accent/10", label: "Suggestion" },
 };
 
-export function InsightCard({ type, title, summary, confidence, timestamp, actionLabel, onAction }: InsightCardProps) {
+export function InsightCard({ type, title, summary, confidence, timestamp }: InsightCardProps) {
   const config = TYPE_CONFIG[type];
   const Icon = config.icon;
 
@@ -42,21 +40,10 @@ export function InsightCard({ type, title, summary, confidence, timestamp, actio
       <h4 className="mt-2.5 text-xs font-medium text-text-primary">{title}</h4>
       <p className="mt-1 text-[11px] text-text-secondary leading-relaxed line-clamp-2">{summary}</p>
 
-      <div className="mt-3 flex items-center justify-between">
+      <div className="mt-3">
         <span className="text-[10px] text-text-muted">
           {new Date(timestamp).toLocaleTimeString()}
         </span>
-        {actionLabel && onAction && (
-          <button
-            onClick={onAction}
-            className={cn(
-              "rounded-lg px-2.5 py-1 text-[11px] font-medium transition-colors",
-              "border border-white/5 bg-white/[0.03] text-text-secondary hover:text-text-primary hover:bg-white/[0.06]"
-            )}
-          >
-            {actionLabel}
-          </button>
-        )}
       </div>
     </div>
   );

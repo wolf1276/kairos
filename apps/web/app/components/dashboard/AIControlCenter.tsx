@@ -10,7 +10,6 @@ interface AIControlCenterProps {
   reasoning: string;
   confidence: number;
   riskLevel: "Low" | "Medium" | "High";
-  marketSentiment: "Bullish" | "Bearish" | "Neutral";
   nextAnalysis: string;
   latency: number;
   agentHealth: number;
@@ -30,7 +29,6 @@ export function AIControlCenter({
   reasoning,
   confidence,
   riskLevel,
-  marketSentiment,
   nextAnalysis,
   latency,
   agentHealth,
@@ -82,7 +80,6 @@ export function AIControlCenter({
         <div className="grid grid-cols-2 gap-3">
           <AIMetric label="Confidence" value={`${Math.round(confidence * 100)}%`} />
           <AIMetric label="Risk Level" value={riskLevel} trend={riskLevel === "Low" ? "success" : riskLevel === "Medium" ? "warning" : "error"} />
-          <AIMetric label="Sentiment" value={marketSentiment} trend={marketSentiment === "Bullish" ? "success" : marketSentiment === "Bearish" ? "error" : "neutral"} />
           <AIMetric label="Latency" value={`${latency}ms`} />
           <AIMetric label="Health" value={`${Math.round(agentHealth * 100)}%`} trend={agentHealth > 0.9 ? "success" : "warning"} />
           <AIMetric label="Next Analysis" value={nextAnalysis} />

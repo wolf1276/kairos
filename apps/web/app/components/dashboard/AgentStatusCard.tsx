@@ -7,7 +7,6 @@ import { Bot, AlertTriangle } from "lucide-react";
 interface AgentStatusCardProps {
   name: string;
   status: "running" | "stopped" | "error" | "idle";
-  health: number;
   confidence: number;
   currentTask: string;
   successRate: number;
@@ -25,7 +24,6 @@ const STATUS_CONFIG = {
 export function AgentStatusCard({
   name,
   status,
-  health,
   confidence,
   currentTask,
   successRate,
@@ -50,14 +48,6 @@ export function AgentStatusCard({
       </div>
 
       <div className="space-y-2">
-        <div className="flex justify-between text-[11px]">
-          <span className="text-text-muted">Health</span>
-          <span className="font-mono text-text-secondary tabular-nums">{Math.round(health * 100)}%</span>
-        </div>
-        <div className="h-1 rounded-full bg-white/5 overflow-hidden">
-          <div className="h-full rounded-full bg-success/80 transition-all duration-500" style={{ width: `${health * 100}%` }} />
-        </div>
-
         <div className="flex justify-between text-[11px]">
           <span className="text-text-muted">Confidence</span>
           <span className="font-mono text-text-secondary tabular-nums">{Math.round(confidence * 100)}%</span>

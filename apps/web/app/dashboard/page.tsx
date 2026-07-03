@@ -11,6 +11,7 @@ import {
   getAgentsSummary,
   getPortfolioOverview,
   getAuditLog,
+  getBackendHealth,
   type AgentSummary,
   type TradeRow,
   type AgentDashboard,
@@ -20,6 +21,7 @@ import {
 import { usePrices } from "@/app/hooks/usePrices";
 import { usePortfolioSnapshots } from "@/app/hooks/usePortfolioSnapshots";
 import type { Time } from "lightweight-charts";
+import { cn } from "@/lib/utils";
 
 import { PortfolioHero } from "@/app/components/dashboard/PortfolioHero";
 import { MetricCard } from "@/app/components/dashboard/MetricCard";
@@ -96,6 +98,18 @@ export default function DashboardOverview() {
   const [dashboards, setDashboards] = useState<AgentDashboard[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioOverview | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditLogRow[]>([]);
+  const [backendHealthy, setBackendHealthy] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => getBackendHealth().then((ok) => !cancelled && setBackendHealthy(ok)).catch(() => !cancelled && setBackendHealthy(false));
+    check();
+    const interval = setInterval(check, 30_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   useEffect(() => {
     if (!walletOwner) return;
@@ -290,7 +304,27 @@ export default function DashboardOverview() {
       {/* ── Top actions ── */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="font-display text-lg font-medium text-text-primary">Overview</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-lg font-medium text-text-primary">Overview</h1>
+            <span
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[10px] font-medium uppercase tracking-wider",
+                backendHealthy === true && "border-success/15 bg-success/8 text-success/90",
+                backendHealthy === false && "border-error/15 bg-error/8 text-error/90",
+                backendHealthy === null && "border-white/[0.06] bg-white/[0.02] text-text-muted"
+              )}
+            >
+              <span
+                className={cn(
+                  "h-1.5 w-1.5 rounded-full",
+                  backendHealthy === true && "bg-success",
+                  backendHealthy === false && "bg-error",
+                  backendHealthy === null && "bg-text-muted"
+                )}
+              />
+              {backendHealthy === true ? "Backend Online" : backendHealthy === false ? "Backend Offline" : "Checking…"}
+            </span>
+          </div>
           <p className="mt-1 text-xs text-text-muted">
             {smartWalletAddress ? shortAddress(smartWalletAddress) : "No capital wallet deployed yet"}
           </p>
@@ -364,7 +398,6 @@ export default function DashboardOverview() {
             reasoning={latestDecision?.currentReasoning ?? "No recent decisions recorded yet."}
             confidence={latestDecision?.currentConfidence ?? 0}
             riskLevel={toRiskLevel(latestDecision?.riskLevel)}
-            marketSentiment="Neutral"
             nextAnalysis={latestDecision?.lastDecisionTime ? new Date(latestDecision.lastDecisionTime).toLocaleTimeString() : "—"}
             latency={latestDecision?.lastExecution ? Math.max(0, Date.now() - latestDecision.lastExecution) : 0}
             agentHealth={agents.length > 0 ? activeAgentCount / agents.length : 0}
@@ -399,7 +432,6 @@ export default function DashboardOverview() {
                       key={agent.id}
                       name={shortAddress(agent.publicKey)}
                       status={agent.status === "new" ? "idle" : agent.status === "stopped" ? "stopped" : agent.status === "error" ? "error" : "running"}
-                      health={agent.status === "running" ? 0.95 : agent.status === "error" ? 0.3 : 0.7}
                       confidence={dashboard?.currentConfidence ?? 0}
                       currentTask={dashboard?.currentTask ?? (agent.strategy ? agent.strategy.type.toUpperCase() : "Unconfigured")}
                       successRate={dashboard ? dashboard.winRate * 100 : 0}
@@ -444,8 +476,6 @@ export default function DashboardOverview() {
                     summary={agent.lastError || agent.lastResult || "Agent produced a result."}
                     confidence={dashboard?.currentConfidence ?? 0}
                     timestamp={agent.lastTickAt ?? Date.now()}
-                    actionLabel={agent.lastError ? "Review" : "Details"}
-                    onAction={() => {}}
                   />
                 );
               })

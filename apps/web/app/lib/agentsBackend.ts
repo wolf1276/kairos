@@ -176,6 +176,13 @@ export async function listAgentWallets(owner: string): Promise<AgentSummary[]> {
   return data.agents;
 }
 
+export async function getBackendHealth(): Promise<boolean> {
+  const res = await fetch(backendUrl("/health"));
+  if (!res.ok) return false;
+  const data = await res.json().catch(() => ({}));
+  return Boolean(data.ok);
+}
+
 export async function getAgentWallet(id: string): Promise<AgentSummary> {
   const data = await request<{ agent: AgentSummary }>(`/api/agents/${id}`);
   return data.agent;
