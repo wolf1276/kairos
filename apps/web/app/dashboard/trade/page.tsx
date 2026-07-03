@@ -56,7 +56,7 @@ function TradeInner() {
   const { tickers } = usePrices(TICKER_SYMBOLS, 10000);
   const ticker = tickers[chartSymbol];
 
-  const { wallet, connected, connecting, connect, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
+  const { wallet, connected, connecting, connect, ensureAgentAuth, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
   const { xlmBalance, usdcBalance, hasUsdcTrustline, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
     wallet?.address ?? null,
     wallet?.networkPassphrase ?? null,
@@ -230,8 +230,11 @@ function TradeInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "PREPARE_DELEGATION", delegate, delegator: smartWalletAddress, policies }),
       });
+      if (!prepareRes.ok) {
+        const text = await prepareRes.text();
+        throw new Error(`PREPARE_DELEGATION failed (${prepareRes.status}): ${text.slice(0, 200)}`);
+      }
       const prepared = await prepareRes.json();
-      if (!prepareRes.ok) throw new Error(prepared.error);
 
       setDelegating("signing");
       const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
@@ -242,8 +245,11 @@ function TradeInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "SUBMIT_DELEGATION", unsignedDelegation: prepared.unsignedDelegation, signatureHex }),
       });
+      if (!submitRes.ok) {
+        const text = await submitRes.text();
+        throw new Error(`SUBMIT_DELEGATION failed (${submitRes.status}): ${text.slice(0, 200)}`);
+      }
       const data = await submitRes.json();
-      if (!submitRes.ok) throw new Error(data.error);
 
       return { hash: data.hash as string, delegation: data.delegation as Record<string, unknown> };
     } catch (e) {
@@ -294,15 +300,20 @@ function TradeInner() {
   // of losing it to a wiped `liveAgentId`.
   const [activeAgents, setActiveAgents] = useState<AgentSummary[]>([]);
   const [loadingActiveAgents, setLoadingActiveAgents] = useState(false);
+  // Intent-mode orders are also backend 'limit' agents (see handleConfirmOrderIntent) — restored
+  // the same way, otherwise a placed order's confirmation card vanishes on refresh even though
+  // the agent is still alive and ticking server-side (only `liveAgentId`/`intentProfile` were lost,
+  // not the underlying order).
+  const [activeIntentAgents, setActiveIntentAgents] = useState<AgentSummary[]>([]);
 
   const refreshActiveAgents = useCallback(async () => {
     if (!walletOwner) return;
     setLoadingActiveAgents(true);
     try {
       const agents = await listAgentWallets(walletOwner);
-      setActiveAgents(
-        agents.filter((a) => a.strategy?.type === "quant" && (a.status === "running" || a.status === "error"))
-      );
+      const isLive = (a: AgentSummary) => a.status === "running" || a.status === "error";
+      setActiveAgents(agents.filter((a) => a.strategy?.type === "quant" && isLive(a)));
+      setActiveIntentAgents(agents.filter((a) => a.strategy?.type === "limit" && isLive(a)));
     } catch {
       // Non-fatal — the launch form still works even if this listing fails.
     } finally {
@@ -310,9 +321,14 @@ function TradeInner() {
     }
   }, [walletOwner]);
 
+  // Wallet may be connected (from a silent auto-restore) with no agent-backend session yet —
+  // that restore deliberately skips Freighter's sign popup, so authenticate here instead, the
+  // first time Strategy/Intent mode actually needs a token (fixes "Missing or malformed
+  // Authorization header" when quant/limit agent calls fire with no bearer token set).
   useEffect(() => {
-    refreshActiveAgents();
-  }, [refreshActiveAgents]);
+    if (!walletOwner) return;
+    ensureAgentAuth().then(refreshActiveAgents);
+  }, [walletOwner, ensureAgentAuth, refreshActiveAgents]);
 
   const strategyGroups = strategies.reduce<Record<string, StrategyMeta[]>>((acc, s) => {
     (acc[s.category] ??= []).push(s);
@@ -396,24 +412,90 @@ function TradeInner() {
   const [intentResult, setIntentResult] = useState<{ hash: string } | null>(null);
   const [parsing, setParsing] = useState(false);
 
-  const handleParseIntent = async () => {
-    if (!intentText.trim()) { flash("err", "Describe what you want to do"); return; }
+  // Restore the "live order" view after a refresh: liveAgentId/intentResult/intentProfile are
+  // plain component state and reset to null on reload, but the order itself is a real backend
+  // 'limit' agent that keeps running — reattach to it via activeIntentAgents (see
+  // refreshActiveAgents) instead of leaving the user staring at a blank intent form.
+  useEffect(() => {
+    if (mode !== "intent" || liveAgentId || intentResult) return;
+    const agent = activeIntentAgents[0];
+    if (!agent || !agent.strategy || agent.strategy.type !== "limit") return;
+    setLiveAgentId(agent.id);
+    setIntentResult({ hash: agent.id });
+    setIntentProfile({
+      order: {
+        side: agent.strategy.side,
+        asset: agent.strategy.asset,
+        quantity: Number(agent.strategy.quantity),
+        triggerComparator: agent.strategy.triggerComparator,
+        triggerPrice: Number(agent.strategy.triggerPrice),
+      },
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, activeIntentAgents, liveAgentId, intentResult]);
+
+  // When the parse comes back incomplete (status !== "READY"), don't silently show a
+  // profile padded with defaults — ask the user to fill in exactly what's missing before
+  // treating the JSON as final. Field-specific overrides here are sent straight through to
+  // /api/intent/parse's regex-fallback params (see route.ts), not re-appended into free text.
+  const [intentMissingFields, setIntentMissingFields] = useState<string[] | null>(null);
+  const [intentAnswers, setIntentAnswers] = useState<Record<string, string>>({});
+
+  const CLARIFY_QUESTIONS: Record<string, { label: string; placeholder: string }> = {
+    allowedAssets: { label: "Which asset(s) do you want to trade?", placeholder: "e.g. XLM, BTC" },
+    riskTolerance: { label: "What's your risk tolerance?", placeholder: "LOW, MODERATE, or HIGH" },
+    investmentHorizon: { label: "What's your investment horizon?", placeholder: "SHORT, MEDIUM, or LONG" },
+    dailyTradeLimit: { label: "What's your daily trade limit (USD)?", placeholder: "e.g. 1000" },
+    maxPositionSize: { label: "What's your max position size (USD)?", placeholder: "e.g. 500" },
+    stopLossPreference: { label: "Stop-loss percentage?", placeholder: "e.g. 2" },
+    takeProfitPreference: { label: "Take-profit percentage?", placeholder: "e.g. 6" },
+  };
+
+  const runIntentParse = async (overrides?: Record<string, unknown>) => {
     setParsing(true);
     setIntentResult(null);
     try {
       const res = await fetch("/api/intent/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: intentText }),
+        body: JSON.stringify({ text: intentText, ...overrides }),
       });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`Intent parse failed (${res.status}): ${text.slice(0, 200)}`);
+      }
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
       setIntentProfile(data.profile ?? data.extracted);
+      setIntentMissingFields(data.status === "READY" ? null : (data.requiredInformation ?? null));
     } catch (e) {
       flash("err", e instanceof Error ? e.message : String(e));
     } finally {
       setParsing(false);
     }
+  };
+
+  const handleParseIntent = async () => {
+    if (!intentText.trim()) { flash("err", "Describe what you want to do"); return; }
+    setIntentAnswers({});
+    await runIntentParse();
+  };
+
+  const handleSubmitClarification = async () => {
+    if (!intentMissingFields) return;
+    const overrides: Record<string, unknown> = {};
+    for (const field of intentMissingFields) {
+      const raw = intentAnswers[field]?.trim();
+      if (!raw) continue;
+      if (field === "allowedAssets") {
+        overrides.allowedAssets = raw.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+      } else if (field === "riskTolerance" || field === "investmentHorizon") {
+        overrides[field] = raw.toUpperCase();
+      } else {
+        const n = Number(raw);
+        if (!Number.isNaN(n)) overrides[field] = n;
+      }
+    }
+    await runIntentParse(overrides);
   };
 
   const [confirmingIntent, setConfirmingIntent] = useState(false);
@@ -565,8 +647,11 @@ function TradeInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "PREPARE_REVOKE_DELEGATION", delegation: agentDelegationData.delegation }),
       });
+      if (!prepareRes.ok) {
+        const text = await prepareRes.text();
+        throw new Error(`PREPARE_REVOKE failed (${prepareRes.status}): ${text.slice(0, 200)}`);
+      }
       const prepared = await prepareRes.json();
-      if (!prepareRes.ok) throw new Error(prepared.error);
 
       const signedEntryXdr = await signAuthEntryWithFreighter(
         prepared.unsignedEntryXdr,
@@ -580,8 +665,11 @@ function TradeInner() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "SUBMIT_REVOKE_DELEGATION", delegation: agentDelegationData.delegation, signedEntryXdr }),
       });
+      if (!submitRes.ok) {
+        const text = await submitRes.text();
+        throw new Error(`SUBMIT_REVOKE failed (${submitRes.status}): ${text.slice(0, 200)}`);
+      }
       const data = await submitRes.json();
-      if (!submitRes.ok) throw new Error(data.error);
 
       flash("ok", "Agent stopped — delegation revoked on-chain");
       setAgentRunning(false);
@@ -768,7 +856,7 @@ function TradeInner() {
                         Connect Freighter to trade on Stellar testnet.
                       </p>
                       <button
-                        onClick={connect}
+                        onClick={() => connect()}
                         disabled={connecting}
                         className="mt-3 w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -938,7 +1026,7 @@ function TradeInner() {
                     <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 text-center">
                       <p className="text-xs text-text-secondary">Connect Freighter to launch a strategy.</p>
                       <button
-                        onClick={connect}
+                        onClick={() => connect()}
                         disabled={connecting}
                         className="mt-3 w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -1135,7 +1223,7 @@ function TradeInner() {
                       <a href={intentProfile?.order ? "/dashboard/agents" : "/dashboard/delegations"} className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">
                         {intentProfile?.order ? "View Agent →" : "View Delegations →"}
                       </a>
-                      <button onClick={() => { setIntentResult(null); setIntentProfile(null); setIntentText(""); setLiveAgentId(null); }} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Create Another</button>
+                      <button onClick={() => { setIntentResult(null); setIntentProfile(null); setIntentText(""); setLiveAgentId(null); setIntentMissingFields(null); setIntentAnswers({}); }} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Create Another</button>
                     </div>
                   </div>
                 ) : (
@@ -1161,6 +1249,48 @@ function TradeInner() {
                       >
                         {parsing ? "Parsing…" : "Parse Intent"}
                       </button>
+                    ) : intentMissingFields && intentMissingFields.length > 0 ? (
+                      <div className="space-y-3">
+                        <div className="rounded-xl border border-amber-500/20 bg-amber-500/6 p-3.5">
+                          <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-amber-400/85">
+                            A few things to confirm
+                          </p>
+                          <p className="mb-3 text-xs text-text-secondary">
+                            Your intent wasn't fully clear — fill these in before it's finalized.
+                          </p>
+                          <div className="space-y-2.5">
+                            {intentMissingFields.map((field) => {
+                              const q = CLARIFY_QUESTIONS[field] ?? { label: `Clarify: ${field}`, placeholder: "" };
+                              return (
+                                <div key={field}>
+                                  <label className="mb-1 block text-[10px] text-text-muted">{q.label}</label>
+                                  <input
+                                    value={intentAnswers[field] ?? ""}
+                                    onChange={(e) => setIntentAnswers((prev) => ({ ...prev, [field]: e.target.value }))}
+                                    placeholder={q.placeholder}
+                                    className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-primary outline-none transition-all duration-200 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => { setIntentProfile(null); setIntentMissingFields(null); setIntentAnswers({}); setIntentText(""); }}
+                            className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={handleSubmitClarification}
+                            disabled={parsing}
+                            className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            {parsing ? "Checking…" : "Continue"}
+                          </button>
+                        </div>
+                      </div>
                     ) : (
                       <div className="space-y-3">
                         <div className="rounded-xl border border-accent/10 bg-accent-muted/50 p-3.5">
@@ -1340,7 +1470,7 @@ function TradeInner() {
                 <div className="text-center">
                   <p className="mb-3 text-xs text-text-muted">Connect Freighter to trade and manage your smart wallet.</p>
                   <button
-                    onClick={connect}
+                    onClick={() => connect()}
                     disabled={connecting}
                     className="w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                   >

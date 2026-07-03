@@ -9,6 +9,10 @@ async function gqlRequest<T>(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ query, variables }),
   });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`GraphQL request failed (${res.status}): ${text.slice(0, 200)}`);
+  }
   const json = await res.json();
   if (json.errors) throw new Error(json.errors[0].message);
   return json.data as T;

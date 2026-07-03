@@ -57,6 +57,7 @@ export interface TradeRow {
   realized_pnl: string | null;
   reversed_trade_id: string | null;
   created_at: number;
+  mode: "paper" | "live";
 }
 
 export interface PnlSummary {

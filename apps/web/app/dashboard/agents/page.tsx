@@ -36,6 +36,7 @@ export default function AgentsPage() {
     connected,
     connecting,
     connect,
+    ensureAgentAuth,
     walletOwner,
     smartWalletAddress,
     deploying,
@@ -61,9 +62,13 @@ export default function AgentsPage() {
     }
   }, [walletOwner]);
 
+  // Wallet may be connected (from a silent auto-restore) with no agent-backend session yet —
+  // the silent restore deliberately skips Freighter's sign popup, so authenticate here instead,
+  // the first time this page actually needs it.
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    if (!walletOwner) return;
+    ensureAgentAuth().then(refresh);
+  }, [walletOwner, ensureAgentAuth, refresh]);
 
   // Poll the agent list itself (not just individual cards) so agents started/stopped
   // elsewhere still show up here without a manual refresh.
@@ -88,7 +93,7 @@ export default function AgentsPage() {
           <CardBody className="text-center">
             <p className="mb-3 text-xs text-text-muted">Connect Freighter to view your agents.</p>
             <button
-              onClick={connect}
+              onClick={() => connect()}
               disabled={connecting}
               className="rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
             >

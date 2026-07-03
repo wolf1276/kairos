@@ -204,7 +204,7 @@ export default function DashboardOverview() {
             Connect Freighter to view your portfolio, delegations, and agents.
           </p>
           <button
-            onClick={connect}
+            onClick={() => connect()}
             disabled={connecting}
             className="mt-5 w-full rounded-xl bg-accent/80 px-4 py-2.5 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
           >

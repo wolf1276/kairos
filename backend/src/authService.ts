@@ -1,6 +1,6 @@
 import { Keypair } from '@stellar/stellar-sdk';
 import jwt from 'jsonwebtoken';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { deleteAuthChallenge, getAuthChallenge, setAuthChallenge, upsertUser } from './db.js';
 import { getAuthJwtSecret } from './config.js';
 
@@ -10,6 +10,14 @@ const SESSION_TTL = '7d';
 /** The exact string signed by the wallet — kept stable so verify() checks the same bytes. */
 function challengeMessage(publicKey: string, nonce: string): string {
   return `Kairos login\naddress: ${publicKey}\nnonce: ${nonce}`;
+}
+
+/** Freighter's signMessage doesn't sign the raw message bytes — it signs the SEP-53-wrapped
+ *  digest (SHA-256("Stellar Signed Message:\n" + message)), same wrapping used for smart-wallet
+ *  delegation signatures elsewhere (see stellar.ts signDelegationHashWithFreighter). Verification
+ *  must hash the same way or every real signature fails. */
+function sep53Digest(message: string): Buffer {
+  return createHash('sha256').update(`Stellar Signed Message:\n${message}`, 'utf8').digest();
 }
 
 export function createChallenge(publicKey: string): { nonce: string; message: string } {
@@ -28,7 +36,7 @@ export function verifyChallenge(publicKey: string, signature: string): { token: 
 
   const message = challengeMessage(publicKey, challenge.nonce);
   const keypair = Keypair.fromPublicKey(publicKey);
-  const verified = keypair.verify(Buffer.from(message, 'utf8'), Buffer.from(signature, 'base64'));
+  const verified = keypair.verify(sep53Digest(message), Buffer.from(signature, 'base64'));
   if (!verified) throw new Error('Signature does not match this address');
 
   deleteAuthChallenge(publicKey);

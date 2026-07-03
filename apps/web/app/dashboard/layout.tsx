@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 import {
   Home,
   ArrowRightLeft,
-  PieChart,
   Users,
   Bot,
   History,
@@ -41,7 +40,6 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Overview", exact: true, icon: Home },
   { href: "/dashboard/trade", label: "Trade", exact: false, icon: ArrowRightLeft },
-  { href: "/dashboard/portfolio", label: "Portfolio", exact: false, icon: PieChart },
   { href: "/dashboard/delegations", label: "Delegations", exact: false, icon: Users },
   { href: "/dashboard/agents", label: "Agents", exact: false, icon: Bot },
   { href: "/dashboard/history", label: "History", exact: false, icon: History },
@@ -65,7 +63,7 @@ function WalletBar({ isCollapsed }: { isCollapsed: boolean }) {
     return (
       <div className={cols ? "flex justify-center" : ""}>
         <button
-          onClick={connect}
+          onClick={() => connect()}
           disabled={connecting}
           className={cols
             ? "flex h-10 w-10 items-center justify-center rounded-xl bg-white/[0.04] text-text-muted hover:bg-white/[0.08] hover:text-text-primary transition-colors"

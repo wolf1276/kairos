@@ -8,7 +8,7 @@ import {
   signAuthEntryWithFreighter,
   type WalletState,
 } from "@/app/lib/stellar";
-import { challengeAndVerify } from "@/app/lib/agentsAuth";
+import { challengeAndVerify, getStoredSessionToken } from "@/app/lib/agentsAuth";
 import { setAuthToken } from "@/app/lib/agentsBackend";
 
 const KEY_PREFIX = "kairos:smart-wallet:";
@@ -50,7 +50,10 @@ export interface SmartWalletState {
   smartWalletBalance: string | null;
   deploying: boolean;
   deployError: string | null;
-  connect: () => Promise<{ success: boolean; wallet?: WalletState }>;
+  connect: (interactive?: boolean) => Promise<{ success: boolean; wallet?: WalletState }>;
+  /** Runs the wallet-sig auth handshake if this address has no cached session yet — call from
+   *  pages that actually need agents-backend calls (Trade/Agents/History), not on cold app load. */
+  ensureAgentAuth: () => Promise<void>;
   disconnect: () => void;
   /** Deploys the capital wallet only if this owner doesn't already have one. */
   deploySmartWallet: () => Promise<void>;
@@ -82,8 +85,11 @@ export function useSmartWallet(): SmartWalletState {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "PREPARE_WALLET_DEPLOY", owner }),
     });
+    if (!prepareRes.ok) {
+      const text = await prepareRes.text();
+      throw new Error(`PREPARE_WALLET_DEPLOY failed (${prepareRes.status}): ${text.slice(0, 200)}`);
+    }
     const prepared = await prepareRes.json();
-    if (!prepareRes.ok) throw new Error(prepared.error);
 
     const signedEntryXdr = await signAuthEntryWithFreighter(
       prepared.unsignedEntryXdr,
@@ -102,8 +108,11 @@ export function useSmartWallet(): SmartWalletState {
         signedEntryXdr,
       }),
     });
+    if (!submitRes.ok) {
+      const text = await submitRes.text();
+      throw new Error(`SUBMIT_WALLET_DEPLOY failed (${submitRes.status}): ${text.slice(0, 200)}`);
+    }
     const data = await submitRes.json();
-    if (!submitRes.ok) throw new Error(data.error);
     return data.smartWalletAddress as string;
   }, []);
 
@@ -126,21 +135,36 @@ export function useSmartWallet(): SmartWalletState {
     }
   }, [walletOwner, wallet, deployWallet, checkBalance]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (interactive = true) => {
     setConnecting(true);
     const result = await connectWallet();
     if (result.success && result.wallet) {
+      // Must finish (or fail) the auth handshake *before* exposing the wallet via setWallet —
+      // walletOwner flips truthy the instant that state update lands, and pages key their
+      // agents-backend fetches off it. Setting wallet first raced setAuthToken and sent
+      // requests with no bearer token yet (401 "Missing or malformed Authorization header").
+      //
+      // Only prompt Freighter's sign-message popup on an explicit, user-initiated connect
+      // (interactive=true). The silent auto-reconnect on page mount must never surprise the
+      // user with a signature request they didn't ask for this tab session — it reuses a
+      // cached token if one exists, and otherwise just leaves agent-backend calls unauthenticated
+      // until the user actually clicks Connect (or an agent-feature page prompts for it).
+      const cached = getStoredSessionToken(result.wallet.address);
+      if (cached) {
+        setAuthToken(cached);
+      } else if (interactive) {
+        try {
+          const token = await challengeAndVerify(result.wallet.address, result.wallet.networkPassphrase);
+          setAuthToken(token);
+        } catch (e) {
+          // Agent-backend login is best-effort at connect time — strategy/agent features will
+          // surface their own 401 if a call is attempted without a valid session.
+          console.error("Agent backend login failed:", e);
+        }
+      }
       setWallet(result.wallet);
       setSmartWalletAddress(null);
       setSmartWalletBalance(null);
-      try {
-        const token = await challengeAndVerify(result.wallet.address, result.wallet.networkPassphrase);
-        setAuthToken(token);
-      } catch (e) {
-        // Agent-backend login is best-effort at connect time — strategy/agent features will
-        // surface their own 401 if a call is attempted without a valid session.
-        console.error("Agent backend login failed:", e);
-      }
       const saved = loadWallet(result.wallet.address);
       if (saved) {
         setSmartWalletAddress(saved);
@@ -160,6 +184,21 @@ export function useSmartWallet(): SmartWalletState {
     return result;
   }, []);
 
+  const ensureAgentAuth = useCallback(async () => {
+    if (!wallet) return;
+    const cached = getStoredSessionToken(wallet.address);
+    if (cached) {
+      setAuthToken(cached);
+      return;
+    }
+    try {
+      const token = await challengeAndVerify(wallet.address, wallet.networkPassphrase);
+      setAuthToken(token);
+    } catch (e) {
+      console.error("Agent backend login failed:", e);
+    }
+  }, [wallet]);
+
   const disconnect = useCallback(() => {
     setWallet(null);
     setSmartWalletAddress(null);
@@ -172,7 +211,7 @@ export function useSmartWallet(): SmartWalletState {
   useEffect(() => {
     let cancelled = false;
     tryCheckConnection().then(async (ok) => {
-      if (ok && !cancelled) await connect();
+      if (ok && !cancelled) await connect(false);
       if (!cancelled) setChecked(true);
     });
     return () => {
@@ -191,6 +230,7 @@ export function useSmartWallet(): SmartWalletState {
     deploying,
     deployError,
     connect,
+    ensureAgentAuth,
     disconnect,
     deploySmartWallet,
     checkBalance,

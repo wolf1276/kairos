@@ -17,13 +17,16 @@ app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRouter);
+// statsRouter's GET /agents/summary must be reachable before agentsRouter's GET /:id — otherwise
+// that catch-all treats "summary" as an agent id and 404s (see agentStatsRouter/etc. below,
+// which are safe since their patterns need an extra /:id/segment that "summary" alone can't match).
+app.use('/api', requireAuth, statsRouter);
 app.use('/api/agents', requireAuth, agentStatsRouter);
 app.use('/api/agents', requireAuth, agentPositionsRouter);
 app.use('/api/agents', requireAuth, agentAuditRouter);
 app.use('/api/agents', requireAuth, agentsRouter);
 app.use('/api/positions', requireAuth, positionsRouter);
 app.use('/api/audit', requireAuth, auditRouter);
-app.use('/api', requireAuth, statsRouter);
 app.use('/api/strategies', strategiesRouter);
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
