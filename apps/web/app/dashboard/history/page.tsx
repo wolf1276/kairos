@@ -19,6 +19,22 @@ function shortAddress(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
 }
 
+const ROLE_LABELS: Record<string, string> = {
+  strategic: "Strategic",
+  yield: "Yield",
+  balancer: "Balancer",
+};
+
+/** Trades/activity are keyed by an internal agent UUID — meaningless on its own. Resolves it to
+ *  the agent's role name (Strategic/Yield/Balancer) so it's actually clear which agent is
+ *  responsible for a given fill, instead of an opaque truncated id nobody can tell apart. */
+function agentLabel(agentId: string, agents: AgentSummary[]): string {
+  const agent = agents.find((a) => a.id === agentId);
+  if (!agent) return shortAddress(agentId);
+  if (agent.role) return ROLE_LABELS[agent.role] ?? agent.role;
+  return `Manual ${shortAddress(agent.publicKey)}`;
+}
+
 function Pnl({ value }: { value: string | null }) {
   if (!value) return <span className="text-text-muted">—</span>;
   const n = parseFloat(value);
@@ -45,6 +61,43 @@ function eventTone(type: string): "success" | "error" | "warning" | "neutral" {
   if (type === "trade_executed" || type === "strategy_started") return "success";
   if (type === "signal_generated" || type === "position_updated") return "warning";
   return "neutral";
+}
+
+/** Sums realized PnL per agent from the trade fills already on this page — answers "which
+ *  agent is actually losing money" at a glance instead of making the user eyeball a long
+ *  trade-by-trade table. Only counts `realized_pnl` (set on the closing 'sell' leg of a
+ *  position — see pnl.ts), so this is realized, not mark-to-market unrealized PnL. */
+function PnlByAgent({ trades, agents }: { trades: TradeRow[]; agents: AgentSummary[] }) {
+  const byAgent = new Map<string, { realized: number; trades: number; wins: number; losses: number }>();
+  for (const t of trades) {
+    if (t.realized_pnl === null) continue;
+    const pnl = parseFloat(t.realized_pnl);
+    const entry = byAgent.get(t.agent_id) ?? { realized: 0, trades: 0, wins: 0, losses: 0 };
+    entry.realized += pnl;
+    entry.trades += 1;
+    if (pnl > 0) entry.wins += 1;
+    else if (pnl < 0) entry.losses += 1;
+    byAgent.set(t.agent_id, entry);
+  }
+  const rows = Array.from(byAgent.entries()).sort((a, b) => a[1].realized - b[1].realized);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {rows.map(([agentId, s]) => (
+        <div
+          key={agentId}
+          className="flex items-center gap-2 rounded-xl border border-white/5 bg-bg-elevated/40 px-3 py-2 text-xs"
+        >
+          <span className="font-medium text-text-secondary">{agentLabel(agentId, agents)}</span>
+          <Pnl value={String(s.realized)} />
+          <span className="text-text-muted">
+            ({s.wins}W / {s.losses}L, {s.trades} closed)
+          </span>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 export default function HistoryPage() {
@@ -231,7 +284,7 @@ export default function HistoryPage() {
                       {e.mode ? <Badge tone={e.mode === "live" ? "error" : "neutral"}>{e.mode}</Badge> : <span className="text-text-muted">—</span>}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-text-secondary">
-                      {shortAddress(e.agent_id)}
+                      {agentLabel(e.agent_id, agents)}
                     </td>
                     <td className="max-w-xs truncate px-4 py-3 text-xs text-text-secondary">{e.message ?? "—"}</td>
                     <td className="px-4 py-3">
@@ -260,6 +313,8 @@ export default function HistoryPage() {
         </>
       ) : (
         <>
+          <PnlByAgent trades={trades} agents={agents} />
+
           <div className="flex items-center gap-2 text-xs text-text-muted">
             <span>{trades.length} trade{trades.length !== 1 ? "s" : ""}</span>
             <span className="text-border">·</span>
@@ -304,7 +359,7 @@ export default function HistoryPage() {
                       <Pnl value={t.realized_pnl} />
                     </td>
                     <td className="px-4 py-3 font-mono text-xs text-text-secondary">
-                      {shortAddress(t.agent_id)}
+                      {agentLabel(t.agent_id, agents)}
                     </td>
                     <td className="px-4 py-3">
                       {t.tx_hash ? (
