@@ -3,7 +3,6 @@
 import Link from "next/link";
 import { useEffect, useState, useMemo } from "react";
 import { useWalletContext } from "@/app/contexts/WalletContext";
-import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { useDelegations } from "@/app/dashboard/delegations/hooks/useDelegations";
 import {
@@ -18,7 +17,6 @@ import {
   type PortfolioOverview,
   type AuditLogRow,
 } from "@/app/lib/agentsBackend";
-import { delegateXLM, withdrawFromSmartWallet } from "@/app/lib/stellar";
 import { usePrices } from "@/app/hooks/usePrices";
 import { usePortfolioSnapshots } from "@/app/hooks/usePortfolioSnapshots";
 import type { Time } from "lightweight-charts";
@@ -60,13 +58,6 @@ function toRiskProfile(riskLevel: string | null | undefined): "Conservative" | "
   return "Medium";
 }
 
-function statusTone(status: AgentSummary["status"]): "success" | "error" | "warning" | "neutral" {
-  if (status === "running") return "success";
-  if (status === "error") return "error";
-  if (status === "stopped") return "neutral";
-  return "warning";
-}
-
 export default function DashboardOverview() {
   const {
     wallet,
@@ -76,26 +67,15 @@ export default function DashboardOverview() {
     checked,
     walletOwner,
     smartWalletAddress,
-    deploying,
-    deployError,
-    deploySmartWallet,
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
   const {
     xlmBalance,
     usdcBalance,
-    loading: balancesLoading,
-    refresh: refreshBalances,
   } = useSmartWalletBalances(smartWalletAddress, wallet?.networkPassphrase ?? null, wallet?.sorobanRpcUrl);
 
-  const {
-    xlmBalance: freighterXlmBalance,
-    loading: freighterBalanceLoading,
-    refresh: refreshFreighterBalance,
-  } = useStellarBalances(wallet?.address ?? null, wallet?.networkPassphrase ?? null);
-
-  const { priceMap, loading: pricesLoading, error: pricesError } = usePrices(["XLMUSDT", "USDCUSDT"]);
+  const { priceMap } = usePrices(["XLMUSDT", "USDCUSDT"]);
   const xlmPrice = priceMap["XLMUSDT"];
   const usdcPrice = priceMap["USDCUSDT"];
   const pricesReady = xlmPrice != null && usdcPrice != null;
@@ -103,42 +83,7 @@ export default function DashboardOverview() {
 
   const growth = usePortfolioSnapshots(walletOwner, smartWalletAddress ? portfolioUsd : null);
 
-  const [transferMode, setTransferMode] = useState<"deposit" | "withdraw" | null>(null);
-  const [transferAmount, setTransferAmount] = useState("");
-  const [transferBusy, setTransferBusy] = useState(false);
-  const [transferError, setTransferError] = useState<string | null>(null);
-
-  const closeTransfer = () => {
-    setTransferMode(null);
-    setTransferAmount("");
-    setTransferError(null);
-  };
-
-  const submitTransfer = async () => {
-    if (!smartWalletAddress || !transferMode) return;
-    const amt = parseFloat(transferAmount);
-    if (!amt || amt <= 0) {
-      setTransferError("Enter a valid amount");
-      return;
-    }
-    setTransferBusy(true);
-    setTransferError(null);
-    try {
-      if (transferMode === "deposit") {
-        await delegateXLM(transferAmount, smartWalletAddress, networkPassphrase, wallet?.sorobanRpcUrl);
-      } else {
-        await withdrawFromSmartWallet(smartWalletAddress, transferAmount, networkPassphrase, wallet?.sorobanRpcUrl);
-      }
-      await Promise.all([refreshBalances(), refreshFreighterBalance()]);
-      closeTransfer();
-    } catch (e) {
-      setTransferError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setTransferBusy(false);
-    }
-  };
-
-  const { stats: delegationStats, loading: delegationsLoading } = useDelegations(
+  const { stats: delegationStats } = useDelegations(
     walletOwner,
     smartWalletAddress,
     networkPassphrase
@@ -147,7 +92,7 @@ export default function DashboardOverview() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(false);
   const [trades, setTrades] = useState<TradeRow[]>([]);
-  const [tradesLoading, setTradesLoading] = useState(false);
+  const [, setTradesLoading] = useState(false);
   const [dashboards, setDashboards] = useState<AgentDashboard[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioOverview | null>(null);
   const [auditEvents, setAuditEvents] = useState<AuditLogRow[]>([]);
@@ -199,11 +144,6 @@ export default function DashboardOverview() {
       .then(setAuditEvents)
       .catch(() => setAuditEvents([]));
   }, [walletOwner, trades]);
-
-  const totalRealizedPnl = useMemo(
-    () => trades.reduce((acc, t) => acc + (t.realized_pnl ? parseFloat(t.realized_pnl) : 0), 0),
-    [trades]
-  );
 
   const insights = useMemo(
     () => agents.filter((a) => a.lastResult || a.lastError).slice(0, 4),

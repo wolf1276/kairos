@@ -83,7 +83,7 @@ export default function AgentsPage() {
       <div>
         <h1 className="font-display text-lg font-medium text-text-primary">Agents</h1>
         <p className="mt-1 text-xs text-text-muted">
-          Live status, strategy, last tick, and PnL for every agent you've launched. To launch a
+          Live status, strategy, last tick, and PnL for every agent you&apos;ve launched. To launch a
           new one, pick a strategy on the <a href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</a>.
         </p>
       </div>

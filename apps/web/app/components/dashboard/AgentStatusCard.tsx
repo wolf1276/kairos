@@ -2,7 +2,7 @@
 
 import { memo } from "react";
 import { cn } from "@/lib/utils";
-import { Bot, AlertTriangle, CheckCircle2, Activity } from "lucide-react";
+import { Bot, AlertTriangle } from "lucide-react";
 
 interface AgentStatusCardProps {
   name: string;

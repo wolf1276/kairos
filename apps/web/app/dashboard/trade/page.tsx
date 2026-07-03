@@ -1,10 +1,9 @@
 "use client";
 
-import { Suspense, useState, useCallback, useEffect, useRef } from "react";
+import { Suspense, useState, useCallback, useEffect } from "react";
 import { Asset } from "@stellar/stellar-sdk";
 import { AdvancedChart } from "@/app/components/charts/AdvancedChart";
-import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
-import { Badge } from "@/app/components/ui/Badge";
+import { Card, CardBody } from "@/app/components/ui/Card";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { usePrices } from "@/app/hooks/usePrices";
 import { useWalletContext } from "@/app/contexts/WalletContext";
@@ -59,7 +58,7 @@ function TradeInner() {
   const ticker = tickers[chartSymbol];
 
   const { wallet, connected, connecting, connect, ensureAgentAuth, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
-  const { xlmBalance, usdcBalance, hasUsdcTrustline, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
+  const { xlmBalance, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
     wallet?.address ?? null,
     wallet?.networkPassphrase ?? null,
   );
@@ -406,13 +405,6 @@ function TradeInner() {
     }
   };
 
-  const handleResetStrategy = () => {
-    setLiveAgentId(null);
-    setSelectedStrategy(null);
-    setLaunchError(null);
-    setShowStrategyPicker(false);
-  };
-
   // ── Intent trade ──
   const PROFILE_LABELS: Record<string, string> = {
     goal: "Goal",
@@ -449,7 +441,6 @@ function TradeInner() {
         triggerPrice: Number(agent.strategy.triggerPrice),
       },
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, activeIntentAgents, liveAgentId, intentResult]);
 
   // When the parse comes back incomplete (status !== "READY"), don't silently show a
@@ -694,7 +685,7 @@ function TradeInner() {
         const text = await submitRes.text();
         throw new Error(`SUBMIT_REVOKE failed (${submitRes.status}): ${text.slice(0, 200)}`);
       }
-      const data = await submitRes.json();
+      await submitRes.json();
 
       flash("ok", "Agent stopped — delegation revoked on-chain");
       setAgentRunning(false);
@@ -1186,7 +1177,7 @@ function TradeInner() {
 
                       <p className="text-[10px] text-text-muted">
                         Creates a dedicated agent wallet, delegates a spend limit from your smart wallet, and
-                        starts it trading this strategy's live signal on the Stellar testnet DEX.
+                        starts it trading this strategy&apos;s live signal on the Stellar testnet DEX.
                       </p>
 
                       <div className="flex gap-2 pt-1">
@@ -1281,7 +1272,7 @@ function TradeInner() {
                             A few things to confirm
                           </p>
                           <p className="mb-3 text-xs text-text-secondary">
-                            Your intent wasn't fully clear — fill these in before it's finalized.
+                            Your intent wasn&apos;t fully clear — fill these in before it&apos;s finalized.
                           </p>
                           <div className="space-y-2.5">
                             {intentMissingFields.map((field) => {

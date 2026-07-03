@@ -49,7 +49,7 @@ const NAV_ITEMS: NavItem[] = [
 ];
 
 function WalletBar({ isCollapsed }: { isCollapsed: boolean }) {
-  const { wallet, walletOwner, connected, connecting, checked, connect, disconnect } = useWalletContext();
+  const { walletOwner, connected, connecting, checked, connect, disconnect } = useWalletContext();
   const cols = isCollapsed;
 
   if (!checked) {
