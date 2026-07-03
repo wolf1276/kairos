@@ -8,11 +8,22 @@
  */
 import { Address, Keypair, Operation, TransactionBuilder, xdr, Asset } from '@stellar/stellar-sdk';
 import { KairosClient } from '@wolf1276/kairos-sdk';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { spendFundsHandler } from '../src/tools/spendFunds.js';
+
+// The smart wallet's `is_valid_signature` verifies a SEP-53-wrapped signature (what a real
+// browser wallet's `signMessage` produces), not a raw signature over the bare hash — see
+// contracts/soroban/contracts/custom-account/src/lib.rs. Mirrors apps/web's
+// `signDelegationHashWithFreighter`, using a real Keypair in place of Freighter.
+function sep53Sign(signingKey: Keypair, hashHex: string): Buffer {
+  const payload = Buffer.concat([Buffer.from('Stellar Signed Message:\n'), Buffer.from(hashHex, 'utf8')]);
+  const messageHash = crypto.createHash('sha256').update(payload).digest();
+  return signingKey.sign(messageHash);
+}
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_FILE = path.join(__dirname, '../../../configs/contracts.testnet.json');
@@ -81,7 +92,7 @@ async function main() {
     // Reusable (nonce == u64::MAX) — this delegation is redeemed twice below (once within
     // the spend limit, once over it), which a single-use nonce wouldn't allow.
     nonce: (1n << 64n) - 1n,
-    signer: funder,
+    signer: (hash: Buffer) => sep53Sign(funder, hash.toString('hex')),
   });
   const hash = client.delegation.getHash(delegation);
   console.log('Delegation hash:', hash);

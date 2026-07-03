@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { DelegationRecord, JsonSafeDelegation, DelegationFilters, DelegationStats } from "../types/delegation";
+import { signAuthEntryWithFreighter, signDelegationHashWithFreighter } from "@/app/lib/stellar";
 
 function loadDelegations(owner: string): Map<string, JsonSafeDelegation> {
   try {
@@ -20,7 +21,10 @@ function saveDelegations(owner: string, map: Map<string, JsonSafeDelegation>) {
   } catch {}
 }
 
-export function useDelegations(walletOwner: string | null) {
+// `delegator` is always the connected owner's smart wallet — `redeem_delegations` calls
+// `execute_from_executor` on the delegator, which only exists on the CustomAccount contract,
+// so a delegation can never be redeemed (or even listed meaningfully) without one deployed.
+export function useDelegations(walletOwner: string | null, smartWalletAddress: string | null, networkPassphrase: string) {
   const [delegations, setDelegations] = useState<DelegationRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,13 +48,17 @@ export function useDelegations(walletOwner: string | null) {
   }, [walletOwner]);
 
   const refresh = useCallback(async () => {
+    if (!smartWalletAddress) {
+      setDelegations([]);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
       const res = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "LIST_DELEGATIONS" }),
+        body: JSON.stringify({ action: "LIST_DELEGATIONS", delegator: smartWalletAddress }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -83,76 +91,106 @@ export function useDelegations(walletOwner: string | null) {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [smartWalletAddress]);
 
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  const createDelegation = useCallback(async (delegate: string, policies: Record<string, unknown>[]) => {
-    const res = await fetch("/api/delegate-sdk", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "CREATE_DELEGATION", delegate, policies }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error);
+  const createDelegation = useCallback(
+    async (delegate: string, policies: Record<string, unknown>[]) => {
+      if (!smartWalletAddress || !walletOwner) {
+        throw new Error("Connect your wallet and deploy a smart wallet first.");
+      }
 
-    fullDelegationsRef.current.set(data.hash, data.delegation as JsonSafeDelegation);
-    if (walletOwner) saveDelegations(walletOwner, fullDelegationsRef.current);
-    await refresh();
-    return data.hash;
-  }, [walletOwner, refresh]);
-
-  const revoke = useCallback(async (d: DelegationRecord) => {
-    if (!d.full) return;
-    setActionLoading(d.hash);
-    setActionErrors((prev) => ({ ...prev, [d.hash]: "" }));
-    try {
-      const res = await fetch("/api/delegate-sdk", {
+      // 1. Server builds the unsigned delegation (delegator = this wallet's smart wallet —
+      // the only address `redeem_delegations` can actually execute against) and returns its
+      // hash for the owner to sign.
+      const prepareRes = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "REVOKE_DELEGATION", delegation: d.full }),
+        body: JSON.stringify({ action: "PREPARE_DELEGATION", delegate, delegator: smartWalletAddress, policies }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled: true } : x)));
-      setStats((prev) => ({
-        ...prev,
-        activeCount: Math.max(0, prev.activeCount - 1),
-        revokedCount: prev.revokedCount + 1,
-      }));
-    } catch (e) {
-      setActionErrors((prev) => ({ ...prev, [d.hash]: e instanceof Error ? e.message : String(e) }));
-    } finally {
-      setActionLoading(null);
-    }
-  }, []);
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) throw new Error(prepared.error);
 
-  const enable = useCallback(async (d: DelegationRecord) => {
-    if (!d.full) return;
-    setActionLoading(d.hash);
-    setActionErrors((prev) => ({ ...prev, [d.hash]: "" }));
-    try {
-      const res = await fetch("/api/delegate-sdk", {
+      // 2. The wallet owner signs the hash via Freighter's SEP-53 `signMessage` — this is
+      // what the smart wallet's `is_valid_signature` verifies on-chain.
+      const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
+
+      // 3. Server attaches the signature and returns the final signed delegation.
+      const submitRes = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "ENABLE_DELEGATION", delegation: d.full }),
+        body: JSON.stringify({
+          action: "SUBMIT_DELEGATION",
+          unsignedDelegation: prepared.unsignedDelegation,
+          signatureHex,
+        }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled: false } : x)));
-      setStats((prev) => ({
-        ...prev,
-        activeCount: prev.activeCount + 1,
-        revokedCount: Math.max(0, prev.revokedCount - 1),
-      }));
-    } catch (e) {
-      setActionErrors((prev) => ({ ...prev, [d.hash]: e instanceof Error ? e.message : String(e) }));
-    } finally {
-      setActionLoading(null);
-    }
-  }, []);
+      const data = await submitRes.json();
+      if (!submitRes.ok) throw new Error(data.error);
+
+      fullDelegationsRef.current.set(data.hash, data.delegation as JsonSafeDelegation);
+      saveDelegations(walletOwner, fullDelegationsRef.current);
+      await refresh();
+      return data.hash as string;
+    },
+    [walletOwner, smartWalletAddress, networkPassphrase, refresh]
+  );
+
+  const setDelegationDisabled = useCallback(
+    async (d: DelegationRecord, disabled: boolean) => {
+      if (!d.full || !walletOwner) return;
+      const prepareAction = disabled ? "PREPARE_REVOKE_DELEGATION" : "PREPARE_ENABLE_DELEGATION";
+      const submitAction = disabled ? "SUBMIT_REVOKE_DELEGATION" : "SUBMIT_ENABLE_DELEGATION";
+      setActionLoading(d.hash);
+      setActionErrors((prev) => ({ ...prev, [d.hash]: "" }));
+      try {
+        // Sponsored, same pattern as wallet deploy: the funder pays fees, but
+        // disable_delegation/enable_delegation calls delegation.delegator.require_auth() —
+        // for a smart-wallet delegator that means a separately-signed authorization entry
+        // from the wallet's owner, not just the funder's transaction signature.
+        const prepareRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: prepareAction, delegation: d.full }),
+        });
+        const prepared = await prepareRes.json();
+        if (!prepareRes.ok) throw new Error(prepared.error);
+
+        const signedEntryXdr = await signAuthEntryWithFreighter(
+          prepared.unsignedEntryXdr,
+          prepared.validUntilLedgerSeq,
+          networkPassphrase,
+          walletOwner
+        );
+
+        const submitRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: submitAction, delegation: d.full, signedEntryXdr }),
+        });
+        const data = await submitRes.json();
+        if (!submitRes.ok) throw new Error(data.error);
+
+        setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled } : x)));
+        setStats((prev) => ({
+          ...prev,
+          activeCount: Math.max(0, prev.activeCount + (disabled ? -1 : 1)),
+          revokedCount: Math.max(0, prev.revokedCount + (disabled ? 1 : -1)),
+        }));
+      } catch (e) {
+        setActionErrors((prev) => ({ ...prev, [d.hash]: e instanceof Error ? e.message : String(e) }));
+      } finally {
+        setActionLoading(null);
+      }
+    },
+    [walletOwner, networkPassphrase]
+  );
+
+  const revoke = useCallback((d: DelegationRecord) => setDelegationDisabled(d, true), [setDelegationDisabled]);
+  const enable = useCallback((d: DelegationRecord) => setDelegationDisabled(d, false), [setDelegationDisabled]);
 
   const filteredDelegations = useCallback((filters: DelegationFilters): DelegationRecord[] => {
     let result = [...delegations];

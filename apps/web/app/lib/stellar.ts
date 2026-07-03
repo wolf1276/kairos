@@ -20,6 +20,7 @@ import {
   isConnected,
   signTransaction,
   signAuthEntry,
+  signMessage,
 } from "@stellar/freighter-api";
 
 // ── Constants ──
@@ -194,6 +195,46 @@ export async function signAuthEntryWithFreighter(
     // Some Freighter versions return the fully-signed entry XDR directly here.
     return res.signedAuthEntry;
   }
+}
+
+/**
+ * Signs a Kairos delegation hash with Freighter's SEP-53 `signMessage`, for delegations
+ * whose `delegator` is a CustomAccount smart wallet. Wallets deliberately refuse to sign
+ * arbitrary raw bytes (that's indistinguishable from signing a malicious transaction), so
+ * the smart wallet's `is_valid_signature` instead verifies the SEP-53-wrapped payload:
+ * `SHA-256("Stellar Signed Message:\n" + hex(hash))` — see
+ * `contracts/soroban/contracts/custom-account/src/lib.rs`. This function passes the hash's
+ * hex string as the SEP-53 message so Freighter produces a signature over exactly that.
+ *
+ * Freighter's `signMessage` response shape has changed across versions — `signedMessage` is
+ * either a `Buffer` of the raw 64-byte signature (older/"V3") or a string (newer/"V4",
+ * base64-encoded). Both are normalized to a hex string here.
+ */
+export async function signDelegationHashWithFreighter(
+  hashHex: string,
+  networkPassphrase: string,
+  address: string
+): Promise<string> {
+  const res = await signMessage(hashHex, { networkPassphrase, address });
+  if (res.error) {
+    throw new Error(`Freighter message-signing error: ${res.error}`);
+  }
+  const { signedMessage } = res;
+  if (!signedMessage) {
+    throw new Error("Freighter returned an empty signed message");
+  }
+
+  const sigBuffer =
+    typeof signedMessage === "string"
+      ? Buffer.from(signedMessage, "base64")
+      : Buffer.from(signedMessage);
+
+  if (sigBuffer.length !== 64) {
+    throw new Error(
+      `Expected a 64-byte ed25519 signature from Freighter, got ${sigBuffer.length} bytes`
+    );
+  }
+  return sigBuffer.toString("hex");
 }
 
 // ── Balance ──

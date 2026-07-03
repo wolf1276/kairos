@@ -1,4 +1,5 @@
 #![cfg(test)]
+extern crate std;
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Events as _},
@@ -22,8 +23,23 @@ fn generate_signing_identity(env: &Env) -> (SigningKey, Address) {
 
 /// Signs a 32-byte delegation hash with the raw ed25519 secret key, matching
 /// the contract's `env.crypto().ed25519_verify(pubkey, hash_bytes, signature)` check.
+/// Used for EOA (G-address) delegators only — smart-wallet (CustomAccount) delegators
+/// verify via `is_valid_signature`, which expects a SEP-53-wrapped signature instead
+/// (see `sign_hash_sep53`), since that's what a browser wallet's `signMessage` produces.
 fn sign_hash(env: &Env, signing_key: &SigningKey, hash: &BytesN<32>) -> BytesN<64> {
     let sig = signing_key.sign(&hash.to_array());
+    BytesN::from_array(env, &sig.to_bytes())
+}
+
+/// Signs a delegation hash the way a browser wallet's SEP-53 `signMessage` would for a
+/// CustomAccount smart-wallet owner: `ed25519_sign(SHA256("Stellar Signed Message:\n" +
+/// hex(hash)))`. Mirrors `custom_account::CustomAccount::is_valid_signature` exactly.
+fn sign_hash_sep53(env: &Env, signing_key: &SigningKey, hash: &BytesN<32>) -> BytesN<64> {
+    use sha2::{Digest, Sha256};
+    let hex_hash: std::string::String = hash.to_array().iter().map(|b| std::format!("{:02x}", b)).collect();
+    let payload = [b"Stellar Signed Message:\n".as_slice(), hex_hash.as_bytes()].concat();
+    let message_hash = Sha256::digest(&payload);
+    let sig = signing_key.sign(&message_hash);
     BytesN::from_array(env, &sig.to_bytes())
 }
 
@@ -214,7 +230,7 @@ fn test_redeem_delegation_moves_token_balance_with_i128_precision() {
         signature: BytesN::from_array(&env, &[0u8; 64]),
     };
     let hash = manager.get_delegation_hash(&delegation_unsigned);
-    let signature = sign_hash(&env, &owner_key, &hash);
+    let signature = sign_hash_sep53(&env, &owner_key, &hash);
     let delegation = Delegation { signature, ..delegation_unsigned };
 
     let args: Vec<Val> = Vec::from_array(
@@ -464,6 +480,7 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
     token_asset_client.mint(&wallet_id, &starting_balance);
 
     let spend_limit: i128 = 100_000_000i128; // caveat allows at most this much
+    let within_limit_amount: i128 = 50_000_000i128;
     let over_limit_amount: i128 = 500_000_000i128; // attempted transfer exceeds the limit
 
     let terms = spend_limit_terms(&env, &token_id, spend_limit, 86_400);
@@ -478,36 +495,54 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
         authority: BytesN::from_array(&env, &[0xff; 32]),
         caveats,
         salt: 3,
-        nonce: 0,
+        // Reusable nonce — this delegation is redeemed twice below (once within the
+        // spend limit, once over it), which a single-use nonce wouldn't allow.
+        nonce: u64::MAX,
         signature: BytesN::from_array(&env, &[0u8; 64]),
     };
     let hash = manager.get_delegation_hash(&delegation_unsigned);
-    let signature = sign_hash(&env, &owner_key, &hash);
+    let signature = sign_hash_sep53(&env, &owner_key, &hash);
     let delegation = Delegation { signature, ..delegation_unsigned };
 
-    let args: Vec<Val> = Vec::from_array(
-        &env,
-        [
-            wallet_id.clone().into_val(&env),
-            receiver.clone().into_val(&env),
-            over_limit_amount.into_val(&env),
-        ],
-    );
-    let execution = Execution {
-        target: token_id.clone(),
-        function: Symbol::new(&env, "transfer"),
-        args,
+    let make_transfer_execution = |amount: i128| {
+        let args: Vec<Val> = Vec::from_array(
+            &env,
+            [
+                wallet_id.clone().into_val(&env),
+                receiver.clone().into_val(&env),
+                amount.into_val(&env),
+            ],
+        );
+        Execution {
+            target: token_id.clone(),
+            function: Symbol::new(&env, "transfer"),
+            args,
+        }
     };
-    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation])]);
-    let executions = Vec::from_array(&env, [execution]);
 
-    let result = manager.try_redeem_delegations(&redeemer, &contexts, &executions);
+    // A within-limit transfer must succeed first — this proves the delegation's signature
+    // and target-match are valid, so the later assertion that the over-limit call fails is
+    // actually exercising the spend-limit check, not being masked by an unrelated rejection
+    // (e.g. an invalid signature) earlier in the pipeline.
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation.clone()])]);
+    manager.redeem_delegations(
+        &redeemer,
+        &contexts,
+        &Vec::from_array(&env, [make_transfer_execution(within_limit_amount)]),
+    );
+    assert_eq!(token_client.balance(&wallet_id), starting_balance - within_limit_amount);
+
+    let over_limit_result = manager.try_redeem_delegations(
+        &redeemer,
+        &contexts,
+        &Vec::from_array(&env, [make_transfer_execution(over_limit_amount)]),
+    );
     assert!(
-        result.is_err(),
+        over_limit_result.is_err(),
         "spend-limit caveat must block a transfer exceeding the configured limit"
     );
-
-    // Balances must be unchanged since the whole redemption reverted.
-    assert_eq!(token_client.balance(&wallet_id), starting_balance);
-    assert_eq!(token_client.balance(&receiver), 0);
+    // Balance must reflect only the within-limit transfer — the over-limit one must not
+    // have moved any funds despite being rejected mid-batch.
+    assert_eq!(token_client.balance(&wallet_id), starting_balance - within_limit_amount);
+    assert_eq!(token_client.balance(&receiver), within_limit_amount);
 }

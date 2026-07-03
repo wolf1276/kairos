@@ -9,6 +9,7 @@ import { Spinner } from "@/app/components/ui/Spinner";
 import {
   fetchSmartWalletBalance,
   signAuthEntryWithFreighter,
+  signDelegationHashWithFreighter,
   type WalletState,
 } from "@/app/lib/stellar";
 
@@ -169,10 +170,12 @@ export default function DelegationsPage() {
   // only returns hashes/status from on-chain events, not the full struct disable()/enable() need.
   const fullDelegationsRef = useRef<Map<string, JsonSafeDelegation>>(new Map());
 
-  // ── Delegate target: the smart wallet's own owner, or an AI agent's ephemeral session key ──
-  const [delegateMode, setDelegateMode] = useState<"smart-wallet" | "agent">(
-    "smart-wallet"
-  );
+  // ── Delegate: who is being granted permission to redeem — an arbitrary address, or an
+  // AI agent's ephemeral session key. The delegator is always this wallet's own smart
+  // wallet (see refreshDelegations) — that's the only address `redeem_delegations` can
+  // actually execute against.
+  const [delegateMode, setDelegateMode] = useState<"address" | "agent">("address");
+  const [delegateAddress, setDelegateAddress] = useState("");
   const [agentPubkey, setAgentPubkey] = useState("");
   const [copiedExport, setCopiedExport] = useState(false);
 
@@ -201,14 +204,21 @@ export default function DelegationsPage() {
     }
   };
 
+  // The delegator is always the connected owner's smart wallet — a delegation can only ever
+  // be redeemed if `redeem_delegations`'s `execute_from_executor` call lands on a real
+  // CustomAccount contract, not a plain account — so there's nothing to list without one.
   const refreshDelegations = useCallback(async () => {
+    if (!smartWalletAddress) {
+      setDelegations([]);
+      return;
+    }
     setDelegationsLoading(true);
     setDelegationsError(null);
     try {
       const res = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "LIST_DELEGATIONS" }),
+        body: JSON.stringify({ action: "LIST_DELEGATIONS", delegator: smartWalletAddress }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
@@ -236,7 +246,7 @@ export default function DelegationsPage() {
     } finally {
       setDelegationsLoading(false);
     }
-  }, []);
+  }, [smartWalletAddress]);
 
   useEffect(() => {
     refreshDelegations();
@@ -316,10 +326,13 @@ export default function DelegationsPage() {
   };
 
   const handleCreateDelegation = async () => {
-    if (!smartWalletAddress) return;
-    if (delegateMode === "agent" && !StrKey.isValidEd25519PublicKey(agentPubkey)) {
+    if (!smartWalletAddress || !walletOwner) return;
+    const delegate = delegateMode === "agent" ? agentPubkey : delegateAddress;
+    if (!StrKey.isValidEd25519PublicKey(delegate) && !StrKey.isValidContract(delegate)) {
       setCreateError(
-        "Enter the agent's public key (from `kairos-mcp-agent-keygen`) — must be a valid G... address."
+        delegateMode === "agent"
+          ? "Enter the agent's public key (from `kairos-mcp-agent-keygen`) — must be a valid G... address."
+          : "Enter a valid delegate address (G... or C...)."
       );
       return;
     }
@@ -351,22 +364,42 @@ export default function DelegationsPage() {
         });
       }
 
-      const res = await fetch("/api/delegate-sdk", {
+      // 1. Server builds the unsigned delegation (delegator = this wallet's smart wallet —
+      // the only address `redeem_delegations` can actually execute against) and returns its
+      // hash for the owner to sign.
+      const prepareRes = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          action: "CREATE_DELEGATION",
-          // The delegate is the entity permitted to redeem this delegation on-chain — either
-          // the smart wallet's own owner, or (in "agent" mode) an AI agent's ephemeral session
-          // key, scoped down by whatever caveats are attached below. The delegator is derived
-          // server-side from FUNDER_SECRET_KEY, since that's the only key that can produce a
-          // signature the DelegationManager contract will accept.
-          delegate: delegateMode === "agent" ? agentPubkey : smartWalletAddress,
+          action: "PREPARE_DELEGATION",
+          delegate,
+          delegator: smartWalletAddress,
           policies,
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) throw new Error(prepared.error);
+
+      // 2. The wallet owner signs the hash via Freighter's SEP-53 `signMessage` — this is
+      // what the smart wallet's `is_valid_signature` verifies on-chain.
+      const signatureHex = await signDelegationHashWithFreighter(
+        prepared.hashHex,
+        connectedWallet?.networkPassphrase ?? "Test SDF Network ; September 2015",
+        walletOwner
+      );
+
+      // 3. Server attaches the signature and returns the final signed delegation.
+      const submitRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "SUBMIT_DELEGATION",
+          unsignedDelegation: prepared.unsignedDelegation,
+          signatureHex,
+        }),
+      });
+      const data = await submitRes.json();
+      if (!submitRes.ok) throw new Error(data.error);
 
       fullDelegationsRef.current.set(data.hash, data.delegation as JsonSafeDelegation);
       if (walletOwner) saveDelegations(walletOwner, fullDelegationsRef.current);
@@ -385,19 +418,40 @@ export default function DelegationsPage() {
   };
 
   const handleRevokeOrEnable = async (d: DelegationRecord) => {
-    if (!d.full) return;
-    const action = d.disabled ? "ENABLE_DELEGATION" : "REVOKE_DELEGATION";
+    if (!d.full || !walletOwner || !connectedWallet) return;
+    const prepareAction = d.disabled ? "PREPARE_ENABLE_DELEGATION" : "PREPARE_REVOKE_DELEGATION";
+    const submitAction = d.disabled ? "SUBMIT_ENABLE_DELEGATION" : "SUBMIT_REVOKE_DELEGATION";
     const setLoading = d.disabled ? setEnablingHash : setRevokingHash;
     setLoading(d.hash);
     setActionErrors((prev) => ({ ...prev, [d.hash]: "" }));
     try {
-      const res = await fetch("/api/delegate-sdk", {
+      // 1. Server builds the sponsored disable/enable (funder pays fees) and returns the
+      // unsigned authorization entry the smart wallet's owner must sign — disable_delegation/
+      // enable_delegation calls delegation.delegator.require_auth(), which for a smart-wallet
+      // delegator means the owner, not the funder.
+      const prepareRes = await fetch("/api/delegate-sdk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, delegation: d.full }),
+        body: JSON.stringify({ action: prepareAction, delegation: d.full }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) throw new Error(prepared.error);
+
+      const signedEntryXdr = await signAuthEntryWithFreighter(
+        prepared.unsignedEntryXdr,
+        prepared.validUntilLedgerSeq,
+        connectedWallet.networkPassphrase,
+        walletOwner
+      );
+
+      const submitRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: submitAction, delegation: d.full, signedEntryXdr }),
+      });
+      const data = await submitRes.json();
+      if (!submitRes.ok) throw new Error(data.error);
+
       setDelegations((prev) =>
         prev.map((x) => (x.hash === d.hash ? { ...x, disabled: !d.disabled } : x))
       );
@@ -488,14 +542,14 @@ export default function DelegationsPage() {
                   <div className="flex gap-2 text-xs">
                     <button
                       type="button"
-                      onClick={() => setDelegateMode("smart-wallet")}
+                      onClick={() => setDelegateMode("address")}
                       className={`flex-1 rounded-lg border px-3 py-1.5 transition-colors ${
-                        delegateMode === "smart-wallet"
+                        delegateMode === "address"
                           ? "border-accent/40 bg-accent/10 text-text-primary"
                           : "border-white/5 text-text-muted hover:text-text-secondary"
                       }`}
                     >
-                      This wallet
+                      Address
                     </button>
                     <button
                       type="button"
@@ -509,7 +563,21 @@ export default function DelegationsPage() {
                       AI agent
                     </button>
                   </div>
-                  {delegateMode === "agent" && (
+                  {delegateMode === "address" ? (
+                    <div>
+                      <input
+                        type="text"
+                        placeholder="Delegate address (G... or C...)"
+                        value={delegateAddress}
+                        onChange={(e) => setDelegateAddress(e.target.value.trim())}
+                        className={INPUT_CLS}
+                      />
+                      <p className="mt-1 text-[11px] text-text-muted">
+                        The address permitted to redeem this delegation and spend from this
+                        smart wallet, scoped by the policies below.
+                      </p>
+                    </div>
+                  ) : (
                     <div>
                       <input
                         type="text"

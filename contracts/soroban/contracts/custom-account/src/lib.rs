@@ -1,13 +1,22 @@
 #![no_std]
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN, Env, Symbol, Val, Vec,
-    panic_with_error, log, auth::Context, IntoVal, TryFromVal, xdr::ToXdr,
+    panic_with_error, log, auth::Context, crypto::Hash, TryIntoVal, xdr::ToXdr,
 };
 
 #[contracttype]
 pub enum DataKey {
     Owner,
     DelegationManager,
+}
+
+// The standard Stellar/Soroban account-signature convention (what `authorizeEntry`/Freighter's
+// `signAuthEntry` actually produce for a Soroban auth entry): a list of these, one per signer.
+// We only ever have a single owner key, so exactly one entry is expected.
+#[contracttype]
+pub struct AccountEd25519Signature {
+    pub public_key: BytesN<32>,
+    pub signature: BytesN<64>,
 }
 
 #[contracterror]
@@ -94,37 +103,44 @@ impl CustomAccount {
         out
     }
 
-    // Soroban custom verification hook
+    // Soroban's custom-account verification hook. The host always calls this with exactly
+    // these three arguments (see `soroban_sdk::auth::CustomAccountInterface`) whenever
+    // something does `require_auth()` against this contract's own address (e.g.
+    // `disable_delegation`/`enable_delegation`'s `delegator.require_auth()`) —
+    // `execute_from_executor`'s `delegation_manager.require_auth()` never reaches here, since
+    // a contract authorizing as itself as the direct caller doesn't need a signature.
+    //
+    // The previous version of this function declared the wrong parameter types/order (a bare
+    // `Val` first, `Vec<Context>` second, an unused `Vec<Val>` third) — Soroban still deserialized
+    // the arguments positionally into whatever was declared, so `auth_context: Vec<Context>` was
+    // actually being handed the real signature payload (a `Vec<{public_key, signature}>` struct),
+    // which doesn't match the `Context` enum's shape and trapped immediately. Fixed to match the
+    // real ABI: `(signature_payload: Hash<32>, signature: Val, auth_contexts: Vec<Context>)`.
     pub fn __check_auth(
         env: Env,
+        signature_payload: Hash<32>,
         signature: Val,
-        auth_context: Vec<Context>,
-        args: Vec<Val>,
+        _auth_contexts: Vec<Context>,
     ) {
-        let delegation_manager: Address = env.storage().instance().get(&DataKey::DelegationManager).unwrap();
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
 
-        if let Ok(sig_bytes) = Bytes::try_from_val(&env, &signature) {
-            let mut message = Bytes::new(&env);
-            for context in auth_context.iter() {
-                message.append(&context.to_xdr(&env));
-            }
-            
-            let xdr = owner.to_xdr(&env);
-            let mut key_bytes = [0u8; 32];
-            for i in 0..32 {
-                key_bytes[i] = xdr.get(xdr.len() - 32 + i as u32).unwrap();
-            }
-            let public_key = BytesN::from_array(&env, &key_bytes);
-
-            env.crypto().ed25519_verify(
-                &public_key,
-                &message,
-                &sig_bytes.try_into().unwrap(),
-            );
-        } else {
-            delegation_manager.require_auth();
+        let signatures: Vec<AccountEd25519Signature> = signature
+            .try_into_val(&env)
+            .unwrap_or_else(|_| panic_with_error!(&env, AccountError::InvalidSignature));
+        if signatures.len() != 1 {
+            panic_with_error!(&env, AccountError::InvalidSignature);
         }
+        let sig = signatures.get(0).unwrap();
+
+        let xdr = owner.to_xdr(&env);
+        let mut key_bytes = [0u8; 32];
+        for i in 0..32 {
+            key_bytes[i] = xdr.get(xdr.len() - 32 + i as u32).unwrap();
+        }
+        let public_key = BytesN::from_array(&env, &key_bytes);
+
+        let payload: Bytes = signature_payload.into();
+        env.crypto().ed25519_verify(&public_key, &payload, &sig.signature);
     }
 }
 mod test;

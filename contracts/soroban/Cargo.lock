@@ -339,7 +339,11 @@ dependencies = [
 name = "custom-account"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "rand",
+ "sha2",
  "soroban-sdk",
+ "stellar-strkey",
 ]
 
 [[package]]
@@ -425,6 +429,7 @@ dependencies = [
  "ed25519-dalek",
  "policies",
  "rand",
+ "sha2",
  "soroban-sdk",
  "stellar-strkey",
 ]

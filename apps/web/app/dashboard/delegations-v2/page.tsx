@@ -25,7 +25,11 @@ const DEFAULT_FILTERS: DelegationFilters = {
 
 export default function DelegationsV2Page() {
   const wallet = useWallet();
-  const delegationsApi = useDelegations(wallet.walletOwner);
+  const delegationsApi = useDelegations(
+    wallet.walletOwner,
+    wallet.smartWalletAddress,
+    wallet.wallet?.networkPassphrase ?? "Test SDF Network ; September 2015"
+  );
   const timeline = useActivityTimeline();
   const [filters, setFilters] = useState<DelegationFilters>(DEFAULT_FILTERS);
   const [selectedDelegation, setSelectedDelegation] = useState<DelegationRecord | null>(null);
@@ -282,7 +286,7 @@ export default function DelegationsV2Page() {
       {/* Phase 5: Create Delegation Wizard */}
       <CreateDelegationWizard
         open={showWizard}
-        smartWalletAddress={wallet.smartWalletAddress}
+        walletOwner={wallet.walletOwner}
         networkPassphrase={wallet.wallet?.networkPassphrase ?? "Test SDF Network ; September 2015"}
         onCreate={handleWizardCreate}
         onClose={handleWizardClose}

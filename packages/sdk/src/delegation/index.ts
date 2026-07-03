@@ -1,9 +1,13 @@
-import { Address, Keypair, Operation, rpc, TransactionBuilder } from '@stellar/stellar-sdk';
+import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
 import { ROOT_AUTHORITY } from '../constants';
 import { Caveat, Delegation, TransactionResult } from '../types';
 import { computeDelegationHash, scValToBigInt } from '../utils';
-import { ExecutionFailedError, PolicyViolationError, RpcError } from '../errors';
+import { ExecutionFailedError, PolicyViolationError, RpcError, TransactionSimulationError } from '../errors';
+
+/** Safety margin (in ledgers) added to the current ledger when picking how long a
+ * sponsored disable/enable authorization entry remains valid before it must be resubmitted. */
+const AUTH_ENTRY_VALID_LEDGER_MARGIN = 100;
 
 export class DelegationModule {
   constructor(private client: KairosClient) {}
@@ -185,6 +189,97 @@ export class DelegationModule {
       .build();
 
     return this.client.submitTransaction(tx, delegatorSigner);
+  }
+
+  /**
+   * Prepares a sponsored disable/enable: `funderAddress` pays fees as the transaction's
+   * source account, but `disable_delegation`/`enable_delegation` still calls
+   * `delegation.delegator.require_auth()` — when the delegator is a smart-wallet contract
+   * (not an EOA the server holds a key for), that requires a separately-signed authorization
+   * entry from the wallet's owner. Returns the unsigned entry (base64 XDR) for the owner's
+   * wallet to sign — e.g. via Freighter's `signAuthEntry` — plus everything needed to submit
+   * the exact same operation in `submitSponsoredDisable`/`submitSponsoredEnable`.
+   */
+  private async prepareSponsoredOp(
+    functionName: 'disable_delegation' | 'enable_delegation',
+    delegation: Delegation,
+    funderAddress: string
+  ): Promise<{ unsignedEntryXdr: string; validUntilLedgerSeq: number }> {
+    const delegationScVal = this.client.delegationToScVal(delegation);
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: functionName,
+      args: [Address.fromString(delegation.delegator).toScVal(), delegationScVal],
+    });
+
+    const sourceAccount = await this.client.waitForAccount(funderAddress);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const simRes = await this.client.simulateTx(tx);
+    if (!rpc.Api.isSimulationSuccess(simRes)) {
+      throw new TransactionSimulationError('Simulation did not succeed', simRes);
+    }
+    const entry = simRes.result?.auth?.[0];
+    if (!entry) {
+      throw new TransactionSimulationError(
+        'Simulation did not return an authorization entry for the delegator address',
+        simRes
+      );
+    }
+
+    const validUntilLedgerSeq = simRes.latestLedger + AUTH_ENTRY_VALID_LEDGER_MARGIN;
+    entry.credentials().address().signatureExpirationLedger(validUntilLedgerSeq);
+
+    return { unsignedEntryXdr: entry.toXDR('base64'), validUntilLedgerSeq };
+  }
+
+  private async submitSponsoredOp(
+    functionName: 'disable_delegation' | 'enable_delegation',
+    delegation: Delegation,
+    funder: Keypair,
+    signedEntryXdr: string
+  ): Promise<TransactionResult> {
+    const delegationScVal = this.client.delegationToScVal(delegation);
+    const signedEntry = xdr.SorobanAuthorizationEntry.fromXDR(signedEntryXdr, 'base64');
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: functionName,
+      args: [Address.fromString(delegation.delegator).toScVal(), delegationScVal],
+      auth: [signedEntry],
+    });
+
+    const sourceAccount = await this.client.waitForAccount(funder.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    return this.client.submitTransaction(tx, funder);
+  }
+
+  async prepareSponsoredDisable(delegation: Delegation, funderAddress: string) {
+    return this.prepareSponsoredOp('disable_delegation', delegation, funderAddress);
+  }
+
+  async submitSponsoredDisable(delegation: Delegation, funder: Keypair, signedEntryXdr: string) {
+    return this.submitSponsoredOp('disable_delegation', delegation, funder, signedEntryXdr);
+  }
+
+  async prepareSponsoredEnable(delegation: Delegation, funderAddress: string) {
+    return this.prepareSponsoredOp('enable_delegation', delegation, funderAddress);
+  }
+
+  async submitSponsoredEnable(delegation: Delegation, funder: Keypair, signedEntryXdr: string) {
+    return this.submitSponsoredOp('enable_delegation', delegation, funder, signedEntryXdr);
   }
 
   /**

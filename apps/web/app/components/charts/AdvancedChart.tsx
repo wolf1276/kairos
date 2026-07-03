@@ -20,8 +20,6 @@ import { ChartToolbar } from "@/app/components/charts/ChartToolbar";
 import { DrawingManager } from "@/app/components/charts/drawing-tools/DrawingManager";
 import { useDrawings } from "@/app/hooks/useDrawings";
 import { useKeyboardShortcuts } from "@/app/hooks/useKeyboardShortcuts";
-import { usePrices } from "@/app/hooks/usePrices";
-import { usePaperTrading } from "@/app/hooks/usePaperTrading";
 import { usePriceAlerts } from "@/app/hooks/usePriceAlerts";
 import type { ToolMode } from "@/app/components/charts/drawing-tools/types";
 import { OrderBook } from "@/app/components/charts/OrderBook";
@@ -66,8 +64,6 @@ export function AdvancedChart({
     useChartConfig();
   const { candles, loading, error } = useStreamingKlines(symbol, bi);
   const { drawings: savedDrawings, save: saveDrawings } = useDrawings(symbol);
-  const { priceMap } = usePrices([symbol]);
-  const { positions, trades, closePosition } = usePaperTrading(priceMap);
   const { alerts: priceAlerts, addAlert, removeAlert, clearTriggered, checkAlerts } = usePriceAlerts();
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -384,10 +380,10 @@ export function AdvancedChart({
 
   // ── Price alert checker ──
   useEffect(() => {
-    if (Object.keys(priceMap).length === 0) return;
-    const id = window.setInterval(() => { checkAlerts(priceMap); }, 2000);
+    if (!last) return;
+    const id = window.setInterval(() => { checkAlerts({ [symbol.toUpperCase()]: last }); }, 2000);
     return () => window.clearInterval(id);
-  }, [priceMap, checkAlerts]);
+  }, [symbol, last, checkAlerts]);
 
   // ── Keyboard shortcuts ──
   useKeyboardShortcuts(
@@ -475,15 +471,9 @@ export function AdvancedChart({
       {showTradingPanel && (
         <div className="mt-2">
           <TradingPanel
-            positions={positions}
-            trades={trades}
             priceAlerts={priceAlerts}
             symbol={symbol}
             chartRef={chartRef}
-            onClosePosition={(sym) => {
-              const p = priceMap[sym];
-              if (p) closePosition(sym, p);
-            }}
             onAddAlert={addAlert}
             onRemoveAlert={removeAlert}
             onClearTriggered={clearTriggered}

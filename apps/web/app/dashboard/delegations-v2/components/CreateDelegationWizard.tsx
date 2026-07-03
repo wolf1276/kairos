@@ -72,13 +72,13 @@ const PERMISSION_OPTIONS = [
 
 export function CreateDelegationWizard({
   open,
-  smartWalletAddress,
+  walletOwner,
   networkPassphrase,
   onCreate,
   onClose,
 }: {
   open: boolean;
-  smartWalletAddress: string | null;
+  walletOwner: string | null;
   networkPassphrase: string;
   onCreate: (delegate: string, policies: Record<string, unknown>[]) => Promise<string>;
   onClose: () => void;
@@ -152,7 +152,7 @@ export function CreateDelegationWizard({
   const canProceed = useCallback((): boolean => {
     switch (form.step) {
       case 1:
-        if (form.delegateType === "self") return !!smartWalletAddress;
+        if (form.delegateType === "self") return !!walletOwner;
         return !!form.delegateAddress.trim() && !delegateAddressError();
       case 2:
         return form.assets.some((a) => a.amount > 0);
@@ -167,7 +167,7 @@ export function CreateDelegationWizard({
       default:
         return true;
     }
-  }, [form, smartWalletAddress, delegateAddressError]);
+  }, [form, walletOwner, delegateAddressError]);
 
   const handleNext = useCallback(() => {
     if (form.step < 7) goTo(form.step + 1);
@@ -183,7 +183,7 @@ export function CreateDelegationWizard({
     try {
       const delegate =
         form.delegateType === "self"
-          ? smartWalletAddress!
+          ? walletOwner!
           : form.delegateAddress.trim();
 
       const policies: Record<string, unknown>[] = [];
@@ -218,7 +218,7 @@ export function CreateDelegationWizard({
     } finally {
       setCreating(false);
     }
-  }, [form, smartWalletAddress, networkPassphrase, onCreate, goTo]);
+  }, [form, walletOwner, networkPassphrase, onCreate, goTo]);
 
   if (!open) return null;
 
@@ -304,13 +304,13 @@ export function CreateDelegationWizard({
             {form.step === 1 && (
               <Step1Delegate
                 form={form}
-                smartWalletAddress={smartWalletAddress}
+                walletOwner={walletOwner}
                 delegateAddressError={delegateAddressError}
                 update={update}
               />
             )}
             {form.step === 2 && (
-              <Step2Assets form={form} updateNested={updateNested} update={update} />
+              <Step2Assets form={form} update={update} />
             )}
             {form.step === 3 && (
               <Step3Permissions
@@ -329,7 +329,7 @@ export function CreateDelegationWizard({
             {form.step === 6 && (
               <Step6Review
                 form={form}
-                smartWalletAddress={smartWalletAddress}
+                walletOwner={walletOwner}
               />
             )}
             {form.step === 7 && (
@@ -397,12 +397,12 @@ export function CreateDelegationWizard({
 
 function Step1Delegate({
   form,
-  smartWalletAddress,
+  walletOwner,
   delegateAddressError,
   update,
 }: {
   form: WizardState;
-  smartWalletAddress: string | null;
+  walletOwner: string | null;
   delegateAddressError: () => string | null;
   update: (key: keyof WizardState, value: WizardState[keyof WizardState]) => void;
 }) {
@@ -416,7 +416,7 @@ function Step1Delegate({
 
       <div className="grid grid-cols-3 gap-3">
         {[
-          { id: "self" as const, label: "Smart Wallet", desc: "Delegate to your own smart wallet", icon: "W" },
+          { id: "self" as const, label: "My Wallet", desc: "Delegate to your connected Freighter address", icon: "W" },
           { id: "agent" as const, label: "AI Agent", desc: "Ephemeral agent session key", icon: "A" },
           { id: "manual" as const, label: "Manual Address", desc: "Any Stellar G address", icon: "M" },
         ].map((opt) => (
@@ -450,14 +450,14 @@ function Step1Delegate({
       {form.delegateType === "self" && (
         <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
           <p className="text-xs text-text-secondary">
-            Smart wallet:{" "}
+            Connected wallet:{" "}
             <span className="font-mono text-text-primary">
-              {smartWalletAddress ? `${smartWalletAddress.slice(0, 8)}...${smartWalletAddress.slice(-4)}` : "Not deployed"}
+              {walletOwner ? `${walletOwner.slice(0, 8)}...${walletOwner.slice(-4)}` : "Not connected"}
             </span>
           </p>
-          {!smartWalletAddress && (
+          {!walletOwner && (
             <p className="mt-1.5 text-[11px] text-amber-400/80">
-              Deploy a smart wallet first to use self-delegation.
+              Connect your Freighter wallet first.
             </p>
           )}
         </div>
@@ -938,14 +938,14 @@ function Step5Policies({
 
 function Step6Review({
   form,
-  smartWalletAddress,
+  walletOwner,
 }: {
   form: WizardState;
-  smartWalletAddress: string | null;
+  walletOwner: string | null;
 }) {
   const delegateAddr =
     form.delegateType === "self"
-      ? smartWalletAddress || "—"
+      ? walletOwner || "—"
       : form.delegateAddress || "—";
 
   const activePolicies: string[] = [
@@ -961,7 +961,7 @@ function Step6Review({
       </p>
 
       <ReviewSection title="Delegate">
-        <ReviewRow label="Type" value={form.delegateType === "self" ? "Smart Wallet" : form.delegateType === "agent" ? "AI Agent" : "Manual"} />
+        <ReviewRow label="Type" value={form.delegateType === "self" ? "My Wallet" : form.delegateType === "agent" ? "AI Agent" : "Manual"} />
         <ReviewRow label="Address" value={delegateAddr} mono />
       </ReviewSection>
 

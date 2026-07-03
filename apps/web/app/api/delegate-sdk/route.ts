@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { Asset, Keypair } from '@stellar/stellar-sdk';
 import KairosClient from '@wolf1276/kairos-sdk';
-import type { Delegation } from '@wolf1276/kairos-sdk';
+import type { Caveat, Delegation } from '@wolf1276/kairos-sdk';
+import { ROOT_AUTHORITY } from '@wolf1276/kairos-sdk';
 import { getContractConfig } from '../../lib/sdk';
 
 // `Delegation.salt`/`.nonce` are bigint and `Caveat.terms` is a Uint8Array — neither survives
@@ -116,73 +117,112 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, smartWalletAddress: wallet.address, owner: ownerAddress });
       }
 
-      case 'CREATE_DELEGATION': {
-        const { delegate, policies } = body;
-        if (!delegate) {
-          return NextResponse.json({ error: 'delegate address is required' }, { status: 400 });
+      case 'PREPARE_DELEGATION': {
+        // The delegator MUST be a smart-wallet contract, not a plain account — `redeem_delegations`
+        // always calls `execute_from_executor` on the root delegator, which only exists on the
+        // CustomAccount contract. A delegation with an EOA delegator can never be redeemed
+        // ("not a contract address"). The smart wallet's owner (the connected Freighter user)
+        // must authorize it via SEP-53 message signing — see SUBMIT_DELEGATION below — since the
+        // server only holds FUNDER_SECRET_KEY, which is not the wallet's owner.
+        const { delegate, delegator, policies } = body;
+        if (!delegate || !delegator) {
+          return NextResponse.json({ error: 'delegate and delegator addresses are required' }, { status: 400 });
         }
 
-        // The delegation signature is verified on-chain against the delegator's own
-        // ed25519 key (see DelegationManager.redeem_delegations). The only private key
-        // this server holds is FUNDER_SECRET_KEY, so the funder must be the delegator —
-        // signing on behalf of any other address would produce a signature that fails
-        // is_valid_signature/ed25519_verify at redemption time.
-        const delegator = funder.publicKey();
-
-        const caveats = policies
+        const caveats: Caveat[] = policies
           ? await Promise.all(
               (policies as Array<Parameters<typeof client.policy.create>[0]>).map((p) => client.policy.create(p))
             )
           : [];
 
-        const delegation = await client.delegation.create({
+        const nonce = await client.delegation.getNonce(delegator);
+        const salt = BigInt(Math.floor(Math.random() * 1_000_000));
+        const unsigned: Omit<Delegation, 'signature'> = {
           delegate,
           delegator,
+          authority: ROOT_AUTHORITY,
           caveats,
-          signer: funder,
-        });
+          salt,
+          nonce,
+        };
+        const hashHex = client.delegation.getHash({ ...unsigned, signature: '' } as Delegation);
 
+        return NextResponse.json({
+          success: true,
+          hashHex,
+          unsignedDelegation: serializeDelegation({ ...unsigned, signature: '' } as Delegation),
+        });
+      }
+
+      case 'SUBMIT_DELEGATION': {
+        const { unsignedDelegation, signatureHex } = body;
+        if (!unsignedDelegation || !signatureHex) {
+          return NextResponse.json(
+            { error: 'unsignedDelegation and signatureHex are required' },
+            { status: 400 }
+          );
+        }
+
+        const delegation: Delegation = {
+          ...deserializeDelegation(unsignedDelegation),
+          signature: signatureHex,
+        };
         const hashStr = client.delegation.getHash(delegation);
+
         return NextResponse.json({
           success: true,
           hash: hashStr,
-          delegator,
+          delegator: delegation.delegator,
           delegation: serializeDelegation(delegation),
         });
       }
 
       case 'LIST_DELEGATIONS': {
-        // `delegator` defaults to the funder's own address — CREATE_DELEGATION always sets
-        // delegator = funder.publicKey() today (see the comment there), so omitting the filter
-        // would otherwise return every delegator's hashes on the shared contract.
-        const delegatorFilter: string = body.delegator || funder.publicKey();
-        const hashes = await client.delegation.list(delegatorFilter);
+        const { delegator } = body;
+        if (!delegator) {
+          return NextResponse.json({ error: 'delegator address is required' }, { status: 400 });
+        }
+        const hashes = await client.delegation.list(delegator);
         const delegations = await Promise.all(
           hashes.map(async (hash: string) => {
             const status = await client.delegation.get(hash);
-            return { hash, disabled: status.disabled, delegator: delegatorFilter };
+            return { hash, disabled: status.disabled, delegator };
           })
         );
         return NextResponse.json({ success: true, delegations });
       }
 
-      case 'REVOKE_DELEGATION': {
-        // Same trust model as CREATE_DELEGATION: the delegator is always the funder address,
-        // so only FUNDER_SECRET_KEY can produce a signature disable_delegation will accept.
+      case 'PREPARE_REVOKE_DELEGATION':
+      case 'PREPARE_ENABLE_DELEGATION': {
+        // Sponsored, same pattern as PREPARE_WALLET_DEPLOY: the funder pays fees, but
+        // disable_delegation/enable_delegation calls delegation.delegator.require_auth() —
+        // for a smart-wallet delegator that means a separately-signed authorization entry
+        // from the wallet's owner, not just the funder's transaction signature.
         const { delegation } = body;
         if (!delegation) {
           return NextResponse.json({ error: 'delegation struct is required' }, { status: 400 });
         }
-        const result = await client.delegation.revoke(deserializeDelegation(delegation), funder);
-        return NextResponse.json({ success: true, txHash: result.hash });
+        await client.ensureFundedTestnetAccount(funder.publicKey());
+        const prepared =
+          action === 'PREPARE_REVOKE_DELEGATION'
+            ? await client.delegation.prepareSponsoredDisable(deserializeDelegation(delegation), funder.publicKey())
+            : await client.delegation.prepareSponsoredEnable(deserializeDelegation(delegation), funder.publicKey());
+        return NextResponse.json({ success: true, ...prepared });
       }
 
-      case 'ENABLE_DELEGATION': {
-        const { delegation } = body;
-        if (!delegation) {
-          return NextResponse.json({ error: 'delegation struct is required' }, { status: 400 });
+      case 'SUBMIT_REVOKE_DELEGATION':
+      case 'SUBMIT_ENABLE_DELEGATION': {
+        const { delegation, signedEntryXdr } = body;
+        if (!delegation || !signedEntryXdr) {
+          return NextResponse.json(
+            { error: 'delegation and signedEntryXdr are required' },
+            { status: 400 }
+          );
         }
-        const result = await client.delegation.enable(deserializeDelegation(delegation), funder);
+        const result =
+          action === 'SUBMIT_REVOKE_DELEGATION'
+            ? await client.delegation.submitSponsoredDisable(deserializeDelegation(delegation), funder, signedEntryXdr)
+            : await client.delegation.submitSponsoredEnable(deserializeDelegation(delegation), funder, signedEntryXdr);
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 
