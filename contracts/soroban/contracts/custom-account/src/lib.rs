@@ -50,10 +50,16 @@ impl CustomAccount {
         env.invoke_contract::<Val>(&target, &function, args)
     }
 
-    // Helper for contract signature validation fallback (e.g. ERC-1271 counterpart)
+    // Helper for contract signature validation fallback (e.g. ERC-1271 counterpart).
+    //
+    // The owner signs via a browser wallet's SEP-53 message signing (e.g. Freighter's
+    // `signMessage`), not a raw private-key signature — wallets deliberately refuse to sign
+    // arbitrary raw bytes (that's exactly what a malicious tx would look like), so `hash` is
+    // instead hex-encoded and wrapped per SEP-53 before verification:
+    //   signed payload = SHA-256("Stellar Signed Message:\n" + hex(hash))
     pub fn is_valid_signature(env: Env, hash: BytesN<32>, signature: BytesN<64>) -> bool {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
-        
+
         let xdr = owner.to_xdr(&env);
         let mut key_bytes = [0u8; 32];
         for i in 0..32 {
@@ -61,13 +67,31 @@ impl CustomAccount {
         }
         let public_key = BytesN::from_array(&env, &key_bytes);
 
-        let message = Bytes::from_array(&env, &hash.to_array());
+        let message: Bytes = env.crypto().sha256(&Self::sep53_payload(&env, &hash)).into();
         env.crypto().ed25519_verify(
             &public_key,
             &message,
             &signature,
         );
         true
+    }
+
+    // Builds the SEP-53 "Stellar Signed Message:\n" + hex(hash) payload (pre-SHA-256).
+    fn sep53_payload(env: &Env, hash: &BytesN<32>) -> Bytes {
+        let mut payload = Bytes::from_slice(env, b"Stellar Signed Message:\n");
+        payload.append(&Self::hex_encode(env, &hash.to_array()));
+        payload
+    }
+
+    // Lowercase-hex-encodes raw bytes into their ASCII representation (no_std, no alloc).
+    fn hex_encode(env: &Env, bytes: &[u8]) -> Bytes {
+        const HEX_CHARS: &[u8; 16] = b"0123456789abcdef";
+        let mut out = Bytes::new(env);
+        for b in bytes.iter() {
+            out.push_back(HEX_CHARS[(b >> 4) as usize]);
+            out.push_back(HEX_CHARS[(b & 0x0f) as usize]);
+        }
+        out
     }
 
     // Soroban custom verification hook

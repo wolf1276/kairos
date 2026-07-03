@@ -1,16 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { cn } from "@/lib/utils";
 
+function useMediaQuery(query: string): boolean {
+  const subscribe = (callback: () => void) => {
+    const mq = window.matchMedia(query);
+    mq.addEventListener("change", callback);
+    return () => mq.removeEventListener("change", callback);
+  };
+  const getSnapshot = () => window.matchMedia(query).matches;
+  const getServerSnapshot = () => false;
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", exact: true },
   { href: "/dashboard/trade", label: "Trade", exact: false },
   { href: "/dashboard/portfolio", label: "Portfolio", exact: false },
-  { href: "/dashboard/delegations", label: "Delegations", exact: false },
+  { href: "/dashboard/delegations-v2", label: "Delegations", exact: false },
   { href: "/dashboard/history", label: "History", exact: false },
   { href: "/dashboard/settings", label: "Settings", exact: true },
 ] as const;
@@ -22,20 +33,7 @@ export default function DashboardLayout({
 }) {
   const pathname = usePathname();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  // Only used to decide whether the mobile overlay/hamburger should render at all — the actual
-  // responsive layout (sidebar hidden/offset, content margin) is driven by CSS `lg:` breakpoints
-  // below, not this flag, so there's no SSR/client mismatch and no flash of desktop layout on
-  // mobile page loads.
-  const [isDesktop, setIsDesktop] = useState(
-    () => window.matchMedia("(min-width: 1024px)").matches,
-  );
-
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const handler = (e: MediaQueryListEvent) => setIsDesktop(e.matches);
-    mq.addEventListener("change", handler);
-    return () => mq.removeEventListener("change", handler);
-  }, []);
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
 
   const isActive = (item: (typeof NAV_ITEMS)[number]) => {
     if (item.exact) return pathname === item.href;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useEffect } from "react";
-import { Address, Asset, StrKey } from "@stellar/stellar-sdk";
+import { Asset, StrKey } from "@stellar/stellar-sdk";
 import { Spinner } from "@/app/components/ui/Spinner";
 
 type DelegateType = "self" | "agent" | "manual";
@@ -306,12 +306,11 @@ export function CreateDelegationWizard({
                 form={form}
                 smartWalletAddress={smartWalletAddress}
                 delegateAddressError={delegateAddressError}
-                updateNested={updateNested}
                 update={update}
               />
             )}
             {form.step === 2 && (
-              <Step2Assets form={form} updateNested={updateNested} />
+              <Step2Assets form={form} updateNested={updateNested} update={update} />
             )}
             {form.step === 3 && (
               <Step3Permissions
@@ -400,13 +399,11 @@ function Step1Delegate({
   form,
   smartWalletAddress,
   delegateAddressError,
-  updateNested,
   update,
 }: {
   form: WizardState;
   smartWalletAddress: string | null;
   delegateAddressError: () => string | null;
-  updateNested: (parent: keyof WizardState, field: string, value: unknown) => void;
   update: (key: keyof WizardState, value: WizardState[keyof WizardState]) => void;
 }) {
   const addrErr = form.delegateType !== "self" ? delegateAddressError() : null;
@@ -427,7 +424,7 @@ function Step1Delegate({
             key={opt.id}
             onClick={() => {
               update("delegateType", opt.id);
-              if (opt.id === "self") updateNested("limits" as keyof WizardState, "delegateAddress", "");
+              if (opt.id === "self") update("delegateAddress", "");
             }}
             className={`rounded-xl border p-4 text-left transition-all duration-200 cursor-pointer ${
               form.delegateType === opt.id
@@ -475,7 +472,7 @@ function Step1Delegate({
             type="text"
             placeholder="G..."
             value={form.delegateAddress}
-            onChange={(e) => updateNested("limits" as keyof WizardState, "delegateAddress", e.target.value)}
+            onChange={(e) => update("delegateAddress", e.target.value)}
             className={`w-full rounded-xl border bg-white/[0.02] px-4 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:outline-none focus:ring-2 ${
               addrErr
                 ? "border-error/30 focus:border-error/30 focus:ring-error/15"
@@ -493,10 +490,10 @@ function Step1Delegate({
 
 function Step2Assets({
   form,
-  updateNested,
+  update,
 }: {
   form: WizardState;
-  updateNested: (parent: keyof WizardState, field: string, value: unknown) => void;
+  update: (key: keyof WizardState, value: WizardState[keyof WizardState]) => void;
 }) {
   return (
     <div className="space-y-5">
@@ -530,7 +527,7 @@ function Step2Assets({
               onChange={(e) => {
                 const newAssets = [...form.assets];
                 newAssets[i] = { ...newAssets[i], amount: parseFloat(e.target.value) || 0 };
-                updateNested("limits" as keyof WizardState, "assets", newAssets);
+                update("assets", newAssets);
               }}
               className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-200 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
             />
@@ -543,7 +540,7 @@ function Step2Assets({
                 onClick={() => {
                   const newAssets = [...form.assets];
                   newAssets[i] = { ...newAssets[i], amount: 10000 * (pct / 100) };
-                  updateNested("limits" as keyof WizardState, "assets", newAssets);
+                  update("assets", newAssets);
                 }}
                 className="flex-1 rounded-lg border border-white/5 bg-white/[0.02] py-1.5 text-[11px] font-mono text-text-muted hover:bg-white/[0.05] hover:text-text-secondary transition-all duration-200 cursor-pointer"
               >
@@ -722,11 +719,6 @@ function Step5Policies({
   updateNested: (parent: keyof WizardState, field: string, value: unknown) => void;
 }) {
   const p = form.policies;
-
-  const toUnix = (local: string): string => {
-    if (!local) return "";
-    return Math.floor(new Date(local).getTime() / 1000).toString();
-  };
 
   return (
     <div className="space-y-5">

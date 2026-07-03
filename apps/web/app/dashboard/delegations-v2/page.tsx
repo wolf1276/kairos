@@ -70,6 +70,7 @@ export default function DelegationsV2Page() {
 
   const handleTemplateSelect = useCallback((template: DelegationTemplate) => {
     setShowTemplatePicker(false);
+    void template;
   }, []);
 
   const handleSkipTemplates = useCallback(() => {
@@ -79,6 +80,7 @@ export default function DelegationsV2Page() {
   const handleDuplicate = useCallback((d: DelegationRecord) => {
     setShowWizard(true);
     setShowTemplatePicker(false);
+    void d;
   }, []);
 
   const handleWizardClose = useCallback(() => {

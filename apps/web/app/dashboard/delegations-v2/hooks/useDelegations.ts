@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { DelegationRecord, JsonSafeDelegation, DelegationFilters, DelegationStats, DelegationStatus } from "../types/delegation";
+import type { DelegationRecord, JsonSafeDelegation, DelegationFilters, DelegationStats } from "../types/delegation";
 
 function loadDelegations(owner: string): Map<string, JsonSafeDelegation> {
   try {

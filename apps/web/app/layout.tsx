@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { Geist } from "next/font/google";
+import Script from "next/script";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
@@ -18,28 +19,28 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={cn("h-full", "font-sans", geist.variable)}>
-      <head>
-        {/* Suppress Next.js dev overlay triggers for external browser extensions (e.g., MetaMask connection failures) */}
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              window.addEventListener('error', (event) => {
-                if (event.filename && (event.filename.includes('chrome-extension://') || event.filename.includes('metamask'))) {
-                  event.stopImmediatePropagation();
-                }
-              }, true);
-              window.addEventListener('unhandledrejection', (event) => {
-                const stack = event.reason?.stack || '';
-                const msg = event.reason?.message || '';
-                if (stack.includes('chrome-extension://') || stack.includes('metamask') || msg.includes('MetaMask') || msg.includes('connect')) {
-                  event.stopImmediatePropagation();
-                  event.preventDefault();
-                }
-              }, true);
-            `,
-          }}
-        />
-      </head>
+      <head />
+      <Script
+        id="suppress-extension-errors"
+        strategy="beforeInteractive"
+        dangerouslySetInnerHTML={{
+          __html: `
+            window.addEventListener('error', function(e) {
+              if (e.filename && (e.filename.includes('chrome-extension://') || e.filename.includes('metamask'))) {
+                e.stopImmediatePropagation();
+              }
+            }, true);
+            window.addEventListener('unhandledrejection', function(e) {
+              var stack = e.reason && e.reason.stack || '';
+              var msg = e.reason && e.reason.message || '';
+              if (stack.includes('chrome-extension://') || stack.includes('metamask') || msg.includes('MetaMask') || msg.includes('connect')) {
+                e.stopImmediatePropagation();
+                e.preventDefault();
+              }
+            }, true);
+          `,
+        }}
+      />
       <body className="min-h-full bg-bg-primary text-text-primary antialiased">
         {children}
       </body>

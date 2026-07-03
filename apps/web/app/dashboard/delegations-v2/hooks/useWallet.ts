@@ -37,25 +37,29 @@ export function useWallet() {
 
   const walletOwner = wallet?.address ?? null;
 
-  // Restore smart wallet from localStorage on wallet connect
-  useEffect(() => {
-    if (!walletOwner) {
-      setSmartWalletAddress(null);
-      setSmartWalletBalance(null);
-      return;
-    }
-    const saved = loadSmartWallet(walletOwner);
-    if (saved) {
-      setSmartWalletAddress(saved);
-      checkBalance(saved);
-    }
-  }, [walletOwner]);
+  const checkBalance = useCallback(async (address: string) => {
+    if (!wallet) return;
+    try {
+      const balance = await fetchSmartWalletBalance(address, wallet.networkPassphrase, wallet.sorobanRpcUrl);
+      setSmartWalletBalance(balance);
+    } catch {}
+  }, [wallet]);
 
   const connect = useCallback(async () => {
     setConnecting(true);
+    setSmartWalletAddress(null);
+    setSmartWalletBalance(null);
     const result = await connectWallet();
     if (result.success && result.wallet) {
       setWallet(result.wallet);
+      const saved = loadSmartWallet(result.wallet.address);
+      if (saved) {
+        setSmartWalletAddress(saved);
+        try {
+          const balance = await fetchSmartWalletBalance(saved, result.wallet.networkPassphrase, result.wallet.sorobanRpcUrl);
+          setSmartWalletBalance(balance);
+        } catch {}
+      }
     }
     setConnecting(false);
     return result;
@@ -66,14 +70,6 @@ export function useWallet() {
     setSmartWalletAddress(null);
     setSmartWalletBalance(null);
   }, []);
-
-  const checkBalance = useCallback(async (address: string) => {
-    if (!wallet) return;
-    try {
-      const balance = await fetchSmartWalletBalance(address, wallet.networkPassphrase, wallet.sorobanRpcUrl);
-      setSmartWalletBalance(balance);
-    } catch {}
-  }, [wallet]);
 
   const deploySmartWallet = useCallback(async () => {
     if (!walletOwner || !wallet) {
