@@ -8,7 +8,6 @@ import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
 import {
-  createAgentWallet,
   listAgentWallets,
   attachAgentDelegation,
   setAgentStrategy,
@@ -48,7 +47,6 @@ export default function AgentsPage() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [loadingAgents, setLoadingAgents] = useState(false);
   const [listError, setListError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!walletOwner) return;
@@ -74,45 +72,20 @@ export default function AgentsPage() {
     return () => clearInterval(id);
   }, [agents, refresh]);
 
-  const handleCreateAgent = async () => {
-    if (!walletOwner) return;
-    setCreating(true);
-    try {
-      await createAgentWallet(walletOwner);
-      await refresh();
-    } catch (e) {
-      setListError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
-    }
-  };
-
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="font-display text-lg font-medium text-text-primary">Agent Wallets</h1>
-          <p className="mt-1 text-xs text-text-muted">
-            Each agent wallet is a keypair generated and held by the agent backend service — pick
-            which of your smart wallets it can spend from, configure a strategy, and it runs
-            autonomously on a schedule. Everything it spends always stays in that same wallet.
-          </p>
-        </div>
-        {connected && (
-          <button
-            onClick={handleCreateAgent}
-            disabled={creating || !walletOwner}
-            className="shrink-0 rounded-xl bg-accent/80 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {creating ? "Creating…" : "+ Create Agent Wallet"}
-          </button>
-        )}
+      <div>
+        <h1 className="font-display text-lg font-medium text-text-primary">Agents</h1>
+        <p className="mt-1 text-xs text-text-muted">
+          Live status, strategy, last tick, and PnL for every agent you've launched. To launch a
+          new one, pick a strategy on the <a href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</a>.
+        </p>
       </div>
 
       {!connected ? (
         <Card>
           <CardBody className="text-center">
-            <p className="mb-3 text-xs text-text-muted">Connect Freighter to create and manage agent wallets.</p>
+            <p className="mb-3 text-xs text-text-muted">Connect Freighter to view your agents.</p>
             <button
               onClick={connect}
               disabled={connecting}
@@ -148,7 +121,9 @@ export default function AgentsPage() {
           ) : agents.length === 0 ? (
             <Card>
               <CardBody className="py-10 text-center">
-                <p className="text-sm text-text-muted">No agent wallets yet — create one to get started.</p>
+                <p className="text-sm text-text-muted">
+                  No agents yet — launch a strategy from the <a href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</a> to get started.
+                </p>
               </CardBody>
             </Card>
           ) : (
