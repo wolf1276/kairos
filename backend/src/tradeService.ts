@@ -16,6 +16,7 @@ export interface InsertTradeInput {
   status: TradeStatus;
   realizedPnl: string | null;
   reversedTradeId?: string | null;
+  mode?: 'paper' | 'live';
 }
 
 export function insertTrade(input: InsertTradeInput): TradeRow {
@@ -32,11 +33,12 @@ export function insertTrade(input: InsertTradeInput): TradeRow {
     realized_pnl: input.realizedPnl,
     reversed_trade_id: input.reversedTradeId ?? null,
     created_at: Date.now(),
+    mode: input.mode ?? 'live',
   };
   getDb()
     .prepare(
-      `INSERT INTO trades (id, agent_id, strategy_id, side, pair, amount, price, tx_hash, status, realized_pnl, reversed_trade_id, created_at)
-       VALUES (@id, @agent_id, @strategy_id, @side, @pair, @amount, @price, @tx_hash, @status, @realized_pnl, @reversed_trade_id, @created_at)`
+      `INSERT INTO trades (id, agent_id, strategy_id, side, pair, amount, price, tx_hash, status, realized_pnl, reversed_trade_id, created_at, mode)
+       VALUES (@id, @agent_id, @strategy_id, @side, @pair, @amount, @price, @tx_hash, @status, @realized_pnl, @reversed_trade_id, @created_at, @mode)`
     )
     .run(row);
   return row;

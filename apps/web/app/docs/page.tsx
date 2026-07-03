@@ -16,7 +16,7 @@ const STEPS = [
   },
   {
     title: "Trade",
-    body: "The Manual mode on the Trade page places real paper trades against live market prices. Strategy, Intent, and Agent Auto are early previews — nothing executes yet.",
+    body: "Manual and Strategy modes on the Trade page place real trades against live market prices — Strategy runs a quant signal against your agent wallet on a schedule. Intent and Agent Auto are early previews — nothing executes yet.",
   },
 ];
 

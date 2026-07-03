@@ -1,0 +1,45 @@
+import { Keypair } from '@stellar/stellar-sdk';
+import jwt from 'jsonwebtoken';
+import { randomBytes } from 'crypto';
+import { deleteAuthChallenge, getAuthChallenge, setAuthChallenge, upsertUser } from './db.js';
+import { getAuthJwtSecret } from './config.js';
+
+const CHALLENGE_TTL_MS = 5 * 60_000;
+const SESSION_TTL = '7d';
+
+/** The exact string signed by the wallet — kept stable so verify() checks the same bytes. */
+function challengeMessage(publicKey: string, nonce: string): string {
+  return `Kairos login\naddress: ${publicKey}\nnonce: ${nonce}`;
+}
+
+export function createChallenge(publicKey: string): { nonce: string; message: string } {
+  const nonce = randomBytes(16).toString('hex');
+  setAuthChallenge(publicKey, nonce, Date.now() + CHALLENGE_TTL_MS);
+  return { nonce, message: challengeMessage(publicKey, nonce) };
+}
+
+export function verifyChallenge(publicKey: string, signature: string): { token: string } {
+  const challenge = getAuthChallenge(publicKey);
+  if (!challenge) throw new Error('No pending challenge for this address — request a new one');
+  if (challenge.expires_at < Date.now()) {
+    deleteAuthChallenge(publicKey);
+    throw new Error('Challenge expired — request a new one');
+  }
+
+  const message = challengeMessage(publicKey, challenge.nonce);
+  const keypair = Keypair.fromPublicKey(publicKey);
+  const verified = keypair.verify(Buffer.from(message, 'utf8'), Buffer.from(signature, 'base64'));
+  if (!verified) throw new Error('Signature does not match this address');
+
+  deleteAuthChallenge(publicKey);
+  upsertUser(publicKey);
+
+  const token = jwt.sign({ sub: publicKey }, getAuthJwtSecret(), { expiresIn: SESSION_TTL });
+  return { token };
+}
+
+export function verifySessionToken(token: string): { publicKey: string } {
+  const payload = jwt.verify(token, getAuthJwtSecret()) as jwt.JwtPayload;
+  if (typeof payload.sub !== 'string') throw new Error('Malformed session token');
+  return { publicKey: payload.sub };
+}

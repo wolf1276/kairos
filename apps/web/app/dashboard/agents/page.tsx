@@ -8,7 +8,7 @@ import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
 import {
-  listAgentWallets,
+  getAgentsSummary,
   attachAgentDelegation,
   setAgentStrategy,
   startAgentWallet,
@@ -52,7 +52,8 @@ export default function AgentsPage() {
     setLoadingAgents(true);
     setListError(null);
     try {
-      setAgents(await listAgentWallets(walletOwner));
+      const dashboards = await getAgentsSummary();
+      setAgents(dashboards.map((d) => d.agent));
     } catch (e) {
       setListError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -64,12 +65,13 @@ export default function AgentsPage() {
     refresh();
   }, [refresh]);
 
-  // Poll for status/tick updates on any agent that's actually running.
+  // Poll the agent list itself (not just individual cards) so agents started/stopped
+  // elsewhere still show up here without a manual refresh.
   useEffect(() => {
-    if (!agents.some((a) => a.status === "running")) return;
+    if (!walletOwner) return;
     const id = setInterval(refresh, 8000);
     return () => clearInterval(id);
-  }, [agents, refresh]);
+  }, [walletOwner, refresh]);
 
   return (
     <div className="space-y-5">
@@ -375,7 +377,9 @@ function AgentCard({
               <span className="font-mono text-xs text-text-secondary">
                 {agent.strategy.type === "dca"
                   ? `DCA — ${Number(agent.strategy.amountPerTick) / 1e7} XLM every ${agent.strategy.intervalSeconds / 60}m`
-                  : `Quant (${agent.strategy.strategyId}) every ${agent.strategy.intervalSeconds / 60}m`}
+                  : agent.strategy.type === "limit"
+                      ? `Order — ${agent.strategy.side} ${agent.strategy.quantity} ${agent.strategy.asset} @ ${agent.strategy.triggerComparator === "lte" ? "<=" : ">="} ${agent.strategy.triggerPrice}`
+                      : `Quant (${agent.strategy.strategyId}) every ${agent.strategy.intervalSeconds / 60}m`}
               </span>
             </div>
             <div className="flex items-center justify-between">

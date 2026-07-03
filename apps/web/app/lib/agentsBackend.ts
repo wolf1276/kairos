@@ -22,7 +22,20 @@ export interface QuantStrategyConfig {
   destination: string;
 }
 
-export type StrategyConfig = DcaStrategyConfig | QuantStrategyConfig;
+export interface LimitStrategyConfig {
+  type: "limit";
+  pair: string;
+  asset: "XLM" | "USDC";
+  side: "buy" | "sell";
+  quantity: string;
+  triggerComparator: "lte" | "gte";
+  triggerPrice: string;
+  intervalSeconds: number;
+  /** Always forced server-side to the delegation's delegator — see backend/src/agentService.ts. */
+  destination: string;
+}
+
+export type StrategyConfig = DcaStrategyConfig | QuantStrategyConfig | LimitStrategyConfig;
 
 export interface StrategyMeta {
   id: string;
@@ -52,6 +65,8 @@ export interface PnlSummary {
   openPosition: string;
 }
 
+export type AgentMode = "paper" | "live";
+
 export interface AgentSummary {
   id: string;
   owner: string;
@@ -65,6 +80,69 @@ export interface AgentSummary {
   lastResult: string | null;
   lastError: string | null;
   createdAt: number;
+  /** Set at creation, immutable — switch to live by creating a new agent, not by mutating a running one. */
+  mode: AgentMode;
+  capital: string | null;
+  riskLevel: string | null;
+  startedAt: number | null;
+}
+
+export interface PositionRow {
+  id: string;
+  agent_id: string;
+  pair: string;
+  side: "long";
+  open_amount: string;
+  avg_cost: string;
+  realized_pnl_total: string;
+  updated_at: number;
+}
+
+export type AuditEventType =
+  | "strategy_started"
+  | "strategy_stopped"
+  | "strategy_error"
+  | "signal_generated"
+  | "policy_violation"
+  | "delegation_invalid"
+  | "trade_executed"
+  | "position_updated";
+
+export interface AuditLogRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  event_type: AuditEventType;
+  mode: string | null;
+  strategy_id: string | null;
+  mpc_account: string | null;
+  pair: string | null;
+  market_snapshot_json: string | null;
+  indicators_json: string | null;
+  signal: string | null;
+  policy_validation_json: string | null;
+  delegation_validation_json: string | null;
+  execution_status: string | null;
+  tx_hash: string | null;
+  position_after_json: string | null;
+  pnl_after_json: string | null;
+  message: string | null;
+  created_at: number;
+}
+
+export interface AgentDashboard {
+  agent: AgentSummary;
+  position: PositionRow | null;
+  pnl: PnlSummary;
+  tradeCount: number;
+  winRate: number;
+  totalReturn: number | null;
+  runningTimeMs: number | null;
+  lastExecution: number | null;
+  delegationStatus: "active" | "disabled" | "none";
+  mode: AgentMode;
+  capital: string | null;
+  riskLevel: string | null;
 }
 
 function backendBase(): string {
@@ -75,20 +153,39 @@ function backendUrl(path: string): string {
   return `${backendBase()}${path}`;
 }
 
+// Set once per session by the wallet-signature login handshake (see lib/agentsAuth.ts) and
+// attached to every request below — the backend derives the caller's identity from this
+// token rather than trusting a client-supplied owner string.
+let authToken: string | null = null;
+
+export function setAuthToken(token: string | null): void {
+  authToken = token;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(backendUrl(path), {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+      ...init?.headers,
+    },
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `Agent backend request failed (${res.status})`);
+  if (!res.ok) {
+    if (res.status === 401) authToken = null;
+    throw new Error(data.error || `Agent backend request failed (${res.status})`);
+  }
   return data;
 }
 
-export async function createAgentWallet(owner: string): Promise<AgentSummary> {
+export async function createAgentWallet(
+  owner: string,
+  options?: { mode?: AgentMode; capital?: string; riskLevel?: string }
+): Promise<AgentSummary> {
   const data = await request<{ agent: AgentSummary }>("/api/agents", {
     method: "POST",
-    body: JSON.stringify({ owner }),
+    body: JSON.stringify({ owner, ...options }),
   });
   return data.agent;
 }
@@ -114,7 +211,10 @@ export async function attachAgentDelegation(id: string, delegation: unknown): Pr
 // Distributes over the union properly (unlike Omit<StrategyConfig, "destination">, which would
 // collapse the discriminated union into a single flattened object) — `destination` is always
 // forced server-side, so callers never need to supply it.
-export type StrategyInput = Omit<DcaStrategyConfig, "destination"> | Omit<QuantStrategyConfig, "destination">;
+export type StrategyInput =
+  | Omit<DcaStrategyConfig, "destination">
+  | Omit<QuantStrategyConfig, "destination">
+  | Omit<LimitStrategyConfig, "destination">;
 
 export async function setAgentStrategy(id: string, strategy: StrategyInput): Promise<AgentSummary> {
   const data = await request<{ agent: AgentSummary }>(`/api/agents/${id}/strategy`, {
@@ -159,4 +259,41 @@ export async function reverseTrade(id: string, tradeId: string): Promise<TradeRo
     method: "POST",
   });
   return data.trade;
+}
+
+export async function getAgentPositions(id: string): Promise<PositionRow[]> {
+  const data = await request<{ positions: PositionRow[] }>(`/api/agents/${id}/positions`);
+  return data.positions;
+}
+
+export async function getPositions(): Promise<(PositionRow & { agentId: string })[]> {
+  const data = await request<{ positions: (PositionRow & { agentId: string })[] }>("/api/positions");
+  return data.positions;
+}
+
+export async function getAgentAuditLog(id: string, opts?: { limit?: number; before?: number }): Promise<AuditLogRow[]> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.before) params.set("before", String(opts.before));
+  const qs = params.toString();
+  const data = await request<{ events: AuditLogRow[] }>(`/api/agents/${id}/audit${qs ? `?${qs}` : ""}`);
+  return data.events;
+}
+
+export async function getAuditLog(opts?: { limit?: number; before?: number }): Promise<AuditLogRow[]> {
+  const params = new URLSearchParams();
+  if (opts?.limit) params.set("limit", String(opts.limit));
+  if (opts?.before) params.set("before", String(opts.before));
+  const qs = params.toString();
+  const data = await request<{ events: AuditLogRow[] }>(`/api/audit${qs ? `?${qs}` : ""}`);
+  return data.events;
+}
+
+export async function getAgentDashboard(id: string): Promise<AgentDashboard> {
+  return request<AgentDashboard>(`/api/agents/${id}/dashboard`);
+}
+
+export async function getAgentsSummary(): Promise<AgentDashboard[]> {
+  const data = await request<{ agents: AgentDashboard[] }>("/api/agents/summary");
+  return data.agents;
 }

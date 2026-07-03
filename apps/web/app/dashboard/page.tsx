@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
+import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { useDelegations } from "@/app/dashboard/delegations/hooks/useDelegations";
 import { Badge } from "@/app/components/ui/Badge";
 import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
@@ -14,6 +15,8 @@ import {
   type TradeRow,
 } from "@/app/lib/agentsBackend";
 import { delegateXLM, withdrawFromSmartWallet } from "@/app/lib/stellar";
+import { usePrices } from "@/app/hooks/usePrices";
+import { usePortfolioSnapshots } from "@/app/hooks/usePortfolioSnapshots";
 
 function shortAddress(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
@@ -29,7 +32,36 @@ function statusTone(status: AgentSummary["status"]): "success" | "error" | "warn
 function strategyLabel(agent: AgentSummary): string {
   if (!agent.strategy) return "Unconfigured";
   if (agent.strategy.type === "dca") return "Strategy — DCA";
+  if (agent.strategy.type === "limit") return "Intent — Order";
   return `Intent — ${agent.strategy.strategyId}`;
+}
+
+function GrowthSparkline({ history }: { history: { t: number; v: number }[] }) {
+  if (history.length < 2) return null;
+  const values = history.map((s) => s.v);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const w = 100;
+  const h = 32;
+  const points = history.map((s, i) => {
+    const x = (i / (history.length - 1)) * w;
+    const y = h - ((s.v - min) / range) * h;
+    return `${x},${y}`;
+  });
+  const up = values[values.length - 1] >= values[0];
+  return (
+    <svg width={w} height={h} viewBox={`0 0 ${w} ${h}`} className="shrink-0" preserveAspectRatio="none">
+      <polyline
+        points={points.join(" ")}
+        fill="none"
+        stroke={up ? "var(--success)" : "var(--error)"}
+        strokeWidth={1.5}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 export default function DashboardOverview() {
@@ -41,21 +73,46 @@ export default function DashboardOverview() {
     checked,
     walletOwner,
     smartWalletAddress,
-    smartWalletBalance,
     deploying,
     deployError,
     deploySmartWallet,
-    checkBalance,
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
+  // Smart wallets are Soroban contracts (C-addresses) — their balances must be read via each
+  // token's SAC `balance` entrypoint, not classic Horizon (which only understands G-addresses).
+  // This is the single source of truth for capital-wallet balances, shared with the Trade page.
   const {
     xlmBalance,
     usdcBalance,
-    allBalances,
     loading: balancesLoading,
     refresh: refreshBalances,
-  } = useStellarBalances(smartWalletAddress, wallet?.networkPassphrase ?? null);
+  } = useSmartWalletBalances(smartWalletAddress, wallet?.networkPassphrase ?? null, wallet?.sorobanRpcUrl);
+  const allBalances = [
+    { code: "XLM", balance: xlmBalance.toFixed(7) },
+    { code: "USDC", balance: usdcBalance.toFixed(7) },
+  ].filter((b) => parseFloat(b.balance) > 0);
+
+  // The connected Freighter wallet (EOA) is a classic G-address — Horizon works fine here.
+  const {
+    xlmBalance: freighterXlmBalance,
+    loading: freighterBalanceLoading,
+    refresh: refreshFreighterBalance,
+  } = useStellarBalances(wallet?.address ?? null, wallet?.networkPassphrase ?? null);
+
+  const { priceMap, loading: pricesLoading, error: pricesError } = usePrices(["XLMUSDT", "USDCUSDT"]);
+  const xlmPrice = priceMap["XLMUSDT"];
+  const usdcPrice = priceMap["USDCUSDT"];
+  const pricesReady = xlmPrice != null && usdcPrice != null;
+  const portfolioUsd = pricesReady ? xlmBalance * xlmPrice + usdcBalance * usdcPrice : null;
+
+  const growth = usePortfolioSnapshots(walletOwner, smartWalletAddress ? portfolioUsd : null);
+
+  function priceForCode(code: string): number | undefined {
+    if (code === "XLM") return xlmPrice;
+    if (code === "USDC") return usdcPrice;
+    return undefined;
+  }
 
   const [transferMode, setTransferMode] = useState<"deposit" | "withdraw" | null>(null);
   const [transferAmount, setTransferAmount] = useState("");
@@ -83,7 +140,7 @@ export default function DashboardOverview() {
       } else {
         await withdrawFromSmartWallet(smartWalletAddress, transferAmount, networkPassphrase, wallet?.sorobanRpcUrl);
       }
-      await Promise.all([refreshBalances(), checkBalance(smartWalletAddress)]);
+      await Promise.all([refreshBalances(), refreshFreighterBalance()]);
       closeTransfer();
     } catch (e) {
       setTransferError(e instanceof Error ? e.message : String(e));
@@ -91,7 +148,8 @@ export default function DashboardOverview() {
       setTransferBusy(false);
     }
   };
-  const { stats: delegationStats, delegations, loading: delegationsLoading } = useDelegations(
+
+  const { stats: delegationStats, loading: delegationsLoading } = useDelegations(
     walletOwner,
     smartWalletAddress,
     networkPassphrase
@@ -168,30 +226,6 @@ export default function DashboardOverview() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => (smartWalletAddress ? setTransferMode("deposit") : undefined)}
-            disabled={!smartWalletAddress}
-            title={!smartWalletAddress ? "Deploy a capital wallet first" : undefined}
-            className={`rounded-xl px-4 py-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-              transferMode === "deposit"
-                ? "bg-accent text-white"
-                : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
-            }`}
-          >
-            Deposit
-          </button>
-          <button
-            onClick={() => (smartWalletAddress ? setTransferMode("withdraw") : undefined)}
-            disabled={!smartWalletAddress}
-            title={!smartWalletAddress ? "Deploy a capital wallet first" : undefined}
-            className={`rounded-xl px-4 py-2 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-              transferMode === "withdraw"
-                ? "bg-accent text-white"
-                : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
-            }`}
-          >
-            Withdraw
-          </button>
           <Link
             href="/dashboard/trade"
             className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2 text-xs text-text-secondary transition-colors hover:text-text-primary"
@@ -207,44 +241,91 @@ export default function DashboardOverview() {
         </div>
       </div>
 
-      {/* ── Capital (smart) wallet detection ── */}
-      {!smartWalletAddress ? (
+      {/* ── Your Wallet + Capital (smart) wallet detection ── */}
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <Card className="p-6">
           <div className="flex items-center justify-between gap-4">
             <div>
               <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                Capital Wallet
+                Your Wallet
               </p>
-              <p className="mt-1 text-xs text-text-muted">
-                No capital wallet found for this account. Deploy one to enable delegations and agent trading.
+              <p className="mt-1 font-mono text-xs text-text-secondary">
+                {wallet ? shortAddress(wallet.address) : "—"}
               </p>
-              {deployError && <p className="mt-1.5 text-xs text-error/90">{deployError}</p>}
             </div>
-            <button
-              onClick={deploySmartWallet}
-              disabled={deploying}
-              className="shrink-0 rounded-xl bg-accent/80 px-4 py-2.5 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {deploying ? "Deploying…" : "Create Capital Wallet"}
-            </button>
+            {freighterBalanceLoading ? (
+              <div className="h-7 w-20 animate-pulse rounded-md bg-bg-elevated/60" />
+            ) : (
+              <p className="font-display text-2xl font-bold tracking-tight text-text-primary tabular-nums">
+                {freighterXlmBalance.toFixed(2)} <span className="text-sm font-medium text-text-muted">XLM</span>
+              </p>
+            )}
           </div>
         </Card>
-      ) : (
-        <Card className="p-6">
-          <div className="flex items-center justify-between gap-4">
-            <div>
-              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-                Capital Wallet
-              </p>
-              <p className="mt-1 font-mono text-xs text-text-secondary">{shortAddress(smartWalletAddress)}</p>
+
+        {!smartWalletAddress ? (
+          <Card className="p-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
+                  Capital Wallet
+                </p>
+                <p className="mt-1 text-xs text-text-muted">
+                  No capital wallet found. Deploy one to enable delegations and agent trading.
+                </p>
+                {deployError && <p className="mt-1.5 text-xs text-error/90">{deployError}</p>}
+              </div>
+              <button
+                onClick={deploySmartWallet}
+                disabled={deploying}
+                className="shrink-0 rounded-xl bg-accent/80 px-4 py-2.5 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {deploying ? "Deploying…" : "Create Capital Wallet"}
+              </button>
             </div>
-            <p className="font-display text-2xl font-bold tracking-tight text-text-primary tabular-nums">
-              {smartWalletBalance != null ? parseFloat(smartWalletBalance).toFixed(2) : "—"}{" "}
-              <span className="text-sm font-medium text-text-muted">XLM</span>
-            </p>
-          </div>
-        </Card>
-      )}
+          </Card>
+        ) : (
+          <Card className="p-6">
+            <div className="flex items-center justify-between gap-4">
+              <div>
+                <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
+                  Capital Wallet
+                </p>
+                <p className="mt-1 font-mono text-xs text-text-secondary">{shortAddress(smartWalletAddress)}</p>
+              </div>
+              {balancesLoading ? (
+                <div className="h-7 w-20 animate-pulse rounded-md bg-bg-elevated/60" />
+              ) : (
+                <p className="font-display text-2xl font-bold tracking-tight text-text-primary tabular-nums">
+                  {xlmBalance.toFixed(2)} <span className="text-sm font-medium text-text-muted">XLM</span>
+                </p>
+              )}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setTransferMode(transferMode === "deposit" ? null : "deposit")}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                  transferMode === "deposit"
+                    ? "bg-accent text-white"
+                    : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                Deposit
+              </button>
+              <button
+                onClick={() => setTransferMode(transferMode === "withdraw" ? null : "withdraw")}
+                className={`rounded-lg px-3 py-2 text-xs font-semibold transition-colors ${
+                  transferMode === "withdraw"
+                    ? "bg-accent text-white"
+                    : "border border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
+                }`}
+              >
+                Withdraw
+              </button>
+            </div>
+          </Card>
+        )}
+      </div>
 
       {/* ── Deposit / Withdraw panel ── */}
       {transferMode && smartWalletAddress && (
@@ -270,13 +351,13 @@ export default function DashboardOverview() {
             <button
               onClick={() =>
                 setTransferAmount(
-                  (transferMode === "deposit" ? parseFloat(wallet?.balance ?? "0") : xlmBalance).toString()
+                  (transferMode === "deposit" ? freighterXlmBalance : xlmBalance).toString()
                 )
               }
               className="font-mono text-text-secondary hover:text-accent"
             >
               {transferMode === "deposit"
-                ? `${parseFloat(wallet?.balance ?? "0").toFixed(2)} XLM`
+                ? `${freighterBalanceLoading ? "…" : freighterXlmBalance.toFixed(2)} XLM`
                 : `${xlmBalance.toFixed(2)} XLM`}
             </button>
           </div>
@@ -305,17 +386,37 @@ export default function DashboardOverview() {
       {/* ── Portfolio Summary + Delegation ── */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <Card className="p-6 lg:col-span-2">
-          <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-            Portfolio Summary
-          </p>
-          {balancesLoading && !smartWalletAddress ? (
-            <div className="mt-2 h-10 w-40 animate-pulse rounded-md bg-bg-elevated/60" />
-          ) : (
-            <p className="mt-1.5 font-display text-4xl font-bold tracking-tight text-text-primary tabular-nums">
-              {(xlmBalance + usdcBalance).toFixed(2)}{" "}
-              <span className="text-lg font-medium text-text-muted">USD est.</span>
-            </p>
-          )}
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
+                Portfolio Summary
+              </p>
+              {!smartWalletAddress ? (
+                <p className="mt-1.5 text-sm text-text-muted">No capital wallet deployed yet.</p>
+              ) : balancesLoading || pricesLoading || !pricesReady ? (
+                <div className="mt-2 h-10 w-40 animate-pulse rounded-md bg-bg-elevated/60" />
+              ) : (
+                <p className="mt-1.5 font-display text-4xl font-bold tracking-tight text-text-primary tabular-nums">
+                  ${portfolioUsd!.toFixed(2)} <span className="text-lg font-medium text-text-muted">USD</span>
+                </p>
+              )}
+              {pricesError && !pricesReady && (
+                <p className="mt-1 text-[11px] text-error/80">Live prices unavailable — showing balances only.</p>
+              )}
+              {smartWalletAddress && growth.changePct != null && (
+                <p className={`mt-1 text-xs ${growth.changePct >= 0 ? "text-success" : "text-error"}`}>
+                  {growth.changePct >= 0 ? "+" : ""}
+                  {growth.changePct.toFixed(2)}%{" "}
+                  <span className="text-text-muted">
+                    {growth.windowLabel === "24h" ? "24h" : "since you started tracking"}
+                  </span>
+                </p>
+              )}
+            </div>
+            {smartWalletAddress && growth.history.length >= 2 && (
+              <GrowthSparkline history={growth.history} />
+            )}
+          </div>
           <div className="mt-4 grid grid-cols-3 gap-3">
             <div className="rounded-xl bg-white/[0.02] p-3">
               <p className="text-[10px] uppercase tracking-widest text-text-muted">XLM</p>
@@ -425,14 +526,27 @@ export default function DashboardOverview() {
             </CardBody>
           ) : (
             <div className="divide-y divide-white/5">
-              {allBalances.map((b, i) => (
-                <div key={i} className="flex items-center justify-between px-6 py-3">
-                  <span className="text-xs font-medium text-text-primary">{b.code}</span>
-                  <span className="font-mono text-xs text-text-secondary tabular-nums">
-                    {parseFloat(b.balance).toFixed(4)}
-                  </span>
-                </div>
-              ))}
+              {allBalances.map((b, i) => {
+                const p = priceForCode(b.code);
+                return (
+                  <div key={i} className="flex items-center justify-between px-6 py-3">
+                    <span className="text-xs font-medium text-text-primary">{b.code}</span>
+                    <div className="text-right">
+                      <span className="block font-mono text-xs text-text-secondary tabular-nums">
+                        {parseFloat(b.balance).toFixed(4)}
+                      </span>
+                      {p != null &&
+                        (pricesLoading ? (
+                          <span className="text-[10px] text-text-muted">loading…</span>
+                        ) : (
+                          <span className="text-[10px] text-text-muted tabular-nums">
+                            ${(parseFloat(b.balance) * p).toFixed(2)}
+                          </span>
+                        ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </Card>

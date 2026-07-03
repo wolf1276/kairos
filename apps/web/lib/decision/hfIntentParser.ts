@@ -1,7 +1,7 @@
 import { HfInference } from "@huggingface/inference";
 import { TradingProfile } from "./types";
 
-const MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1";
+const MODEL = "meta-llama/Llama-3.1-8B-Instruct";
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
 
@@ -18,10 +18,23 @@ Respond with valid JSON only (no markdown fences, no extra text). The JSON must 
   "dailyTradeLimit": number,
   "maxPositionSize": number,
   "stopLossPreference": number,
-  "takeProfitPreference": number
+  "takeProfitPreference": number,
+  "order": null | {
+    "side": "buy" | "sell",
+    "asset": "asset symbol, e.g. XLM",
+    "quantity": number,
+    "triggerComparator": null | "lte" | "gte",
+    "triggerPrice": null | number
+  }
 }
 
-Use reasonable defaults for missing fields:
+Set "order" only when the user named a SPECIFIC trade — a side, an asset, and a quantity (e.g.
+"buy 5 XLM", "sell 200 XLM when it hits $0.30"). Use "lte" when they want to buy/act once price
+drops to or below a level, "gte" once it rises to or above a level; use null for both trigger
+fields if no price condition was stated (meaning: execute right away). If the message is only a
+general risk/goal statement with no specific side+asset+quantity, set "order": null.
+
+Use reasonable defaults for missing non-order fields:
 - riskTolerance: MODERATE
 - investmentHorizon: MEDIUM
 - dailyTradeLimit: 1000
@@ -55,6 +68,20 @@ export function validateProfile(profile: Record<string, unknown>): TradingProfil
   const safeNumber = (v: unknown, def: number): number =>
     typeof v === "number" && !Number.isNaN(v) && v >= 0 ? v : def;
 
+  let order: TradingProfile["order"];
+  const rawOrder = profile.order;
+  if (rawOrder && typeof rawOrder === "object") {
+    const o = rawOrder as Record<string, unknown>;
+    const side = o.side === "buy" || o.side === "sell" ? o.side : undefined;
+    const asset = typeof o.asset === "string" && o.asset.trim() ? o.asset.trim().toUpperCase() : undefined;
+    const quantity = typeof o.quantity === "number" && o.quantity > 0 ? o.quantity : undefined;
+    if (side && asset && quantity) {
+      const triggerComparator = o.triggerComparator === "lte" || o.triggerComparator === "gte" ? o.triggerComparator : null;
+      const triggerPrice = typeof o.triggerPrice === "number" && o.triggerPrice > 0 ? o.triggerPrice : null;
+      order = { side, asset, quantity, triggerComparator: triggerPrice ? triggerComparator : null, triggerPrice };
+    }
+  }
+
   return {
     goal: typeof profile.goal === "string" ? profile.goal.slice(0, 100) : "Intent-based trading",
     riskTolerance,
@@ -64,6 +91,7 @@ export function validateProfile(profile: Record<string, unknown>): TradingProfil
     maxPositionSize: safeNumber(profile.maxPositionSize, 500),
     stopLossPreference: safeNumber(profile.stopLossPreference, 2.0),
     takeProfitPreference: safeNumber(profile.takeProfitPreference, 6.0),
+    ...(order ? { order } : {}),
   };
 }
 
@@ -121,6 +149,11 @@ export async function parseIntentWithHf(text: string): Promise<{
       }
 
       const profile = validateProfile(parsed);
+      // A specific order (e.g. "buy 5 XLM...") already names its own asset — don't demand a
+      // separate general allowedAssets list for what's clearly a one-shot trade.
+      if (profile.order && profile.allowedAssets.length === 0) {
+        profile.allowedAssets = [profile.order.asset];
+      }
 
       const missingFields: string[] = [];
       if (profile.allowedAssets.length === 0) missingFields.push("allowedAssets");

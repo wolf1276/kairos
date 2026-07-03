@@ -2,7 +2,13 @@ import cors from 'cors';
 import express from 'express';
 import { agentsRouter } from './routes/agents.js';
 import { strategiesRouter } from './routes/strategies.js';
+import { authRouter } from './routes/auth.js';
+import { positionsRouter, agentPositionsRouter } from './routes/positions.js';
+import { auditRouter, agentAuditRouter } from './routes/audit.js';
+import { statsRouter, agentStatsRouter } from './routes/stats.js';
+import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
+import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
 
 const app = express();
@@ -10,7 +16,14 @@ app.use(cors({ origin: getAllowedOrigin() }));
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
-app.use('/api/agents', agentsRouter);
+app.use('/api/auth', authRouter);
+app.use('/api/agents', requireAuth, agentStatsRouter);
+app.use('/api/agents', requireAuth, agentPositionsRouter);
+app.use('/api/agents', requireAuth, agentAuditRouter);
+app.use('/api/agents', requireAuth, agentsRouter);
+app.use('/api/positions', requireAuth, positionsRouter);
+app.use('/api/audit', requireAuth, auditRouter);
+app.use('/api', requireAuth, statsRouter);
 app.use('/api/strategies', strategiesRouter);
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -22,4 +35,5 @@ const port = getPort();
 app.listen(port, () => {
   console.log(`kairos-agent-backend listening on :${port}`);
   startScheduler();
+  getPriceFeedService().start();
 });

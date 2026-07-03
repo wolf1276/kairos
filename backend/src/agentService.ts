@@ -2,12 +2,13 @@ import { Keypair } from '@stellar/stellar-sdk';
 import type { Signer } from '@wolf1276/kairos-sdk';
 import { TurnkeySigner } from '@wolf1276/kairos-turnkey-signer';
 import { randomUUID } from 'crypto';
-import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow } from './db.js';
+import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow, type AgentMode } from './db.js';
 import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
 import { getTurnkeyClient, getTurnkeyOrganizationId } from './turnkey.js';
 import type { AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.js';
+import { logEvent } from './auditService.js';
 
 function toSummary(row: AgentRow): AgentSummary {
   const walletDelegation = row.delegator ? getWalletDelegation(row.delegator) : undefined;
@@ -23,6 +24,10 @@ function toSummary(row: AgentRow): AgentSummary {
     lastResult: row.last_result,
     lastError: row.last_error,
     createdAt: row.created_at,
+    mode: row.mode,
+    capital: row.capital,
+    riskLevel: row.risk_level,
+    startedAt: row.started_at,
   };
 }
 
@@ -41,7 +46,7 @@ export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation |
  * agent's key can never be used to sign for another, and each can be revoked independently
  * (via Turnkey, in addition to revoking its Kairos delegation on-chain).
  */
-export async function createAgent(owner: string): Promise<AgentSummary> {
+export async function createAgent(owner: string, options?: { mode?: AgentMode; capital?: string; riskLevel?: string }): Promise<AgentSummary> {
   const id = randomUUID();
   const signer = await TurnkeySigner.forNewAgent(getTurnkeyClient(), getTurnkeyOrganizationId(), id);
 
@@ -67,11 +72,15 @@ export async function createAgent(owner: string): Promise<AgentSummary> {
     last_result: null,
     last_error: null,
     created_at: Date.now(),
+    mode: options?.mode ?? 'live',
+    capital: options?.capital ?? null,
+    risk_level: options?.riskLevel ?? null,
+    started_at: null,
   };
   getDb()
     .prepare(
-      `INSERT INTO agents (id, owner, public_key, encrypted_secret, turnkey_private_key_id, status, created_at)
-       VALUES (@id, @owner, @public_key, @encrypted_secret, @turnkey_private_key_id, @status, @created_at)`
+      `INSERT INTO agents (id, owner, public_key, encrypted_secret, turnkey_private_key_id, status, created_at, mode, capital, risk_level, started_at)
+       VALUES (@id, @owner, @public_key, @encrypted_secret, @turnkey_private_key_id, @status, @created_at, @mode, @capital, @risk_level, @started_at)`
     )
     .run(row);
   return toSummary(row);
@@ -142,14 +151,23 @@ export function revokeWalletDelegation(delegator: string): void {
 export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
-  const delegation = getActiveDelegationForAgent(row);
-  if (!delegation) throw new Error('Attach a delegation before configuring a strategy');
 
-  // `destination` is always the delegation's own delegator (the smart wallet this agent
-  // spends from) — whatever a client sends is ignored, so an agent can never be configured
-  // to route funds to an arbitrary external address. Profits/spend always stay in the same
-  // wallet the delegation came from.
-  const finalStrategy: StrategyConfig = { ...strategy, destination: delegation.delegator };
+  // Only 'dca' actually spends via the Kairos delegation's execute() call — quant and limit
+  // trade from the agent's own funded Stellar account (see tick.ts), so they don't need one.
+  let destination: string;
+  if (strategy.type === 'dca') {
+    const delegation = getActiveDelegationForAgent(row);
+    if (!delegation) throw new Error('Attach a delegation before configuring a strategy');
+    // `destination` is always the delegation's own delegator (the smart wallet this agent
+    // spends from) — whatever a client sends is ignored, so an agent can never be configured
+    // to route funds to an arbitrary external address. Profits/spend always stay in the same
+    // wallet the delegation came from.
+    destination = delegation.delegator;
+  } else {
+    destination = row.public_key;
+  }
+
+  const finalStrategy: StrategyConfig = { ...strategy, destination };
 
   getDb().prepare('UPDATE agents SET strategy = ?, strategy_config_json = ? WHERE id = ?').run(finalStrategy.type, JSON.stringify(finalStrategy), id);
   return getAgent(id)!;
@@ -158,9 +176,21 @@ export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary 
 export function startAgent(id: string): AgentSummary {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
-  if (!getActiveDelegationForAgent(row)) throw new Error('Attach a delegation before starting this agent');
   if (!row.strategy_config_json) throw new Error('Configure a strategy before starting this agent');
-  getDb().prepare("UPDATE agents SET status = 'running', last_error = NULL WHERE id = ?").run(id);
+  const strategy = JSON.parse(row.strategy_config_json) as StrategyConfig;
+  if (strategy.type === 'dca' && !getActiveDelegationForAgent(row)) {
+    throw new Error('Attach a delegation before starting this agent');
+  }
+  getDb().prepare("UPDATE agents SET status = 'running', last_error = NULL, started_at = ? WHERE id = ?").run(Date.now(), id);
+  logEvent({
+    agentId: id,
+    owner: row.owner,
+    eventType: 'strategy_started',
+    mode: row.mode,
+    strategyId: strategy.type,
+    mpcAccount: row.public_key,
+    message: `Strategy started (${strategy.type})`,
+  });
   return getAgent(id)!;
 }
 
@@ -168,6 +198,14 @@ export function stopAgent(id: string): AgentSummary {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
   getDb().prepare("UPDATE agents SET status = 'stopped' WHERE id = ?").run(id);
+  logEvent({
+    agentId: id,
+    owner: row.owner,
+    eventType: 'strategy_stopped',
+    mode: row.mode,
+    mpcAccount: row.public_key,
+    message: 'Strategy stopped',
+  });
   return getAgent(id)!;
 }
 
@@ -179,6 +217,20 @@ export function recordTick(id: string, result: { ok: boolean; message: string })
   getDb()
     .prepare('UPDATE agents SET last_tick_at = ?, last_result = ?, last_error = ?, status = ? WHERE id = ?')
     .run(Date.now(), result.ok ? result.message : null, result.ok ? null : result.message, result.ok ? 'running' : 'error', id);
+
+  if (!result.ok) {
+    const row = getAgentRow(id);
+    if (row) {
+      logEvent({
+        agentId: id,
+        owner: row.owner,
+        eventType: 'strategy_error',
+        mode: row.mode,
+        mpcAccount: row.public_key,
+        message: result.message,
+      });
+    }
+  }
 }
 
 export function listRunningAgents(): AgentRow[] {

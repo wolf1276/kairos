@@ -31,6 +31,7 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 | **Paper Trading** | Zero-risk simulation sandbox to test trading profiles and strategies with live market data. Supports fees (0.1%) and slippage (0.05%). |
 | **Policy Engine** | Composable on-chain checks verifying period spend limits (spend-limit), asset whitelists (target-whitelist), and time restrictions. |
 | **Non-Custodial Architecture** | Absolute safety of funds — assets never leave your delegated control. All trade proposals are hard-gated by a deterministic policy engine before any execution. The LLM **never** determines position size or authorizes fund-moving actions. |
+| **Strategy Mode (Agent Backend)** | Persistent, backend-driven algorithmic trading terminal (`/backend`) — Turnkey MPC-backed agent wallets execute `dca`/`quant`/`limit` strategies in paper or real (testnet) mode, every trade/position/lifecycle event persisted to SQLite and gated behind Freighter wallet-signature auth. See [`backend/README.md`](./backend/README.md). |
 | **Soroban Native** | Purpose-built for Stellar's Soroban smart contract system, utilizing WASM execution and gas-efficient architectures. |
 
 ---
@@ -222,6 +223,35 @@ Initiates time-bound autonomous sessions where the Kairos Agent acts on your beh
 
 ---
 
+## Strategy Mode (Agent Backend)
+
+Separate from the frontend's `apps/web`-local Paper Trading Engine (fees/slippage sim, per-
+wallet `localStorage`), Strategy Mode is a persistent, server-authoritative trading terminal:
+
+```
+   Freighter sig-challenge ──▶ JWT session (all /api/agents,
+                                /positions, /audit calls)
+                                        │
+                                        ▼
+   Scheduler (poll, dca)   ──┐   ┌─────────────────┐
+                             ├──▶│  tick.ts /       │──▶ paperExecutor.ts (paper: no signing/submit)
+   PriceFeedService         ─┘   │  runAgentTick    │──▶ real Turnkey signer + Horizon (live)
+   (Horizon SSE trade       │    └────────┬────────┘
+    stream, quant/limit)    │             │
+                            │             ▼
+                            │    trades + positions + audit_log (SQLite)
+                            │             │
+                            │             ▼
+                            └──▶  /api/agents/:id/dashboard, /audit, /positions
+                                        │
+                                        ▼
+                              Frontend (poll/SSE, no local trading state)
+```
+
+Backend is the single source of truth — the frontend only renders what it fetches. Every
+agent, trade, position, and lifecycle/execution event is scoped to the authenticated wallet and
+survives refresh/login. Full design in [`backend/README.md`](./backend/README.md).
+
 ## Repository Structure
 
 ```
@@ -360,10 +390,13 @@ pnpm exec playwright test
      │    ├── Paper Trading Simulator
      │    ├── Hugging Face AI Intent Parsing & Advisory
      │    ├── Policy-Gated Decision Engine
-     │    └── Technical Indicator Calculations
+     │    ├── Technical Indicator Calculations
+     │    └── Strategy Mode: persistent agent backend, paper/live execution,
+     │        audit trail, Freighter wallet-signature auth, near-real-time
+     │        (Horizon SSE) trigger detection
      │
      └─► Future Phases
-          ├── Live Trading on Stellar mainnet
+          ├── Live Trading on Stellar mainnet (Strategy Mode currently testnet-only)
           ├── Multi-Agent AI orchestration
           ├── Advanced ML risk assessment models
           ├── Historical backtesting suite

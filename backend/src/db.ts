@@ -21,7 +21,10 @@ export interface TradeRow {
   realized_pnl: string | null;
   reversed_trade_id: string | null;
   created_at: number;
+  mode: 'paper' | 'live';
 }
+
+export type AgentMode = 'paper' | 'live';
 
 export interface AgentRow {
   id: string;
@@ -40,6 +43,67 @@ export interface AgentRow {
   last_tick_at: number | null;
   last_result: string | null;
   last_error: string | null;
+  created_at: number;
+  mode: AgentMode;
+  capital: string | null;
+  risk_level: string | null;
+  started_at: number | null;
+}
+
+export interface UserRow {
+  public_key: string;
+  created_at: number;
+  last_login_at: number | null;
+}
+
+export interface AuthChallengeRow {
+  public_key: string;
+  nonce: string;
+  expires_at: number;
+}
+
+export type PositionSide = 'long';
+
+export interface PositionRow {
+  id: string;
+  agent_id: string;
+  pair: string;
+  side: PositionSide;
+  open_amount: string;
+  avg_cost: string;
+  realized_pnl_total: string;
+  updated_at: number;
+}
+
+export type AuditEventType =
+  | 'strategy_started'
+  | 'strategy_stopped'
+  | 'strategy_error'
+  | 'signal_generated'
+  | 'policy_violation'
+  | 'delegation_invalid'
+  | 'trade_executed'
+  | 'position_updated';
+
+export interface AuditLogRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  event_type: AuditEventType;
+  mode: string | null;
+  strategy_id: string | null;
+  mpc_account: string | null;
+  pair: string | null;
+  market_snapshot_json: string | null;
+  indicators_json: string | null;
+  signal: string | null;
+  policy_validation_json: string | null;
+  delegation_validation_json: string | null;
+  execution_status: string | null;
+  tx_hash: string | null;
+  position_after_json: string | null;
+  pnl_after_json: string | null;
+  message: string | null;
   created_at: number;
 }
 
@@ -99,6 +163,51 @@ export function getDb(): Database.Database {
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_trades_agent ON trades(agent_id);
+    CREATE TABLE IF NOT EXISTS users (
+      public_key TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      last_login_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS auth_challenges (
+      public_key TEXT PRIMARY KEY,
+      nonce TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS positions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      pair TEXT NOT NULL,
+      side TEXT NOT NULL,
+      open_amount TEXT NOT NULL,
+      avg_cost TEXT NOT NULL,
+      realized_pnl_total TEXT NOT NULL DEFAULT '0',
+      updated_at INTEGER NOT NULL,
+      UNIQUE(agent_id, pair)
+    );
+    CREATE INDEX IF NOT EXISTS idx_positions_agent ON positions(agent_id);
+    CREATE TABLE IF NOT EXISTS audit_log (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      mode TEXT,
+      strategy_id TEXT,
+      mpc_account TEXT,
+      pair TEXT,
+      market_snapshot_json TEXT,
+      indicators_json TEXT,
+      signal TEXT,
+      policy_validation_json TEXT,
+      delegation_validation_json TEXT,
+      execution_status TEXT,
+      tx_hash TEXT,
+      position_after_json TEXT,
+      pnl_after_json TEXT,
+      message TEXT,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_log(owner, created_at);
   `);
 
   // Pre-existing databases (created before the shared wallet_delegations table) won't have
@@ -112,9 +221,55 @@ export function getDb(): Database.Database {
   if (!columns.some((c) => c.name === 'turnkey_private_key_id')) {
     db.exec('ALTER TABLE agents ADD COLUMN turnkey_private_key_id TEXT');
   }
+  if (!columns.some((c) => c.name === 'mode')) {
+    db.exec("ALTER TABLE agents ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
+  }
+  if (!columns.some((c) => c.name === 'capital')) {
+    db.exec('ALTER TABLE agents ADD COLUMN capital TEXT');
+  }
+  if (!columns.some((c) => c.name === 'risk_level')) {
+    db.exec('ALTER TABLE agents ADD COLUMN risk_level TEXT');
+  }
+  if (!columns.some((c) => c.name === 'started_at')) {
+    db.exec('ALTER TABLE agents ADD COLUMN started_at INTEGER');
+  }
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_delegator ON agents(delegator)');
 
+  const tradeColumns = db.prepare("PRAGMA table_info(trades)").all() as { name: string }[];
+  if (!tradeColumns.some((c) => c.name === 'mode')) {
+    db.exec("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
+  }
+
   return db;
+}
+
+export function upsertUser(publicKey: string): void {
+  const now = Date.now();
+  getDb()
+    .prepare(
+      `INSERT INTO users (public_key, created_at, last_login_at) VALUES (@publicKey, @now, @now)
+       ON CONFLICT(public_key) DO UPDATE SET last_login_at = @now`
+    )
+    .run({ publicKey, now });
+}
+
+export function setAuthChallenge(publicKey: string, nonce: string, expiresAt: number): void {
+  getDb()
+    .prepare(
+      `INSERT INTO auth_challenges (public_key, nonce, expires_at) VALUES (@publicKey, @nonce, @expiresAt)
+       ON CONFLICT(public_key) DO UPDATE SET nonce = @nonce, expires_at = @expiresAt`
+    )
+    .run({ publicKey, nonce, expiresAt });
+}
+
+export function getAuthChallenge(publicKey: string): AuthChallengeRow | undefined {
+  return getDb().prepare('SELECT * FROM auth_challenges WHERE public_key = ?').get(publicKey) as
+    | AuthChallengeRow
+    | undefined;
+}
+
+export function deleteAuthChallenge(publicKey: string): void {
+  getDb().prepare('DELETE FROM auth_challenges WHERE public_key = ?').run(publicKey);
 }
 
 export function getWalletDelegation(delegator: string): WalletDelegationRow | undefined {

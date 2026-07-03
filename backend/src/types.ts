@@ -31,7 +31,22 @@ export interface QuantStrategyConfig {
   destination: string;
 }
 
-export type StrategyConfig = DcaStrategyConfig | QuantStrategyConfig;
+export interface LimitStrategyConfig {
+  type: 'limit';
+  pair: string; // e.g. "XLM/USDC" — currently the only supported pair
+  asset: 'XLM' | 'USDC'; // the asset `quantity` is denominated in — the thing being bought/sold
+  side: 'buy' | 'sell'; // literal meaning: 'buy' = acquire `quantity` of `asset`, 'sell' = give up `quantity` of `asset`
+  quantity: string; // decimal string, in `asset`'s natural units (not stroops) — e.g. "5" for 5 XLM
+  // Fires the order once the latest XLM/USDC price crosses this trigger in the given direction:
+  // 'lte' fires when price <= triggerPrice (e.g. "buy when price drops to X"), 'gte' fires
+  // when price >= triggerPrice (e.g. "sell when price rises to X").
+  triggerComparator: 'lte' | 'gte';
+  triggerPrice: string; // decimal string, USDC per XLM
+  intervalSeconds: number; // how often to re-check the price
+  destination: string;
+}
+
+export type StrategyConfig = DcaStrategyConfig | QuantStrategyConfig | LimitStrategyConfig;
 
 export interface AgentSummary {
   id: string;
@@ -46,4 +61,8 @@ export interface AgentSummary {
   lastResult: string | null;
   lastError: string | null;
   createdAt: number;
+  mode: 'paper' | 'live';
+  capital: string | null;
+  riskLevel: string | null;
+  startedAt: number | null;
 }

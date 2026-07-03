@@ -16,6 +16,8 @@ import { getTrade, insertTrade, isTradeReversed, listTradesForAgent } from '../t
 import { computeAvgCostAndRealize, computePnlSummary } from '../pnl.js';
 import { getLatestPrice } from '../priceHistory.js';
 import { executeQuantTrade } from '../tick.js';
+import { executePaperQuantTrade } from '../paperExecutor.js';
+import { upsertPosition } from '../positionService.js';
 import type { QuantStrategyConfig } from '../types.js';
 
 export const agentsRouter = Router();
@@ -25,27 +27,50 @@ function handleError(res: import('express').Response, error: unknown) {
   res.status(400).json({ error: message });
 }
 
+/** Loads the agent and 403s if it isn't owned by the authenticated caller. Returns undefined (response already sent) on failure. */
+function loadOwnedAgent(req: import('express').Request, res: import('express').Response) {
+  const row = getAgentRow(req.params.id);
+  if (!row) {
+    res.status(404).json({ error: 'Agent not found' });
+    return undefined;
+  }
+  if (row.owner !== req.auth!.publicKey) {
+    res.status(403).json({ error: 'Not authorized for this agent' });
+    return undefined;
+  }
+  return row;
+}
+
+const createAgentSchema = z.object({
+  mode: z.enum(['paper', 'live']).optional(),
+  capital: z.string().optional(),
+  riskLevel: z.string().optional(),
+});
+
 agentsRouter.post('/', async (req, res) => {
-  const schema = z.object({ owner: z.string().min(1) });
-  const parsed = schema.safeParse(req.body);
+  const parsed = createAgentSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
-    res.json({ success: true, agent: await createAgent(parsed.data.owner) });
+    res.json({
+      success: true,
+      agent: await createAgent(req.auth!.publicKey, {
+        mode: parsed.data.mode,
+        capital: parsed.data.capital,
+        riskLevel: parsed.data.riskLevel,
+      }),
+    });
   } catch (error) {
     handleError(res, error);
   }
 });
 
 agentsRouter.get('/', (req, res) => {
-  const owner = req.query.owner;
-  if (typeof owner !== 'string' || !owner) return res.status(400).json({ error: 'owner query param is required' });
-  res.json({ success: true, agents: listAgents(owner) });
+  res.json({ success: true, agents: listAgents(req.auth!.publicKey) });
 });
 
 agentsRouter.get('/:id', (req, res) => {
-  const agent = getAgent(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
-  res.json({ success: true, agent });
+  if (!loadOwnedAgent(req, res)) return;
+  res.json({ success: true, agent: getAgent(req.params.id) });
 });
 
 const jsonSafeDelegationSchema = z.object({
@@ -59,6 +84,7 @@ const jsonSafeDelegationSchema = z.object({
 });
 
 agentsRouter.post('/:id/delegation', async (req, res) => {
+  if (!loadOwnedAgent(req, res)) return;
   const parsed = jsonSafeDelegationSchema.safeParse(req.body.delegation);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
@@ -87,13 +113,25 @@ const quantStrategySchema = z.object({
   destination: z.string().optional(),
 });
 
-const strategySchema = z.discriminatedUnion('type', [dcaStrategySchema, quantStrategySchema]);
+const limitStrategySchema = z.object({
+  type: z.literal('limit'),
+  pair: z.string(),
+  asset: z.enum(['XLM', 'USDC']),
+  side: z.enum(['buy', 'sell']),
+  quantity: z.string(),
+  triggerComparator: z.enum(['lte', 'gte']),
+  triggerPrice: z.string(),
+  intervalSeconds: z.number().int().positive(),
+  destination: z.string().optional(),
+});
+
+const strategySchema = z.discriminatedUnion('type', [dcaStrategySchema, quantStrategySchema, limitStrategySchema]);
 
 // Revokes the wallet's shared delegation, blocking every agent (any exec mode) tied to it —
 // call before/alongside the on-chain `revoke_by_wallet` to keep backend state in sync.
 agentsRouter.post('/:id/delegation/revoke', (req, res) => {
-  const row = getAgentRow(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Agent not found' });
+  const row = loadOwnedAgent(req, res);
+  if (!row) return;
   if (!row.delegator) return res.status(400).json({ error: 'Agent has no delegation attached' });
   try {
     revokeWalletDelegation(row.delegator);
@@ -104,6 +142,7 @@ agentsRouter.post('/:id/delegation/revoke', (req, res) => {
 });
 
 agentsRouter.post('/:id/strategy', (req, res) => {
+  if (!loadOwnedAgent(req, res)) return;
   const parsed = strategySchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
@@ -114,6 +153,7 @@ agentsRouter.post('/:id/strategy', (req, res) => {
 });
 
 agentsRouter.post('/:id/start', (req, res) => {
+  if (!loadOwnedAgent(req, res)) return;
   try {
     res.json({ success: true, agent: startAgent(req.params.id) });
   } catch (error) {
@@ -122,6 +162,7 @@ agentsRouter.post('/:id/start', (req, res) => {
 });
 
 agentsRouter.post('/:id/stop', (req, res) => {
+  if (!loadOwnedAgent(req, res)) return;
   try {
     res.json({ success: true, agent: stopAgent(req.params.id) });
   } catch (error) {
@@ -130,8 +171,8 @@ agentsRouter.post('/:id/stop', (req, res) => {
 });
 
 agentsRouter.get('/:id/trades', async (req, res) => {
-  const row = getAgentRow(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Agent not found' });
+  const row = loadOwnedAgent(req, res);
+  if (!row) return;
   try {
     const trades = listTradesForAgent(req.params.id);
     const strategy = row.strategy_config_json ? (JSON.parse(row.strategy_config_json) as QuantStrategyConfig) : null;
@@ -145,8 +186,8 @@ agentsRouter.get('/:id/trades', async (req, res) => {
 });
 
 agentsRouter.post('/:id/trades/:tradeId/reverse', async (req, res) => {
-  const row = getAgentRow(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Agent not found' });
+  const row = loadOwnedAgent(req, res);
+  if (!row) return;
   const original = getTrade(req.params.tradeId);
   if (!original || original.agent_id !== req.params.id) return res.status(404).json({ error: 'Trade not found' });
   if (original.reversed_trade_id) return res.status(400).json({ error: 'Cannot reverse a trade that is itself a reversal' });
@@ -154,14 +195,16 @@ agentsRouter.post('/:id/trades/:tradeId/reverse', async (req, res) => {
 
   const strategy = row.strategy_config_json ? (JSON.parse(row.strategy_config_json) as QuantStrategyConfig) : null;
   if (!strategy || strategy.type !== 'quant') return res.status(400).json({ error: 'Agent has no quant strategy configured' });
+  if (original.mode !== row.mode) {
+    return res.status(400).json({ error: 'Cannot reverse a trade across a paper/live mode change' });
+  }
 
   try {
     const oppositeSide: 'buy' | 'sell' = original.side === 'buy' ? 'sell' : 'buy';
-    const txHash = await executeQuantTrade(
-      row,
-      { ...strategy, amountPerTrade: original.amount },
-      oppositeSide
-    );
+    const txHash =
+      row.mode === 'paper'
+        ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: original.amount }, oppositeSide)
+        : await executeQuantTrade(row, { ...strategy, amountPerTrade: original.amount }, oppositeSide);
     const price = (await getLatestPrice(original.pair)) ?? parseFloat(original.price);
     const { realizedPnl } = computeAvgCostAndRealize(req.params.id, original.pair, oppositeSide, original.amount, String(price));
     const reversal = insertTrade({
@@ -175,7 +218,9 @@ agentsRouter.post('/:id/trades/:tradeId/reverse', async (req, res) => {
       status: 'success',
       realizedPnl,
       reversedTradeId: original.id,
+      mode: row.mode,
     });
+    upsertPosition(req.params.id, original.pair);
     res.json({ success: true, trade: reversal });
   } catch (error) {
     handleError(res, error);
@@ -183,9 +228,9 @@ agentsRouter.post('/:id/trades/:tradeId/reverse', async (req, res) => {
 });
 
 agentsRouter.delete('/:id', (req, res) => {
-  const agent = getAgent(req.params.id);
-  if (!agent) return res.status(404).json({ error: 'Agent not found' });
-  if (agent.status === 'running') {
+  const row = loadOwnedAgent(req, res);
+  if (!row) return;
+  if (row.status === 'running') {
     return res.status(400).json({ error: 'Stop the agent before deleting it' });
   }
   deleteAgent(req.params.id);

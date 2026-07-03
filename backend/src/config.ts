@@ -44,3 +44,7 @@ export function getAllowedOrigin(): string {
 export function getSchedulerIntervalMs(): number {
   return Number(process.env.SCHEDULER_INTERVAL_MS) || 30_000;
 }
+
+export function getAuthJwtSecret(): string {
+  return readRequiredEnv('AUTH_JWT_SECRET');
+}

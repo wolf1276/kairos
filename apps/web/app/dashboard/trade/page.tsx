@@ -3,13 +3,13 @@
 import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { Asset } from "@stellar/stellar-sdk";
 import { AdvancedChart } from "@/app/components/charts/AdvancedChart";
-import { PriceViewPanel } from "@/app/components/panels/PriceViewPanel";
 import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { usePrices } from "@/app/hooks/usePrices";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
+import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import {
   formatNumber,
 } from "@/app/lib/format";
@@ -53,7 +53,7 @@ const MODES: { value: TradeMode; label: string }[] = [
 
 function TradeInner() {
   const [chartSymbol, setChartSymbol] = useState("XLMUSDT");
-  const { tickers, wsStatus } = usePrices(TICKER_SYMBOLS, 10000);
+  const { tickers } = usePrices(TICKER_SYMBOLS, 10000);
   const ticker = tickers[chartSymbol];
 
   const { wallet, connected, connecting, connect, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
@@ -62,10 +62,14 @@ function TradeInner() {
     wallet?.networkPassphrase ?? null,
   );
   // The delegation-based modes (Strategy/Intent/Agent) spend from the smart wallet, not the
-  // connected EOA — a separate balance poll is needed since that's a different account.
-  const { xlmBalance: swXlmBalance, loading: swBalanceLoading, refresh: refreshSwBalance } = useStellarBalances(
+  // connected EOA — a separate balance poll is needed since that's a different account. Smart
+  // wallets are Soroban contracts (C-addresses), so this reads via each token's SAC `balance`
+  // entrypoint rather than classic Horizon (which only understands G-addresses and can't read
+  // contract balances) — same hook the Overview page uses, kept as one source of truth.
+  const { xlmBalance: swXlmBalance, loading: swBalanceLoading, refresh: refreshSwBalance } = useSmartWalletBalances(
     smartWalletAddress,
     wallet?.networkPassphrase ?? null,
+    wallet?.sorobanRpcUrl,
   );
 
   const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
@@ -194,14 +198,23 @@ function TradeInner() {
   const walletOwner = wallet?.address ?? null;
   const [delegating, setDelegating] = useState<string | null>(null);
 
-  // Converts a USD amount into native-XLM stroops using the live ticker price, for building
-  // spend-limit caveats from the USD-denominated inputs these modes collect (agentCapital,
-  // parsed dailyTradeLimit). Falls back to a conservative $0.10/XLM if no live price yet,
-  // rather than silently creating an unlimited-spend delegation.
-  const usdToXlmStroops = useCallback((usd: number): bigint => {
-    const price = ticker?.price && ticker.price > 0 ? ticker.price : 0.1;
+  // Converts a USD amount into stroops of the given token, for building spend-limit caveats
+  // from USD-denominated inputs. Uses the live price feed for the conversion; falls back to
+  // a conservative price (higher = fewer stroops = tighter cap) if no live price yet.
+  const usdToTokenStroops = useCallback((usd: number, token: "XLM" | "USDC"): bigint => {
+    if (token === "USDC") {
+      const price = tickers["USDCUSDT"]?.price && tickers["USDCUSDT"].price > 0 ? tickers["USDCUSDT"].price : 1;
+      return BigInt(Math.max(0, Math.round((usd / price) * 10_000_000)));
+    }
+    const price = ticker?.price && ticker.price > 0 ? ticker.price : 0.5;
     return BigInt(Math.max(0, Math.round((usd / price) * 10_000_000)));
-  }, [ticker]);
+  }, [ticker, tickers]);
+
+  // The token the agent will spend on this limit order, based on the Stellar DEX pair (XLM/USDC):
+  // buying XLM or selling USDC → agent spends USDC; selling XLM or buying USDC → agent spends XLM.
+  const delegationTokenForOrder = useCallback((side: "buy" | "sell", asset: string): "XLM" | "USDC" => {
+    return side === "sell" ? (asset as "XLM" | "USDC") : (asset === "XLM" ? "USDC" : "XLM");
+  }, []);
 
   const createTradeDelegation = useCallback(async (
     delegate: string, policies: Record<string, unknown>[]
@@ -268,6 +281,8 @@ function TradeInner() {
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyMeta | null>(null);
   const [quantAmount, setQuantAmount] = useState("10");
   const [quantIntervalMinutes, setQuantIntervalMinutes] = useState("15");
+  // Paper by default — live requires explicit opt-in since it submits real Stellar transactions.
+  const [tradeMode, setTradeMode] = useState<"paper" | "live">("paper");
   const [launching, setLaunching] = useState(false);
   const [launchError, setLaunchError] = useState<string | null>(null);
   const [liveAgentId, setLiveAgentId] = useState<string | null>(null);
@@ -314,7 +329,7 @@ function TradeInner() {
     setLaunching(true);
     setLaunchError(null);
     try {
-      const agent = await createAgentWallet(walletOwner);
+      const agent = await createAgentWallet(walletOwner, { mode: tradeMode });
 
       // Cap the delegation well above amountPerTrade so the agent can run for a while
       // before needing a fresh delegation — 100 ticks' worth of spend per day.
@@ -346,7 +361,7 @@ function TradeInner() {
       setLiveAgentId(agent.id);
       setSelectedStrategy(null);
       setShowStrategyPicker(false);
-      await refreshActiveAgents();
+      await Promise.all([refreshActiveAgents(), refreshSwBalance()]);
       flash("ok", `${selectedStrategy.name} launched — trading live`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -401,28 +416,129 @@ function TradeInner() {
     }
   };
 
+  const [confirmingIntent, setConfirmingIntent] = useState(false);
+
+  // A specific order (e.g. "buy 5 XLM when price drops to 0.2005") needs to survive the tab
+  // being closed and fire exactly when its price condition is met — so it becomes a standing
+  // backend 'limit' strategy on a dedicated agent wallet, the same infra Strategy mode uses,
+  // rather than something this page polls client-side.
+  const handleConfirmOrderIntent = async (order: { side: "buy" | "sell"; asset: string; quantity: number; triggerComparator: "lte" | "gte" | null; triggerPrice: number | null }) => {
+    if (!walletOwner) { flash("err", "Connect your wallet first"); return; }
+    if (!smartWalletAddress) { flash("err", "Deploy a smart wallet first"); return; }
+    if (order.asset !== "XLM" && order.asset !== "USDC") { flash("err", `Only XLM and USDC orders are supported right now (got ${order.asset})`); return; }
+
+    setConfirmingIntent(true);
+    try {
+      const agent = await createAgentWallet(walletOwner, { mode: tradeMode });
+
+      // Cap the delegation well above the order size so it can also cover the recurring
+      // price-check ticks (a 'limit' strategy stops itself after the one fill).
+      const spendToken = delegationTokenForOrder(order.side, order.asset);
+      const tokenContractId = spendToken === "USDC"
+        ? new Asset("USDC", TESTNET_USDC_ISSUER).contractId(networkPassphrase)
+        : Asset.native().contractId(networkPassphrase);
+      const usdValue = Math.max(order.quantity * (order.triggerPrice ?? ticker?.price ?? 0.1) * 3, 100);
+      const result = await createTradeDelegation(agent.publicKey, [
+        {
+          type: "spend-limit",
+          token: tokenContractId,
+          spendLimit: usdToTokenStroops(usdValue, spendToken).toString(),
+          period: "86400",
+        },
+        {
+          type: "time-restriction",
+          start: Math.floor(Date.now() / 1000),
+          expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
+        },
+      ]);
+      if (!result) throw new Error("Failed to create delegation");
+
+      await attachAgentDelegation(agent.id, result.delegation);
+
+      const currentPrice = ticker?.price ?? 0.1;
+      // No price condition stated ("buy 5 XLM" with no trigger) — fire on the very next tick by
+      // setting the trigger to whatever the price already is, in the direction that's immediately true.
+      const triggerComparator = order.triggerComparator ?? (order.side === "buy" ? "gte" : "lte");
+      const triggerPrice = order.triggerPrice ?? currentPrice;
+
+      await setAgentStrategy(agent.id, {
+        type: "limit",
+        pair: "XLM/USDC",
+        asset: order.asset,
+        side: order.side,
+        quantity: String(order.quantity),
+        triggerComparator,
+        triggerPrice: String(triggerPrice),
+        intervalSeconds: 60,
+      });
+      await startAgentWallet(agent.id);
+
+      setLiveAgentId(agent.id);
+      setIntentResult({ hash: agent.id });
+      await refreshSwBalance();
+      flash("ok", order.triggerPrice ? `Order placed — will fire when price ${triggerComparator === "lte" ? "<=" : ">="} ${triggerPrice}` : "Order placed — executing now");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      flash("err", msg);
+    } finally {
+      setConfirmingIntent(false);
+    }
+  };
+
+  // Turns the HF-parsed profile into an actual trade: a spend-limit delegation still gets
+  // created (so a future automated mode can enforce the same caps), but the concrete action
+  // the user asked for — putting capital to work per their stated intent — is an immediate
+  // Freighter-signed swap sized off the profile, not just a dormant delegation.
   const handleConfirmIntent = async () => {
-    if (!walletOwner || !smartWalletAddress) { flash("err", "Connect your wallet first"); return; }
     if (!intentProfile) { flash("err", "Parse an intent first"); return; }
+    const order = intentProfile.order as { side: "buy" | "sell"; asset: string; quantity: number; triggerComparator: "lte" | "gte" | null; triggerPrice: number | null } | undefined;
+    if (order) { await handleConfirmOrderIntent(order); return; }
+    if (!wallet) { flash("err", "Connect your wallet first"); return; }
 
     const dailyLimitUsd = Number(intentProfile.dailyTradeLimit ?? intentProfile.dailyLimit ?? 0) || 0;
-    const result = await createTradeDelegation(walletOwner, [
-      {
-        type: "spend-limit",
-        token: Asset.native().contractId(networkPassphrase),
-        spendLimit: usdToXlmStroops(dailyLimitUsd || 100).toString(),
-        period: "86400",
-      },
-      {
-        type: "time-restriction",
-        start: Math.floor(Date.now() / 1000),
-        expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
-      },
-    ]);
+    const maxPositionUsd = Number(intentProfile.maxPositionSize ?? 0) || 0;
+    const allowedAssets = Array.isArray(intentProfile.allowedAssets) ? (intentProfile.allowedAssets as string[]) : [];
 
-    if (result) {
-      setIntentResult({ hash: result.hash });
-      flash("ok", `Intent delegation created: ${result.hash.slice(0, 8)}…`);
+    // Only XLM/USDC has live testnet DEX liquidity in this app — if the intent explicitly
+    // wants to hold XLM (and not USDC), buy XLM with USDC; otherwise buy USDC with XLM.
+    const buyXlm = allowedAssets.includes("XLM") && !allowedAssets.includes("USDC");
+    const tradeSendAsset: SwapAsset = buyXlm ? { code: "USDC", issuer: TESTNET_USDC_ISSUER } : { code: "XLM" };
+    const tradeDestAsset: SwapAsset = buyXlm ? { code: "XLM" } : { code: "USDC", issuer: TESTNET_USDC_ISSUER };
+
+    const usdPositionCap = Math.min(maxPositionUsd || dailyLimitUsd || 100, dailyLimitUsd || Infinity);
+    const price = ticker?.price && ticker.price > 0 ? ticker.price : 0.1;
+    const availableBalance = getBalance(tradeSendAsset);
+    const desiredSendAmount = buyXlm ? usdPositionCap : usdPositionCap / price;
+    const sendAmountNum = Math.min(desiredSendAmount, availableBalance);
+
+    if (sendAmountNum <= 0) {
+      flash("err", `Insufficient ${tradeSendAsset.code} balance to size this trade`);
+      return;
+    }
+
+    setConfirmingIntent(true);
+    try {
+      const quote = await fetchOrderBookQuote(tradeSendAsset, tradeDestAsset, networkPassphrase);
+      if (!quote.hasLiquidity || !quote.price) throw new Error(`No liquidity for ${tradeSendAsset.code} → ${tradeDestAsset.code}`);
+
+      const destMin = (sendAmountNum * quote.price * (1 - SLIPPAGE)).toFixed(7);
+      const swapResult = await executeSwap({
+        sourceAddress: wallet.address,
+        sendAsset: tradeSendAsset,
+        sendAmount: sendAmountNum.toFixed(7),
+        destAsset: tradeDestAsset,
+        destMin,
+        networkPassphrase: wallet.networkPassphrase,
+      });
+
+      setIntentResult({ hash: swapResult.hash });
+      flash("ok", `Traded ${formatNumber(sendAmountNum)} ${tradeSendAsset.code} → ${tradeDestAsset.code} per your intent — tx ${swapResult.hash.slice(0, 8)}…`);
+      await refreshBalances();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      flash("err", msg);
+    } finally {
+      setConfirmingIntent(false);
     }
   };
 
@@ -492,7 +608,7 @@ function TradeInner() {
       {
         type: "spend-limit",
         token: Asset.native().contractId(networkPassphrase),
-        spendLimit: usdToXlmStroops(capitalUsd).toString(),
+        spendLimit: usdToTokenStroops(capitalUsd, "XLM").toString(),
         period: "86400",
       },
       {
@@ -581,7 +697,7 @@ function TradeInner() {
 
       {/* Main layout — bento grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Chart + Price panel column */}
+        {/* Chart column */}
         <div className="space-y-6 lg:col-span-2">
           <AdvancedChart
             symbol={chartSymbol}
@@ -624,9 +740,14 @@ function TradeInner() {
                 </div>
               )}
             </div>
-          ) : (
-            <PriceViewPanel symbol={chartSymbol} ticker={ticker} wsStatus={wsStatus} />
-          )}
+          ) : mode === "intent" && liveAgentId && intentProfile?.order ? (
+            <div className="space-y-3">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                Live order — agent activity
+              </p>
+              <LiveTradeCard agentId={liveAgentId} strategies={strategies} />
+            </div>
+          ) : null}
         </div>
 
         {/* Sidebar — form + wallet */}
@@ -810,7 +931,7 @@ function TradeInner() {
               {mode === "strategy" && (
                 <>
                   <span className="mb-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-400/85">
-                    Live · {strategies.length || 25}+ quant strategies
+                    Live · {loadingStrategies ? "…" : strategies.length} quant strategies
                   </span>
 
                   {!connected ? (
@@ -892,6 +1013,34 @@ function TradeInner() {
                       </div>
                       <p className="text-xs text-text-muted">{selectedStrategy.description}</p>
 
+                      <div>
+                        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Mode</label>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setTradeMode("paper")}
+                            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                              tradeMode === "paper"
+                                ? "border-accent/40 bg-accent/10 text-text-primary"
+                                : "border-white/5 bg-white/[0.02] text-text-muted hover:text-text-secondary"
+                            }`}
+                          >
+                            Paper (simulated)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setTradeMode("live")}
+                            className={`flex-1 rounded-lg border px-2.5 py-1.5 text-xs transition-colors ${
+                              tradeMode === "live"
+                                ? "border-error/40 bg-error/10 text-text-primary"
+                                : "border-white/5 bg-white/[0.02] text-text-muted hover:text-text-secondary"
+                            }`}
+                          >
+                            Live (real funds)
+                          </button>
+                        </div>
+                      </div>
+
                       {launchError && <p className="text-xs text-error/90">{launchError}</p>}
 
                       <div className="grid grid-cols-2 gap-3">
@@ -961,17 +1110,21 @@ function TradeInner() {
                   <div className="space-y-4">
                     <div className="flex items-center gap-2 rounded-xl border border-success/15 bg-success/6 px-4 py-3">
                       <span className="text-sm text-success">✓</span>
-                      <p className="text-xs font-medium text-success/85">Delegation created</p>
+                      <p className="text-xs font-medium text-success/85">
+                        {intentProfile?.order ? "Order placed — live on the backend scheduler" : "Trade executed"}
+                      </p>
                     </div>
                     <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5">
-                      {intentProfile && Object.entries(intentProfile).map(([key, val]) => (
+                      {intentProfile && Object.entries(intentProfile).filter(([key]) => key !== "order" && key !== "confidence").map(([key, val]) => (
                         <div key={key} className="flex items-center justify-between py-0.5">
                           <span className="font-mono text-[10px] text-text-muted">{PROFILE_LABELS[key] ?? key}</span>
                           <span className="font-mono text-xs text-text-secondary">{Array.isArray(val) ? val.join(", ") : String(val)}</span>
                         </div>
                       ))}
                       <div className="mt-2 flex items-center justify-between border-t border-white/5 pt-2">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Delegation</span>
+                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                          {intentProfile?.order ? "Agent" : "Tx"}
+                        </span>
                         <div className="flex items-center gap-2">
                           <span className="font-mono text-xs text-text-secondary">{intentResult.hash.slice(0, 8)}…</span>
                           <button onClick={() => copyToClipboard(intentResult.hash)} className="text-[10px] text-accent/70 hover:text-accent">Copy</button>
@@ -979,8 +1132,10 @@ function TradeInner() {
                       </div>
                     </div>
                     <div className="flex gap-2">
-                      <a href="/dashboard/delegations" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
-                      <button onClick={() => { setIntentResult(null); setIntentProfile(null); setIntentText(""); }} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Create Another</button>
+                      <a href={intentProfile?.order ? "/dashboard/agents" : "/dashboard/delegations"} className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">
+                        {intentProfile?.order ? "View Agent →" : "View Delegations →"}
+                      </a>
+                      <button onClick={() => { setIntentResult(null); setIntentProfile(null); setIntentText(""); setLiveAgentId(null); }} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Create Another</button>
                     </div>
                   </div>
                 ) : (
@@ -1009,8 +1164,31 @@ function TradeInner() {
                     ) : (
                       <div className="space-y-3">
                         <div className="rounded-xl border border-accent/10 bg-accent-muted/50 p-3.5">
-                          <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-accent/70">Trading Profile</p>
-                          {Object.entries(intentProfile).map(([key, val]) => (
+                          <p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-accent/70">
+                            {intentProfile.order ? "Order" : "Trading Profile"}
+                          </p>
+                          {intentProfile.order != null && (
+                            <>
+                              {(() => {
+                                const order = intentProfile.order as { side: string; asset: string; quantity: number; triggerComparator: "lte" | "gte" | null; triggerPrice: number | null };
+                                return (
+                                  <>
+                                    <div className="flex items-center justify-between py-0.5">
+                                      <span className="font-mono text-[10px] text-text-muted">Order</span>
+                                      <span className="font-mono text-xs text-text-secondary">{order.side.toUpperCase()} {order.quantity} {order.asset}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between py-0.5">
+                                      <span className="font-mono text-[10px] text-text-muted">Trigger</span>
+                                      <span className="font-mono text-xs text-text-secondary">
+                                        {order.triggerPrice ? `Price ${order.triggerComparator === "lte" ? "<=" : ">="} ${order.triggerPrice}` : "Immediate"}
+                                      </span>
+                                    </div>
+                                  </>
+                                );
+                              })()}
+                            </>
+                          )}
+                          {Object.entries(intentProfile).filter(([key]) => key !== "order" && key !== "confidence").map(([key, val]) => (
                             <div key={key} className="flex items-center justify-between py-0.5">
                               <span className="font-mono text-[10px] text-text-muted">{PROFILE_LABELS[key] ?? key}</span>
                               <span className="font-mono text-xs text-text-secondary">{Array.isArray(val) ? val.join(", ") : String(val)}</span>
@@ -1027,10 +1205,10 @@ function TradeInner() {
                           </button>
                           <button
                             onClick={handleConfirmIntent}
-                            disabled={delegating !== null}
+                            disabled={confirmingIntent || delegating !== null}
                             className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent hover:shadow-[0_0_25px_-8px_rgba(120,81,233,0.2)] disabled:cursor-not-allowed disabled:opacity-40"
                           >
-                            {delegating ? `Delegation ${delegating}…` : "Confirm & Deploy"}
+                            {confirmingIntent ? "Trading…" : delegating ? `Delegation ${delegating}…` : "Confirm & Trade"}
                           </button>
                         </div>
                       </div>
@@ -1175,6 +1353,14 @@ function TradeInner() {
                     <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Wallet</span>
                     <span className="font-mono text-xs text-text-secondary">
                       {wallet?.address.slice(0, 6)}...{wallet?.address.slice(-4)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                      Wallet Balance
+                    </span>
+                    <span className="font-mono text-xs text-text-secondary">
+                      {balancesLoading ? "Loading…" : `${formatNumber(xlmBalance)} XLM`}
                     </span>
                   </div>
                   <div className="flex items-center justify-between">

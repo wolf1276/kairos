@@ -7,11 +7,15 @@ import { Spinner } from "@/app/components/ui/Spinner";
 import {
   getAgentWallet,
   getAgentTrades,
+  getAgentDashboard,
+  getAgentAuditLog,
   reverseTrade,
   type AgentSummary,
   type TradeRow,
   type PnlSummary,
   type StrategyMeta,
+  type AgentDashboard,
+  type AuditLogRow,
 } from "@/app/lib/agentsBackend";
 
 function shortHash(hash: string) {
@@ -35,15 +39,24 @@ export function LiveTradeCard({
   const [agent, setAgent] = useState<AgentSummary | null>(null);
   const [trades, setTrades] = useState<TradeRow[]>([]);
   const [pnl, setPnl] = useState<PnlSummary | null>(null);
+  const [dashboard, setDashboard] = useState<AgentDashboard | null>(null);
+  const [activity, setActivity] = useState<AuditLogRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [reversingId, setReversingId] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     try {
-      const [a, t] = await Promise.all([getAgentWallet(agentId), getAgentTrades(agentId)]);
+      const [a, t, d, events] = await Promise.all([
+        getAgentWallet(agentId),
+        getAgentTrades(agentId),
+        getAgentDashboard(agentId).catch(() => null),
+        getAgentAuditLog(agentId, { limit: 20 }).catch(() => []),
+      ]);
       setAgent(a);
       setTrades(t.trades);
       setPnl(t.pnl);
+      setDashboard(d);
+      setActivity(events);
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -96,9 +109,12 @@ export function LiveTradeCard({
       <CardHeader
         title={strategyName}
         action={
-          <Badge tone={agent.status === "running" ? "success" : agent.status === "error" ? "error" : "warning"} dot>
-            {agent.status}
-          </Badge>
+          <div className="flex items-center gap-1.5">
+            <Badge tone={agent.mode === "live" ? "error" : "neutral"}>{agent.mode}</Badge>
+            <Badge tone={agent.status === "running" ? "success" : agent.status === "error" ? "error" : "warning"} dot>
+              {agent.status}
+            </Badge>
+          </div>
         }
       />
       <CardBody className="space-y-4 pt-4">
@@ -108,6 +124,18 @@ export function LiveTradeCard({
           </div>
         )}
 
+        <div className="rounded-xl border border-accent/10 bg-accent-muted/40 px-3 py-2">
+          <span className="flex items-center gap-1.5 text-[10px] font-mono uppercase tracking-widest text-text-muted">
+            {agent.status === "running" && (
+              <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-accent" />
+            )}
+            Agent thinking
+          </span>
+          <p className="mt-1 text-xs text-text-secondary">
+            {agent.lastError ?? agent.lastResult ?? "Waiting for first tick…"}
+          </p>
+        </div>
+
         <div className="grid grid-cols-2 gap-2 text-xs">
           <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5">
             <span className="block text-[10px] text-text-muted">Last tick</span>
@@ -116,8 +144,8 @@ export function LiveTradeCard({
             </span>
           </div>
           <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5">
-            <span className="block text-[10px] text-text-muted">Last error</span>
-            <span className="truncate text-error/80">{agent.lastError ?? "none"}</span>
+            <span className="block text-[10px] text-text-muted">Status</span>
+            <span className="truncate text-text-secondary">{agent.status}</span>
           </div>
         </div>
 
@@ -156,6 +184,51 @@ export function LiveTradeCard({
             <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5 text-center">
               <span className="block text-[10px] text-text-muted">Open position</span>
               <span className="font-mono text-text-secondary">{pnl.openPosition}</span>
+            </div>
+          </div>
+        )}
+
+        {dashboard && (
+          <div className="grid grid-cols-3 gap-2 text-xs">
+            <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5 text-center">
+              <span className="block text-[10px] text-text-muted">Win rate</span>
+              <span className="font-mono text-text-secondary">{(dashboard.winRate * 100).toFixed(0)}%</span>
+            </div>
+            <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5 text-center">
+              <span className="block text-[10px] text-text-muted">Total return</span>
+              <span className="font-mono text-text-secondary">
+                {dashboard.totalReturn !== null ? `${(dashboard.totalReturn * 100).toFixed(1)}%` : "—"}
+              </span>
+            </div>
+            <div className="rounded-lg bg-bg-elevated px-2.5 py-1.5 text-center">
+              <span className="block text-[10px] text-text-muted">Running</span>
+              <span className="font-mono text-text-secondary">
+                {dashboard.runningTimeMs ? `${Math.floor(dashboard.runningTimeMs / 60000)}m` : "—"}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {dashboard?.position && parseFloat(dashboard.position.open_amount) > 0 && (
+          <div className="rounded-xl bg-bg-elevated p-3 space-y-1">
+            <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">Open position</p>
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-mono text-text-secondary">{dashboard.position.open_amount} @ avg {dashboard.position.avg_cost}</span>
+              <span className="font-mono text-[10px] text-text-muted">{dashboard.position.pair}</span>
+            </div>
+          </div>
+        )}
+
+        {activity.length > 0 && (
+          <div>
+            <p className="mb-1.5 text-[10px] font-mono uppercase tracking-widest text-text-muted">Live activity</p>
+            <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+              {activity.map((e) => (
+                <div key={e.id} className="flex items-center justify-between gap-2 rounded-lg bg-white/[0.02] px-2.5 py-1 text-[11px]">
+                  <span className="truncate text-text-secondary">{e.message ?? e.event_type}</span>
+                  <span className="shrink-0 text-[10px] text-text-muted">{new Date(e.created_at).toLocaleTimeString()}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}

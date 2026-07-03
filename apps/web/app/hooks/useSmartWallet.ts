@@ -8,6 +8,8 @@ import {
   signAuthEntryWithFreighter,
   type WalletState,
 } from "@/app/lib/stellar";
+import { challengeAndVerify } from "@/app/lib/agentsAuth";
+import { setAuthToken } from "@/app/lib/agentsBackend";
 
 const KEY_PREFIX = "kairos:smart-wallet:";
 const LEGACY_LIST_KEY_PREFIX = "kairos:smart-wallets:"; // pre-single-capital-wallet array format
@@ -131,6 +133,14 @@ export function useSmartWallet(): SmartWalletState {
       setWallet(result.wallet);
       setSmartWalletAddress(null);
       setSmartWalletBalance(null);
+      try {
+        const token = await challengeAndVerify(result.wallet.address, result.wallet.networkPassphrase);
+        setAuthToken(token);
+      } catch (e) {
+        // Agent-backend login is best-effort at connect time — strategy/agent features will
+        // surface their own 401 if a call is attempted without a valid session.
+        console.error("Agent backend login failed:", e);
+      }
       const saved = loadWallet(result.wallet.address);
       if (saved) {
         setSmartWalletAddress(saved);
@@ -155,6 +165,7 @@ export function useSmartWallet(): SmartWalletState {
     setSmartWalletAddress(null);
     setSmartWalletBalance(null);
     setDeployError(null);
+    setAuthToken(null);
   }, []);
 
   // Auto-check connection on mount

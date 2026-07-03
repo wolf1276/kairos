@@ -614,11 +614,17 @@ export async function delegateXLM(
   };
 }
 
-// ── Smart wallet balance (Soroban native SAC `balance`) ──
+// ── Smart wallet balance (Soroban SAC `balance`) ──
+//
+// Smart wallets are Soroban contracts (C-addresses) — classic Horizon `loadAccount` (used by
+// `fetchAccountBalances` below) only understands G-addresses and fails/hangs on a contract
+// address. Any token balance for a smart wallet must instead be read via that token's Stellar
+// Asset Contract `balance` entrypoint, simulated through Soroban RPC.
 
-/** Read a smart wallet's native XLM balance via the native asset's Stellar Asset Contract. */
-export async function fetchSmartWalletBalance(
+/** Read a smart wallet's balance of an arbitrary token (identified by its SAC contract id). */
+export async function fetchSmartWalletTokenBalance(
   smartWalletAddress: string,
+  tokenContractId: string,
   networkPassphrase: string,
   sorobanRpcUrl?: string
 ): Promise<string> {
@@ -633,9 +639,8 @@ export async function fetchSmartWalletBalance(
   const sourceAddress = await getAddressFromFreighter();
   const account = await server.getAccount(sourceAddress);
 
-  const nativeSacId = Asset.native().contractId(networkPassphrase);
   const balanceOp = Operation.invokeContractFunction({
-    contract: nativeSacId,
+    contract: tokenContractId,
     function: "balance",
     args: [Address.fromString(smartWalletAddress).toScVal()],
   });
@@ -654,6 +659,20 @@ export async function fetchSmartWalletBalance(
   }
   const stroops = scValToBigInt(simulated.result.retval);
   return (Number(stroops) / 1e7).toFixed(7);
+}
+
+/** Read a smart wallet's native XLM balance via the native asset's Stellar Asset Contract. */
+export async function fetchSmartWalletBalance(
+  smartWalletAddress: string,
+  networkPassphrase: string,
+  sorobanRpcUrl?: string
+): Promise<string> {
+  return fetchSmartWalletTokenBalance(
+    smartWalletAddress,
+    Asset.native().contractId(networkPassphrase),
+    networkPassphrase,
+    sorobanRpcUrl
+  );
 }
 
 // ── Real on-chain DEX swaps (Stellar path payments) ──
@@ -707,8 +726,18 @@ export interface OrderBookQuote {
   price: number | null;
 }
 
-/** Reads the live Stellar DEX order book for a pair — used to show a real price and refuse
- *  to submit a swap when there's no on-chain liquidity, instead of guessing. */
+/** Reads the live price for a pair, preferring a real AMM liquidity pool's spot price over the
+ *  classic order book — testnet order books are thin and often carry stale dust offers (e.g. a
+ *  resting offer priced at 1.0 that has nothing to do with the real rate), while liquidity pools
+ *  carry deep, continuously-arbitraged reserves and give a far more trustworthy price. Falls
+ *  back to the order book only if no pool exists for this exact asset pair.
+ *
+ *  Horizon's order book is keyed by (selling, buying) = (base, counter). `asks` are offers to
+ *  sell the base asset (same side as us — never our counterparty); `bids` are offers to *buy*
+ *  the base asset, i.e. exactly the counterparties who will take the base asset we're selling
+ *  in exchange for the counter asset. Since this function is always called with
+ *  `selling` = what the user is giving up, the correct top-of-book price is `bids[0]`, not
+ *  `asks[0]`. */
 export async function fetchOrderBookQuote(
   selling: SwapAsset,
   buying: SwapAsset,
@@ -719,13 +748,33 @@ export async function fetchOrderBookQuote(
     allowHttp: !horizonUrl.startsWith("https"),
   });
 
-  const book = await server
-    .orderbook(swapAssetToStellarAsset(selling), swapAssetToStellarAsset(buying))
-    .call();
+  const sellingAsset = swapAssetToStellarAsset(selling);
+  const buyingAsset = swapAssetToStellarAsset(buying);
 
-  const bestAsk = book.asks[0];
-  if (!bestAsk) return { hasLiquidity: false, price: null };
-  return { hasLiquidity: true, price: parseFloat(bestAsk.price) };
+  const pools = await server.liquidityPools().forAssets(sellingAsset, buyingAsset).call();
+  const pool = pools.records[0];
+  if (pool) {
+    const sellingReserve = pool.reserves.find((r) => r.asset === assetToReserveKey(sellingAsset));
+    const buyingReserve = pool.reserves.find((r) => r.asset === assetToReserveKey(buyingAsset));
+    if (sellingReserve && buyingReserve) {
+      const sellingAmount = parseFloat(sellingReserve.amount);
+      const buyingAmount = parseFloat(buyingReserve.amount);
+      if (sellingAmount > 0) {
+        return { hasLiquidity: true, price: buyingAmount / sellingAmount };
+      }
+    }
+  }
+
+  const book = await server.orderbook(sellingAsset, buyingAsset).call();
+  const bestBid = book.bids[0];
+  if (!bestBid) return { hasLiquidity: false, price: null };
+  return { hasLiquidity: true, price: parseFloat(bestBid.price) };
+}
+
+/** Horizon's liquidity pool `reserves[].asset` field uses the same "native" / "CODE:ISSUER"
+ *  string format as its other asset representations — matches Asset#toString(). */
+function assetToReserveKey(asset: Asset): string {
+  return asset.isNative() ? "native" : asset.toString();
 }
 
 export interface SwapResult {

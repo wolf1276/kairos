@@ -62,6 +62,18 @@ export function getDisplayForMode(
     }
     if (mode === 'AI_MANAGED') {
         const summary: DisplayItem[] = [];
+
+        const order = config['order'] as { side: string; asset: string; quantity: number; triggerComparator: string | null; triggerPrice: number | null } | null | undefined;
+        if (order) {
+            summary.push({ label: 'Order', value: `${order.side.toUpperCase()} ${order.quantity} ${order.asset}` });
+            summary.push({
+                label: 'Trigger',
+                value: order.triggerPrice
+                    ? `Price ${order.triggerComparator === 'lte' ? '<=' : '>='} ${order.triggerPrice}`
+                    : 'Immediate',
+            });
+        }
+
         const mappings: { key: string; label: string }[] = [
             { key: 'goal', label: 'Investment Goal' },
             { key: 'riskTolerance', label: 'Risk Level' },
@@ -88,7 +100,7 @@ export function getDisplayForMode(
         }
 
         return {
-            title: 'Investment Plan',
+            title: order ? 'Order' : 'Investment Plan',
             summary,
         };
     } else if (mode === 'STRATEGY_MANAGED') {

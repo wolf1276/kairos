@@ -14,6 +14,17 @@ export interface TradingProfile {
     maxPositionSize: number;
     stopLossPreference: number;
     takeProfitPreference: number;
+    /** Present only when the intent named a specific order — e.g. "buy 5 XLM when price drops
+     *  to 0.2005" — rather than just a general risk profile. When set, the trade page creates a
+     *  standing backend order (backend's 'limit' strategy type) instead of trading immediately. */
+    order?: {
+        side: 'buy' | 'sell';
+        asset: string;
+        quantity: number;
+        /** Null means "execute immediately" (no price condition was stated). */
+        triggerComparator: 'lte' | 'gte' | null;
+        triggerPrice: number | null;
+    };
 }
 
 export interface StrategyConfiguration {
