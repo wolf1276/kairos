@@ -5,20 +5,20 @@
 
 /* ── Design Tokens ── */
 :root {
-  --bg-primary: #0a0a0c;
-  --bg-card: #121214;
-  --bg-elevated: #18181b;
-  --accent: oklch(0.97 0 0);
-  --accent-hover: #8b6ef0;
-  --accent-muted: rgba(120, 81, 233, 0.15);
-  --accent-glow: rgba(120, 81, 233, 0.12);
-  --text-primary: #f8f6f1;
-  --text-secondary: #a8a6a2;
-  --text-muted: #5c5c62;
-  --border: rgba(255,255,255,0.06);
-  --border-subtle: rgba(255,255,255,0.03);
-  --success: #2dd4a0;
-  --error: #f05151;
+  --bg-primary: #0b0b10;
+  --bg-card: #131319;
+  --bg-elevated: #1a1a22;
+  --accent: #7c5cff;
+  --accent-hover: #9179ff;
+  --accent-muted: rgba(124, 92, 255, 0.16);
+  --accent-glow: rgba(124, 92, 255, 0.18);
+  --text-primary: #f5f5f8;
+  --text-secondary: #9d9dae;
+  --text-muted: #63636f;
+  --border: rgba(255,255,255,0.07);
+  --border-subtle: rgba(255,255,255,0.04);
+  --success: #2ee6a6;
+  --error: #ff5c6c;
 
   --glass-bg: rgba(18,18,20,0.6);
   --glass-border: rgba(255,255,255,0.04);
@@ -61,21 +61,21 @@
 }
 
 @theme inline {
-  --color-bg-primary: #0a0a0c;
-  --color-bg-card: #121214;
-  --color-bg-elevated: #18181b;
-  --color-accent: #7851e9;
-  --color-accent-hover: #8b6ef0;
-  --color-accent-muted: rgba(120, 81, 233, 0.15);
-  --color-text-primary: #f8f6f1;
-  --color-text-secondary: #a8a6a2;
-  --color-text-muted: #5c5c62;
-  --color-border: rgba(255,255,255,0.06);
-  --color-success: #2dd4a0;
-  --color-error: #f05151;
+  --color-bg-primary: #0b0b10;
+  --color-bg-card: #131319;
+  --color-bg-elevated: #1a1a22;
+  --color-accent: #7c5cff;
+  --color-accent-hover: #9179ff;
+  --color-accent-muted: rgba(124, 92, 255, 0.16);
+  --color-text-primary: #f5f5f8;
+  --color-text-secondary: #9d9dae;
+  --color-text-muted: #63636f;
+  --color-border: rgba(255,255,255,0.07);
+  --color-success: #2ee6a6;
+  --color-error: #ff5c6c;
 
-  --color-glass-bg: rgba(18,18,20,0.6);
-  --color-glass-border: rgba(255,255,255,0.04);
+  --color-glass-bg: rgba(19,19,25,0.7);
+  --color-glass-border: rgba(255,255,255,0.05);
   --font-display: var(--font-display);
   --font-body: var(--font-body);
   --font-mono: var(--font-mono);

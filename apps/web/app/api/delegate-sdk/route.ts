@@ -226,6 +226,92 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, txHash: result.hash });
       }
 
+      // Records this delegation as the wallet's single active one (enforced on-chain via the
+      // WalletDelegation map — rejects if one is already active). Called once right after
+      // SUBMIT_DELEGATION, before the delegation can be looked up via GET_WALLET_DELEGATION.
+      case 'PREPARE_REGISTER_DELEGATION': {
+        const { delegation } = body;
+        if (!delegation) {
+          return NextResponse.json({ error: 'delegation struct is required' }, { status: 400 });
+        }
+        await client.ensureFundedTestnetAccount(funder.publicKey());
+        const prepared = await client.delegation.prepareSponsoredRegister(deserializeDelegation(delegation), funder.publicKey());
+        return NextResponse.json({ success: true, ...prepared });
+      }
+
+      case 'SUBMIT_REGISTER_DELEGATION': {
+        const { delegation, signedEntryXdr } = body;
+        if (!delegation || !signedEntryXdr) {
+          return NextResponse.json({ error: 'delegation and signedEntryXdr are required' }, { status: 400 });
+        }
+        const result = await client.delegation.submitSponsoredRegister(deserializeDelegation(delegation), funder, signedEntryXdr);
+        return NextResponse.json({ success: true, txHash: result.hash });
+      }
+
+      case 'GET_WALLET_DELEGATION': {
+        const { delegator } = body;
+        if (!delegator) {
+          return NextResponse.json({ error: 'delegator address is required' }, { status: 400 });
+        }
+        const hash = await client.delegation.getWalletDelegation(delegator);
+        return NextResponse.json({ success: true, hash });
+      }
+
+      case 'PREPARE_REVOKE_BY_WALLET': {
+        const { delegator } = body;
+        if (!delegator) {
+          return NextResponse.json({ error: 'delegator address is required' }, { status: 400 });
+        }
+        await client.ensureFundedTestnetAccount(funder.publicKey());
+        const prepared = await client.delegation.prepareSponsoredRevokeByWallet(delegator, funder.publicKey());
+        return NextResponse.json({ success: true, ...prepared });
+      }
+
+      case 'SUBMIT_REVOKE_BY_WALLET': {
+        const { delegator, signedEntryXdr } = body;
+        if (!delegator || !signedEntryXdr) {
+          return NextResponse.json({ error: 'delegator and signedEntryXdr are required' }, { status: 400 });
+        }
+        const result = await client.delegation.submitSponsoredRevokeByWallet(delegator, funder, signedEntryXdr);
+        return NextResponse.json({ success: true, txHash: result.hash });
+      }
+
+      // Updates a policy's terms in place for (delegator, policyId) — no new delegation minted,
+      // the delegation's hash/signature are untouched. `terms` is the raw policy-encoding bytes
+      // (same format `client.policy.create` produces), sent as a plain number array over JSON.
+      case 'PREPARE_SET_POLICY': {
+        const { delegator, policyId, terms } = body;
+        if (!delegator || policyId === undefined || !terms) {
+          return NextResponse.json({ error: 'delegator, policyId, and terms are required' }, { status: 400 });
+        }
+        await client.ensureFundedTestnetAccount(funder.publicKey());
+        const prepared = await client.delegation.prepareSponsoredSetPolicy(
+          delegator,
+          BigInt(policyId),
+          new Uint8Array(terms),
+          funder.publicKey()
+        );
+        return NextResponse.json({ success: true, ...prepared });
+      }
+
+      case 'SUBMIT_SET_POLICY': {
+        const { delegator, policyId, terms, signedEntryXdr } = body;
+        if (!delegator || policyId === undefined || !terms || !signedEntryXdr) {
+          return NextResponse.json(
+            { error: 'delegator, policyId, terms, and signedEntryXdr are required' },
+            { status: 400 }
+          );
+        }
+        const result = await client.delegation.submitSponsoredSetPolicy(
+          delegator,
+          BigInt(policyId),
+          new Uint8Array(terms),
+          funder,
+          signedEntryXdr
+        );
+        return NextResponse.json({ success: true, txHash: result.hash });
+      }
+
       case 'DELEGATION_STATUS': {
         const { hash: delegationHash } = body;
         if (!delegationHash) {

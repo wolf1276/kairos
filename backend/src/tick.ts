@@ -1,6 +1,6 @@
 import { Address, Asset, BASE_FEE, Horizon, Operation, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { getKairosClient } from './kairos.js';
-import { getAgentSigner, recordTick } from './agentService.js';
+import { getAgentSigner, getActiveDelegationForAgent, recordTick } from './agentService.js';
 import { mapExecutionError, mapThrownError } from './errors.js';
 import type { AgentRow } from './db.js';
 import type { DcaStrategyConfig, JsonSafeDelegation, QuantStrategyConfig } from './types.js';
@@ -47,8 +47,13 @@ export async function runAgentTick(row: AgentRow): Promise<void> {
 }
 
 async function runDcaTick(row: AgentRow, strategy: DcaStrategyConfig): Promise<void> {
-  if (!row.delegation_json) return;
-  const delegationJson: JsonSafeDelegation = JSON.parse(row.delegation_json);
+  // Re-checked every tick (not just at attach time) so a mid-flight revoke or pause takes
+  // effect on the next tick, not just at start-up.
+  const delegationJson = getActiveDelegationForAgent(row);
+  if (!delegationJson) {
+    recordTick(row.id, { ok: false, message: 'Delegation is revoked, paused, or missing' });
+    return;
+  }
 
   const client = getKairosClient();
   const signer = getAgentSigner(row);

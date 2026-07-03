@@ -7,6 +7,7 @@ import {
   getAgent,
   getAgentRow,
   listAgents,
+  revokeWalletDelegation,
   setStrategy,
   startAgent,
   stopAgent,
@@ -87,6 +88,20 @@ const quantStrategySchema = z.object({
 });
 
 const strategySchema = z.discriminatedUnion('type', [dcaStrategySchema, quantStrategySchema]);
+
+// Revokes the wallet's shared delegation, blocking every agent (any exec mode) tied to it —
+// call before/alongside the on-chain `revoke_by_wallet` to keep backend state in sync.
+agentsRouter.post('/:id/delegation/revoke', (req, res) => {
+  const row = getAgentRow(req.params.id);
+  if (!row) return res.status(404).json({ error: 'Agent not found' });
+  if (!row.delegator) return res.status(400).json({ error: 'Agent has no delegation attached' });
+  try {
+    revokeWalletDelegation(row.delegator);
+    res.json({ success: true, agent: getAgent(req.params.id) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
 
 agentsRouter.post('/:id/strategy', (req, res) => {
   const parsed = strategySchema.safeParse(req.body);

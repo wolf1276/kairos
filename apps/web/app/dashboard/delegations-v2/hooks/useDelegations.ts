@@ -103,6 +103,21 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
         throw new Error("Connect your wallet and deploy a smart wallet first.");
       }
 
+      // One delegation per wallet: refuse to mint a second one while an active delegation
+      // already exists on-chain for this wallet. Callers should revoke() the existing one
+      // (or update its policy) instead of calling createDelegation again.
+      const existingRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "GET_WALLET_DELEGATION", delegator: smartWalletAddress }),
+      });
+      const existing = await existingRes.json();
+      if (existingRes.ok && existing.hash) {
+        throw new Error(
+          "This wallet already has an active delegation. Revoke it before creating a new one."
+        );
+      }
+
       // 1. Server builds the unsigned delegation (delegator = this wallet's smart wallet —
       // the only address `redeem_delegations` can actually execute against) and returns its
       // hash for the owner to sign.
@@ -130,6 +145,36 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
       });
       const data = await submitRes.json();
       if (!submitRes.ok) throw new Error(data.error);
+
+      // 4. Register this as the wallet's single active delegation on-chain (WalletDelegation
+      // map) — shared by every agent/execution mode for this wallet. Requires a second signed
+      // authorization entry from the owner (register_delegation calls delegator.require_auth()).
+      const registerPrepareRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "PREPARE_REGISTER_DELEGATION", delegation: data.delegation }),
+      });
+      const registerPrepared = await registerPrepareRes.json();
+      if (!registerPrepareRes.ok) throw new Error(registerPrepared.error);
+
+      const registerSignedEntryXdr = await signAuthEntryWithFreighter(
+        registerPrepared.unsignedEntryXdr,
+        registerPrepared.validUntilLedgerSeq,
+        networkPassphrase,
+        walletOwner
+      );
+
+      const registerSubmitRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "SUBMIT_REGISTER_DELEGATION",
+          delegation: data.delegation,
+          signedEntryXdr: registerSignedEntryXdr,
+        }),
+      });
+      const registerData = await registerSubmitRes.json();
+      if (!registerSubmitRes.ok) throw new Error(registerData.error);
 
       fullDelegationsRef.current.set(data.hash, data.delegation as JsonSafeDelegation);
       saveDelegations(walletOwner, fullDelegationsRef.current);
@@ -251,6 +296,51 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
   const revoke = useCallback((d: DelegationRecord) => setDelegationDisabled(d, true), [setDelegationDisabled]);
   const enable = useCallback((d: DelegationRecord) => setDelegationDisabled(d, false), [setDelegationDisabled]);
 
+  /**
+   * Revokes by wallet address alone — doesn't need the full `Delegation` struct on hand
+   * (the manager resolves it via the WalletDelegation map). Blocks every agent/execution
+   * mode tied to this wallet in one call, mirroring the backend's revokeWalletDelegation.
+   */
+  const revokeByWallet = useCallback(async (): Promise<void> => {
+    if (!smartWalletAddress || !walletOwner) return;
+    setActionLoading(smartWalletAddress);
+    setActionErrors((prev) => ({ ...prev, [smartWalletAddress]: "" }));
+    try {
+      const prepareRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "PREPARE_REVOKE_BY_WALLET", delegator: smartWalletAddress }),
+      });
+      const prepared = await prepareRes.json();
+      if (!prepareRes.ok) throw new Error(prepared.error);
+
+      const signedEntryXdr = await signAuthEntryWithFreighter(
+        prepared.unsignedEntryXdr,
+        prepared.validUntilLedgerSeq,
+        networkPassphrase,
+        walletOwner
+      );
+
+      const submitRes = await fetch("/api/delegate-sdk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "SUBMIT_REVOKE_BY_WALLET",
+          delegator: smartWalletAddress,
+          signedEntryXdr,
+        }),
+      });
+      const data = await submitRes.json();
+      if (!submitRes.ok) throw new Error(data.error);
+
+      await refresh();
+    } catch (e) {
+      setActionErrors((prev) => ({ ...prev, [smartWalletAddress]: e instanceof Error ? e.message : String(e) }));
+    } finally {
+      setActionLoading(null);
+    }
+  }, [smartWalletAddress, walletOwner, networkPassphrase, refresh]);
+
   const filteredDelegations = useCallback((filters: DelegationFilters): DelegationRecord[] => {
     let result = [...delegations];
 
@@ -295,6 +385,7 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
     refresh,
     createDelegation,
     revoke,
+    revokeByWallet,
     enable,
     filteredDelegations,
   };

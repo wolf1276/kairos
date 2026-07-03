@@ -197,22 +197,22 @@ export default function DashboardLayout({
                 href={item.href}
                 onClick={() => !isDesktop && setSidebarOpen(false)}
                 className={cn(
-                  "group relative flex items-center gap-4 rounded-2xl px-4 py-3.5 text-[15px] font-medium transition-all duration-200",
+                  "group relative flex items-center gap-4 rounded-2xl px-4 py-3.5 text-[14px] font-medium transition-all duration-200",
                   active
-                    ? "bg-white/[0.08] text-text-primary"
-                    : "text-text-muted hover:bg-white/[0.04] hover:text-text-secondary",
+                    ? "bg-accent text-white shadow-[0_4px_20px_-4px_rgba(124,92,255,0.5)]"
+                    : "text-text-muted hover:bg-white/[0.05] hover:text-text-secondary",
                   isCollapsed && isDesktop && "justify-center px-0"
                 )}
                 title={isCollapsed && isDesktop ? item.label : undefined}
               >
                 <item.icon
                   className={cn(
-                    "shrink-0 h-[22px] w-[22px] transition-colors duration-200",
+                    "shrink-0 h-[19px] w-[19px] transition-colors duration-200",
                     active
-                      ? "text-accent"
+                      ? "text-white"
                       : "text-text-muted group-hover:text-text-secondary"
                   )}
-                  strokeWidth={active ? 2.5 : 2}
+                  strokeWidth={active ? 2.25 : 2}
                 />
                 {(!isCollapsed || !isDesktop) && (
                   <span className="truncate">{item.label}</span>

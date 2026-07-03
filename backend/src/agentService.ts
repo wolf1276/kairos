@@ -1,26 +1,34 @@
 import { Keypair } from '@stellar/stellar-sdk';
 import { randomUUID } from 'crypto';
-import { getDb, type AgentRow } from './db.js';
+import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow } from './db.js';
 import { encryptSecret, decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
 import type { AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.js';
 
 function toSummary(row: AgentRow): AgentSummary {
-  const delegation: JsonSafeDelegation | null = row.delegation_json ? JSON.parse(row.delegation_json) : null;
+  const walletDelegation = row.delegator ? getWalletDelegation(row.delegator) : undefined;
   return {
     id: row.id,
     owner: row.owner,
     publicKey: row.public_key,
     status: row.status,
-    delegationHash: row.delegation_hash,
-    delegator: delegation?.delegator ?? null,
+    delegationHash: walletDelegation && !walletDelegation.disabled ? walletDelegation.delegation_hash : null,
+    delegator: row.delegator,
     strategy: row.strategy_config_json ? JSON.parse(row.strategy_config_json) : null,
     lastTickAt: row.last_tick_at,
     lastResult: row.last_result,
     lastError: row.last_error,
     createdAt: row.created_at,
   };
+}
+
+/** Resolves the active, non-disabled delegation shared by every agent tied to this wallet. */
+export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation | null {
+  if (!row.delegator) return null;
+  const walletDelegation = getWalletDelegation(row.delegator);
+  if (!walletDelegation || walletDelegation.disabled) return null;
+  return JSON.parse(walletDelegation.delegation_json);
 }
 
 export async function createAgent(owner: string): Promise<AgentSummary> {
@@ -40,8 +48,7 @@ export async function createAgent(owner: string): Promise<AgentSummary> {
     public_key: keypair.publicKey(),
     encrypted_secret: encryptSecret(keypair.secret()),
     status: 'new',
-    delegation_hash: null,
-    delegation_json: null,
+    delegator: null,
     strategy: null,
     strategy_config_json: null,
     last_tick_at: null,
@@ -76,7 +83,12 @@ export function getAgentSigner(row: AgentRow): Keypair {
   return Keypair.fromSecret(decryptSecret(row.encrypted_secret));
 }
 
-/** Attaches a signed delegation to an agent — verifies delegate/hash match before storing. */
+/**
+ * Attaches the wallet's single shared delegation to an agent — verifies delegate/hash match
+ * before storing. All execution modes (autonomous/strategy/user-intent) for the same wallet
+ * share this one delegation row; attaching a second agent to the same wallet reuses it rather
+ * than minting a new one.
+ */
 export async function attachDelegation(id: string, delegation: JsonSafeDelegation): Promise<AgentSummary> {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
@@ -95,17 +107,21 @@ export async function attachDelegation(id: string, delegation: JsonSafeDelegatio
   const status = await client.delegation.get(hash);
   if (status.disabled) throw new Error('This delegation is disabled on-chain');
 
-  getDb()
-    .prepare('UPDATE agents SET delegation_hash = ?, delegation_json = ? WHERE id = ?')
-    .run(hash, JSON.stringify(delegation), id);
+  upsertWalletDelegation(delegation.delegator, hash, JSON.stringify(delegation));
+  getDb().prepare('UPDATE agents SET delegator = ? WHERE id = ?').run(delegation.delegator, id);
   return getAgent(id)!;
+}
+
+/** Revokes the shared delegation for a wallet — every agent tied to that wallet is blocked. */
+export function revokeWalletDelegation(delegator: string): void {
+  setWalletDelegationDisabled(delegator, true);
 }
 
 export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
-  if (!row.delegation_json) throw new Error('Attach a delegation before configuring a strategy');
-  const delegation: JsonSafeDelegation = JSON.parse(row.delegation_json);
+  const delegation = getActiveDelegationForAgent(row);
+  if (!delegation) throw new Error('Attach a delegation before configuring a strategy');
 
   // `destination` is always the delegation's own delegator (the smart wallet this agent
   // spends from) — whatever a client sends is ignored, so an agent can never be configured
@@ -120,7 +136,7 @@ export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary 
 export function startAgent(id: string): AgentSummary {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
-  if (!row.delegation_hash) throw new Error('Attach a delegation before starting this agent');
+  if (!getActiveDelegationForAgent(row)) throw new Error('Attach a delegation before starting this agent');
   if (!row.strategy_config_json) throw new Error('Configure a strategy before starting this agent');
   getDb().prepare("UPDATE agents SET status = 'running', last_error = NULL WHERE id = ?").run(id);
   return getAgent(id)!;

@@ -201,7 +201,7 @@ export class DelegationModule {
    * the exact same operation in `submitSponsoredDisable`/`submitSponsoredEnable`.
    */
   private async prepareSponsoredOp(
-    functionName: 'disable_delegation' | 'enable_delegation',
+    functionName: 'disable_delegation' | 'enable_delegation' | 'register_delegation',
     delegation: Delegation,
     funderAddress: string
   ): Promise<{ unsignedEntryXdr: string; validUntilLedgerSeq: number }> {
@@ -240,7 +240,7 @@ export class DelegationModule {
   }
 
   private async submitSponsoredOp(
-    functionName: 'disable_delegation' | 'enable_delegation',
+    functionName: 'disable_delegation' | 'enable_delegation' | 'register_delegation',
     delegation: Delegation,
     funder: Keypair,
     signedEntryXdr: string
@@ -266,6 +266,19 @@ export class DelegationModule {
     return this.client.submitTransaction(tx, funder);
   }
 
+  /**
+   * Sponsored `register_delegation` — records this as the wallet's single active delegation
+   * (rejects if one is already active). Must be called once after a delegation is signed,
+   * before it can be looked up via `getWalletDelegation`.
+   */
+  async prepareSponsoredRegister(delegation: Delegation, funderAddress: string) {
+    return this.prepareSponsoredOp('register_delegation', delegation, funderAddress);
+  }
+
+  async submitSponsoredRegister(delegation: Delegation, funder: Keypair, signedEntryXdr: string) {
+    return this.submitSponsoredOp('register_delegation', delegation, funder, signedEntryXdr);
+  }
+
   async prepareSponsoredDisable(delegation: Delegation, funderAddress: string) {
     return this.prepareSponsoredOp('disable_delegation', delegation, funderAddress);
   }
@@ -280,6 +293,155 @@ export class DelegationModule {
 
   async submitSponsoredEnable(delegation: Delegation, funder: Keypair, signedEntryXdr: string) {
     return this.submitSponsoredOp('enable_delegation', delegation, funder, signedEntryXdr);
+  }
+
+  /**
+   * Sponsored `revoke_by_wallet` — revokes the wallet's single active delegation without
+   * needing to reconstruct the full `Delegation` struct (the manager resolves it via the
+   * `WalletDelegation` map). Same sponsored-auth-entry pattern as disable/enable.
+   */
+  async prepareSponsoredRevokeByWallet(delegator: string, funderAddress: string) {
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'revoke_by_wallet',
+      args: [Address.fromString(delegator).toScVal()],
+    });
+    const sourceAccount = await this.client.waitForAccount(funderAddress);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const simRes = await this.client.simulateTx(tx);
+    if (!rpc.Api.isSimulationSuccess(simRes)) {
+      throw new TransactionSimulationError('Simulation did not succeed', simRes);
+    }
+    const entry = simRes.result?.auth?.[0];
+    if (!entry) {
+      throw new TransactionSimulationError(
+        'Simulation did not return an authorization entry for the delegator address',
+        simRes
+      );
+    }
+    const validUntilLedgerSeq = simRes.latestLedger + AUTH_ENTRY_VALID_LEDGER_MARGIN;
+    entry.credentials().address().signatureExpirationLedger(validUntilLedgerSeq);
+    return { unsignedEntryXdr: entry.toXDR('base64'), validUntilLedgerSeq };
+  }
+
+  async submitSponsoredRevokeByWallet(delegator: string, funder: Keypair, signedEntryXdr: string) {
+    const signedEntry = xdr.SorobanAuthorizationEntry.fromXDR(signedEntryXdr, 'base64');
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'revoke_by_wallet',
+      args: [Address.fromString(delegator).toScVal()],
+      auth: [signedEntry],
+    });
+    const sourceAccount = await this.client.waitForAccount(funder.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    return this.client.submitTransaction(tx, funder);
+  }
+
+  /**
+   * Sponsored `set_policy` — updates a policy's terms in place for (delegator, policyId)
+   * without touching the Delegation struct, its hash, or its signature. This is the "edit
+   * limits/assets/expiry without minting a new delegation" path.
+   */
+  async prepareSponsoredSetPolicy(delegator: string, policyId: bigint, terms: Uint8Array, funderAddress: string) {
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'set_policy',
+      args: [
+        Address.fromString(delegator).toScVal(),
+        xdr.ScVal.scvU64(new xdr.Uint64(policyId)),
+        xdr.ScVal.scvBytes(Buffer.from(terms)),
+      ],
+    });
+    const sourceAccount = await this.client.waitForAccount(funderAddress);
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const simRes = await this.client.simulateTx(tx);
+    if (!rpc.Api.isSimulationSuccess(simRes)) {
+      throw new TransactionSimulationError('Simulation did not succeed', simRes);
+    }
+    const entry = simRes.result?.auth?.[0];
+    if (!entry) {
+      throw new TransactionSimulationError(
+        'Simulation did not return an authorization entry for the delegator address',
+        simRes
+      );
+    }
+    const validUntilLedgerSeq = simRes.latestLedger + AUTH_ENTRY_VALID_LEDGER_MARGIN;
+    entry.credentials().address().signatureExpirationLedger(validUntilLedgerSeq);
+    return { unsignedEntryXdr: entry.toXDR('base64'), validUntilLedgerSeq };
+  }
+
+  async submitSponsoredSetPolicy(
+    delegator: string,
+    policyId: bigint,
+    terms: Uint8Array,
+    funder: Keypair,
+    signedEntryXdr: string
+  ) {
+    const signedEntry = xdr.SorobanAuthorizationEntry.fromXDR(signedEntryXdr, 'base64');
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'set_policy',
+      args: [
+        Address.fromString(delegator).toScVal(),
+        xdr.ScVal.scvU64(new xdr.Uint64(policyId)),
+        xdr.ScVal.scvBytes(Buffer.from(terms)),
+      ],
+      auth: [signedEntry],
+    });
+    const sourceAccount = await this.client.waitForAccount(funder.publicKey());
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+    return this.client.submitTransaction(tx, funder);
+  }
+
+  /** True if the wallet already has an active (non-disabled) delegation registered. */
+  async getWalletDelegation(delegator: string): Promise<string | null> {
+    const sourceAccount = await this.client.getAccount('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO');
+    const op = Operation.invokeContractFunction({
+      contract: this.client.contracts.delegationManager,
+      function: 'get_wallet_delegation',
+      args: [Address.fromString(delegator).toScVal()],
+    });
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: '100000',
+      networkPassphrase: this.client.networkPassphrase,
+    })
+      .addOperation(op)
+      .setTimeout(30)
+      .build();
+
+    const simRes = await this.client.simulateTx(tx);
+    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
+      const opt = simRes.result.retval;
+      if (opt.switch().name === 'scvVoid') return null;
+      return Buffer.from(opt.bytes()).toString('hex');
+    }
+    return null;
   }
 
   /**
