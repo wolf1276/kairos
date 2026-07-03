@@ -4,9 +4,10 @@ import { DelegationModule } from '../delegation';
 import { EventsModule } from '../events';
 import { ExecutionModule } from '../execution';
 import { PolicyModule } from '../policy';
-import { ContractConfig, NetworkConfig, TransactionResult, Delegation, Caveat } from '../types';
+import { ContractConfig, NetworkConfig, TransactionResult, Delegation, Caveat, Signer } from '../types';
 import { WalletModule } from '../wallet';
 import { RpcError, TransactionSimulationError } from '../errors';
+import { signTransaction } from '../utils';
 
 
 
@@ -136,7 +137,7 @@ export class KairosClient {
   /**
    * Submits a transaction to the network.
    */
-  async submitTransaction(tx: Transaction, signer: Keypair): Promise<TransactionResult> {
+  async submitTransaction(tx: Transaction, signer: Signer): Promise<TransactionResult> {
     const localTx = TransactionBuilder.fromXDR(tx.toXDR(), this.networkPassphrase) as Transaction;
 
     // 1. Simulate the transaction to auto-fill footprints and resource fees
@@ -158,7 +159,7 @@ export class KairosClient {
     let finalTx = assembled.build();
 
     // 3. Sign the transaction
-    finalTx.sign(signer);
+    await signTransaction(finalTx, signer);
 
     // 4. Send the transaction
     const sendResponse = await this.rpcProvider.sendTransaction(finalTx);

@@ -1,0 +1,41 @@
+{
+  "name": "@wolf1276/kairos-turnkey-signer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MPC-backed (Turnkey) RemoteSigner for Kairos agent keys — each agent's Ed25519 key is created and held in Turnkey's key-share cluster, never assembled in this process.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@turnkey/api-key-stamper": "^0.6.7",
+    "@turnkey/http": "^4.1.1"
+  },
+  "peerDependencies": {
+    "@stellar/stellar-sdk": "^14.6.1",
+    "@wolf1276/kairos-sdk": "workspace:^"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "^14.6.1",
+    "@wolf1276/kairos-sdk": "workspace:^",
+    "tsup": "^8.0.2",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

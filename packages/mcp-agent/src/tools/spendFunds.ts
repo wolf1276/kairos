@@ -1,4 +1,5 @@
-import { Address, Keypair, xdr } from '@stellar/stellar-sdk';
+import { Address, xdr } from '@stellar/stellar-sdk';
+import type { Signer } from '@wolf1276/kairos-sdk';
 import { z } from 'zod';
 import { getKairosClient } from '../client.js';
 import { loadEligibleDelegations } from '../delegations.js';
@@ -14,10 +15,10 @@ const spendFundsInput = z.object(spendFundsSchema);
 
 export async function spendFundsHandler(
   input: z.infer<typeof spendFundsInput>,
-  sessionKeypair: Keypair
+  sessionSigner: Signer
 ) {
   const client = getKairosClient();
-  const sessionPubkey = sessionKeypair.publicKey();
+  const sessionPubkey = sessionSigner.publicKey();
 
   const eligible = await loadEligibleDelegations(client, sessionPubkey);
   // Resolve `0xFE` indexed caveats to their live on-chain policy terms before decoding —
@@ -57,7 +58,7 @@ export async function spendFundsHandler(
 
   try {
     const result = await client.execution.execute({
-      redeemer: sessionKeypair,
+      redeemer: sessionSigner,
       delegationChains: [[delegation]],
       executions: [
         {

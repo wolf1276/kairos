@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { Address, hash, Keypair } from '@stellar/stellar-sdk';
+import { Account, Address, Asset, hash, Keypair, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
 import { KairosClient } from '../src/client';
 import { ROOT_AUTHORITY } from '../src/constants';
-import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, getAddressXdrBytes, i128ToBuffer, uint64ToXdrBytes } from '../src/utils';
+import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, getAddressXdrBytes, i128ToBuffer, signTransaction, uint64ToXdrBytes } from '../src/utils';
+import type { RemoteSigner } from '../src/types';
 
 describe('Kairos SDK Unit Tests', () => {
   const mockContracts = {
@@ -187,6 +188,36 @@ describe('Kairos SDK Unit Tests', () => {
     // Inline caveats are not indexed.
     expect(client.policy.isIndexedCaveat({ enforcer: caveat.enforcer, terms })).toBe(false);
     expect(() => client.policy.getIndexedPolicyId({ enforcer: caveat.enforcer, terms })).toThrow();
+  });
+
+  it('should produce a byte-identical signed tx via a RemoteSigner as via its wrapped Keypair', async () => {
+    const keypair = Keypair.random();
+    // TransactionBuilder.build() mutates its Account's sequence number, so each build needs
+    // its own fresh Account (same starting sequence) to produce byte-identical transactions.
+    const buildTx = () =>
+      new TransactionBuilder(new Account(keypair.publicKey(), '100'), {
+        fee: '100000',
+        networkPassphrase: 'Test SDF Network ; September 2015',
+        timebounds: { minTime: 0, maxTime: 1893456000 },
+      })
+        .addOperation(Operation.payment({ destination: keypair.publicKey(), asset: Asset.native(), amount: '1' }))
+        .build();
+
+    // Local Keypair path (stellar-sdk's own Transaction.sign).
+    const localTx = buildTx();
+    localTx.sign(keypair);
+
+    // RemoteSigner path — same key material, but signing goes through an async `sign()`
+    // call, exactly as an MPC provider (e.g. Turnkey) would be invoked.
+    const remoteSigner: RemoteSigner = {
+      publicKey: () => keypair.publicKey(),
+      sign: async (payload: Buffer) => keypair.sign(payload),
+    };
+    const remoteTx = buildTx();
+    await signTransaction(remoteTx, remoteSigner);
+
+    expect(remoteTx.toXDR()).toBe(localTx.toXDR());
+    expect(remoteTx.signatures).toHaveLength(1);
   });
 
   it('should correctly encode i128 values for spend limits', () => {

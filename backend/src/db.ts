@@ -27,7 +27,12 @@ export interface AgentRow {
   id: string;
   owner: string;
   public_key: string;
+  // Exactly one of these two identifies how to sign for this agent. New agents are always
+  // Turnkey-backed (turnkey_private_key_id set, encrypted_secret ''); encrypted_secret is
+  // kept only so agents created before Turnkey integration keep working — see
+  // agentService.getAgentSigner.
   encrypted_secret: string;
+  turnkey_private_key_id: string | null;
   status: AgentStatus;
   delegator: string | null;
   strategy: string | null;
@@ -103,6 +108,9 @@ export function getDb(): Database.Database {
   const columns = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
   if (!columns.some((c) => c.name === 'delegator')) {
     db.exec('ALTER TABLE agents ADD COLUMN delegator TEXT');
+  }
+  if (!columns.some((c) => c.name === 'turnkey_private_key_id')) {
+    db.exec('ALTER TABLE agents ADD COLUMN turnkey_private_key_id TEXT');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_delegator ON agents(delegator)');
 

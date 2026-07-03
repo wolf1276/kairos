@@ -10,3 +10,9 @@ progress.md
 phase.md
 apps/comming-soon/
 security.md
+kairos-api-turnkey.json
+*-turnkey.json
+secrets/
+.env
+.env.*
+!.env.example

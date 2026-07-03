@@ -1,4 +1,5 @@
 import { Address, Asset, BASE_FEE, Horizon, Operation, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { signTransaction } from '@wolf1276/kairos-sdk';
 import { getKairosClient } from './kairos.js';
 import { getAgentSigner, getActiveDelegationForAgent, recordTick } from './agentService.js';
 import { mapExecutionError, mapThrownError } from './errors.js';
@@ -56,7 +57,7 @@ async function runDcaTick(row: AgentRow, strategy: DcaStrategyConfig): Promise<v
   }
 
   const client = getKairosClient();
-  const signer = getAgentSigner(row);
+  const signer = await getAgentSigner(row);
   const delegation = deserializeDelegation(delegationJson);
 
   const amount = BigInt(strategy.amountPerTick);
@@ -142,7 +143,7 @@ export async function executeQuantTrade(row: AgentRow, strategy: QuantStrategyCo
     throw new Error(`Unsupported pair for trading: ${strategy.pair}`);
   }
 
-  const signer = getAgentSigner(row);
+  const signer = await getAgentSigner(row);
   const networkPassphrase =
     getNetwork() === 'testnet'
       ? 'Test SDF Network ; September 2015'
@@ -172,7 +173,7 @@ export async function executeQuantTrade(row: AgentRow, strategy: QuantStrategyCo
     .addOperation(op)
     .setTimeout(30)
     .build();
-  transaction.sign(signer);
+  await signTransaction(transaction, signer);
 
   const result = await server.submitTransaction(transaction);
   return result.hash;

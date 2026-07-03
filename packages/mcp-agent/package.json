@@ -17,6 +17,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@wolf1276/kairos-sdk": "workspace:^",
+    "@wolf1276/kairos-turnkey-signer": "workspace:^",
     "zod": "^3.23.8"
   },
   "peerDependencies": {

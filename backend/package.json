@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@wolf1276/kairos-sdk": "workspace:^",
+    "@wolf1276/kairos-turnkey-signer": "workspace:^",
     "@stellar/stellar-sdk": "^14.6.1",
     "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",

@@ -2,17 +2,8 @@ import * as crypto from 'crypto';
 import { getMasterKeyHex } from './config.js';
 
 // AES-256-GCM: 12-byte random IV + ciphertext + 16-byte auth tag, all base64-joined with ':'.
-// This is what stands between "backend holds agent secret keys" and "backend holds agent
-// secret keys in plaintext on disk" — the DB file alone is not enough to recover a key.
-export function encryptSecret(plaintext: string): string {
-  const key = Buffer.from(getMasterKeyHex(), 'hex');
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
-  const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return [iv.toString('base64'), encrypted.toString('base64'), authTag.toString('base64')].join(':');
-}
-
+// Only decrypt is needed now — new agents are Turnkey-backed; this only reads secrets
+// encrypted before that switch (see agentService.getAgentSigner's legacy fallback).
 export function decryptSecret(payload: string): string {
   const key = Buffer.from(getMasterKeyHex(), 'hex');
   const [ivB64, dataB64, tagB64] = payload.split(':');

@@ -26,3 +26,13 @@ export function getNetwork(): 'testnet' | 'mainnet' {
 export function getDelegationsDir(): string {
   return process.env.KAIROS_DELEGATIONS_DIR || path.join(os.homedir(), '.kairos', 'delegations');
 }
+
+/**
+ * Identifies which private key this process should use (see keystore.ts). Each agent
+ * instance — e.g. each separate MCP client config — should set a distinct `KAIROS_AGENT_ID`
+ * so they never share a key; processes that don't set it fall back to a single "default"
+ * identity, preserving pre-multi-agent behavior for single-agent setups.
+ */
+export function getAgentId(): string {
+  return process.env.KAIROS_AGENT_ID || 'default';
+}

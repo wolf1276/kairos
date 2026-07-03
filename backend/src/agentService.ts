@@ -1,9 +1,12 @@
 import { Keypair } from '@stellar/stellar-sdk';
+import type { Signer } from '@wolf1276/kairos-sdk';
+import { TurnkeySigner } from '@wolf1276/kairos-turnkey-signer';
 import { randomUUID } from 'crypto';
 import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow } from './db.js';
-import { encryptSecret, decryptSecret } from './crypto.js';
+import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
+import { getTurnkeyClient, getTurnkeyOrganizationId } from './turnkey.js';
 import type { AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.js';
 
 function toSummary(row: AgentRow): AgentSummary {
@@ -31,22 +34,31 @@ export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation |
   return JSON.parse(walletDelegation.delegation_json);
 }
 
+/**
+ * Creates a new agent with its own MPC-backed (Turnkey) Ed25519 key — the private key is
+ * generated and held as secret shares across Turnkey's signing cluster and is never
+ * assembled in this process. Every agent gets a distinct Turnkey `privateKeyId`, so one
+ * agent's key can never be used to sign for another, and each can be revoked independently
+ * (via Turnkey, in addition to revoking its Kairos delegation on-chain).
+ */
 export async function createAgent(owner: string): Promise<AgentSummary> {
-  const keypair = Keypair.random();
+  const id = randomUUID();
+  const signer = await TurnkeySigner.forNewAgent(getTurnkeyClient(), getTurnkeyOrganizationId(), id);
 
   // The agent's own account is the transaction source (fee-payer) for every redemption it
   // submits — an unfunded account has no sequence number and every submission fails with a
   // generic "Send transaction failed" error. Testnet accounts are free to fund via Friendbot;
   // on mainnet this needs a real funding step the caller handles out of band.
   if (getNetwork() === 'testnet') {
-    await getKairosClient().ensureFundedTestnetAccount(keypair.publicKey());
+    await getKairosClient().ensureFundedTestnetAccount(signer.publicKey());
   }
 
   const row: AgentRow = {
-    id: randomUUID(),
+    id,
     owner,
-    public_key: keypair.publicKey(),
-    encrypted_secret: encryptSecret(keypair.secret()),
+    public_key: signer.publicKey(),
+    encrypted_secret: '',
+    turnkey_private_key_id: signer.id,
     status: 'new',
     delegator: null,
     strategy: null,
@@ -58,8 +70,8 @@ export async function createAgent(owner: string): Promise<AgentSummary> {
   };
   getDb()
     .prepare(
-      `INSERT INTO agents (id, owner, public_key, encrypted_secret, status, created_at)
-       VALUES (@id, @owner, @public_key, @encrypted_secret, @status, @created_at)`
+      `INSERT INTO agents (id, owner, public_key, encrypted_secret, turnkey_private_key_id, status, created_at)
+       VALUES (@id, @owner, @public_key, @encrypted_secret, @turnkey_private_key_id, @status, @created_at)`
     )
     .run(row);
   return toSummary(row);
@@ -79,7 +91,17 @@ export function getAgent(id: string): AgentSummary | undefined {
   return row ? toSummary(row) : undefined;
 }
 
-export function getAgentSigner(row: AgentRow): Keypair {
+/**
+ * Resolves the signer for an agent's own account (the tx source/fee-payer for its
+ * redemptions). New agents are always Turnkey-backed — this makes a network call to fetch
+ * that key's current public key and returns a `RemoteSigner` that round-trips every `sign()`
+ * to Turnkey's MPC cluster. Agents created before Turnkey integration fall back to their
+ * locally encrypted secret.
+ */
+export async function getAgentSigner(row: AgentRow): Promise<Signer> {
+  if (row.turnkey_private_key_id) {
+    return TurnkeySigner.forExistingKey(getTurnkeyClient(), getTurnkeyOrganizationId(), row.turnkey_private_key_id);
+  }
   return Keypair.fromSecret(decryptSecret(row.encrypted_secret));
 }
 

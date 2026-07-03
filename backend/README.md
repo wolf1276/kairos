@@ -1,9 +1,12 @@
 # @wolf1276/kairos-agent-backend
 
 A custodial agent-wallet runtime. Unlike `packages/mcp-agent` (where each user runs their own
-local MCP server holding its own ephemeral key), this is a centralized service that:
+local MCP server holding its own MPC-backed key), this is a centralized service that:
 
-1. Generates and encrypts agent keypairs server-side (AES-256-GCM, key from `AGENT_MASTER_KEY`).
+1. Creates a Turnkey-backed Ed25519 key per agent — the private key is generated and held as
+   secret shares across Turnkey's MPC signing cluster, never assembled in this process (see
+   `src/turnkey.ts`, `@wolf1276/kairos-turnkey-signer`). Agents created before this
+   integration keep working via their legacy AES-256-GCM-encrypted secret (`AGENT_MASTER_KEY`).
 2. Lets a user attach a signed Kairos delegation to an agent (delegate = that agent's public key).
 3. Runs a scheduler that ticks every `SCHEDULER_INTERVAL_MS` and, for every `running` agent,
    executes its configured strategy against its attached delegation — currently only `dca`
@@ -16,7 +19,13 @@ The frontend at `/dashboard/agents` talks to this service directly over HTTP.
 ```bash
 cp .env.example .env
 # fill in DELEGATION_MANAGER_CONTRACT_ID / POLICY_CONTRACT_ID / CUSTOM_ACCOUNT_CONTRACT_ID
-# from configs/contracts.testnet.json, and generate AGENT_MASTER_KEY:
+# from configs/contracts.testnet.json.
+#
+# Turnkey (new agents' keys live here): set TURNKEY_ORGANIZATION_ID and point
+# TURNKEY_CREDENTIALS_FILE at your exported Turnkey API key JSON, e.g.
+# ../secrets/kairos-api-turnkey.json (keep it out of source control).
+#
+# AGENT_MASTER_KEY is only needed if this DB has agents created before Turnkey integration:
 openssl rand -hex 32
 
 pnpm --filter @wolf1276/kairos-agent-backend dev
@@ -38,9 +47,16 @@ pnpm --filter @wolf1276/kairos-agent-backend dev
 
 ## Security notes
 
-- `AGENT_MASTER_KEY` decrypts every stored agent secret — treat it like a root credential.
-  Losing it makes all stored agent wallets permanently unusable (the secrets are unrecoverable
-  without it, by design).
+- New agents' private keys never exist in this process — they're MPC-backed via Turnkey, and
+  every signature is a network round-trip to Turnkey's cluster. The `TURNKEY_API_PRIVATE_KEY`
+  (or `TURNKEY_CREDENTIALS_FILE`) is the one local secret in this design: it authenticates to
+  Turnkey but by itself cannot reconstruct any agent's Ed25519 key. Treat it like a root
+  credential regardless — anyone holding it can request signatures from every agent key in
+  the Turnkey organization.
+- `AGENT_MASTER_KEY` only matters for agents created before Turnkey integration — it decrypts
+  their locally stored secret. Losing it makes those specific stored agent wallets permanently
+  unusable (the secrets are unrecoverable without it, by design); it has no effect on
+  Turnkey-backed agents.
 - This service should sit behind your own auth/network boundary before going anywhere near
   production — as built, any caller who can reach `/api/agents` can create agents and start
   strategies against whatever delegation gets attached. There's no per-request authentication

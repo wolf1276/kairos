@@ -1,6 +1,29 @@
-import { Address, hash, xdr, StrKey } from '@stellar/stellar-sdk';
-import { Delegation } from '../types';
+import { Address, hash, xdr, StrKey, Transaction } from '@stellar/stellar-sdk';
+import { Delegation, Signer, isRemoteSigner } from '../types';
 import { RpcError } from '../errors';
+
+/**
+ * Signs `tx` in place with either a local `Keypair` (synchronous, via stellar-sdk's own
+ * `Transaction.sign`) or a `RemoteSigner` (async — e.g. an MPC provider like Turnkey). For
+ * the remote-signer path, this reimplements what `Transaction.sign` does internally: sign
+ * the transaction's signature-base hash and append a `DecoratedSignature` whose 4-byte hint
+ * is the signer's raw public key's last 4 bytes — so a `RemoteSigner` wrapping the same key
+ * material as a `Keypair` produces an identical signed transaction either way.
+ */
+export async function signTransaction(tx: Transaction, signer: Signer): Promise<void> {
+  if (!isRemoteSigner(signer)) {
+    tx.sign(signer);
+    return;
+  }
+  const txHash = tx.hash();
+  const rawSignature = await signer.sign(txHash);
+  if (rawSignature.length !== 64) {
+    throw new RpcError(`RemoteSigner.sign must return a 64-byte Ed25519 signature. Received: ${rawSignature.length}`);
+  }
+  const rawPublicKey = StrKey.decodeEd25519PublicKey(signer.publicKey());
+  const hint = rawPublicKey.subarray(rawPublicKey.length - 4);
+  tx.signatures.push(new xdr.DecoratedSignature({ hint, signature: rawSignature }));
+}
 
 /**
  * Gets the raw ScAddress XDR bytes (without ScVal wrapper).

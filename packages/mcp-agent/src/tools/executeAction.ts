@@ -1,4 +1,5 @@
-import { Address, Keypair, StrKey, xdr } from '@stellar/stellar-sdk';
+import { Address, StrKey, xdr } from '@stellar/stellar-sdk';
+import type { Signer } from '@wolf1276/kairos-sdk';
 import { z } from 'zod';
 import { getKairosClient } from '../client.js';
 import { loadEligibleDelegations } from '../delegations.js';
@@ -37,10 +38,10 @@ function encodeArg(value: string | number | boolean): xdr.ScVal {
 
 export async function executeActionHandler(
   input: z.infer<typeof executeActionInput>,
-  sessionKeypair: Keypair
+  sessionSigner: Signer
 ) {
   const client = getKairosClient();
-  const sessionPubkey = sessionKeypair.publicKey();
+  const sessionPubkey = sessionSigner.publicKey();
 
   const eligible = await loadEligibleDelegations(client, sessionPubkey);
   // Dashboard-minted delegations carry `0xFE` indexed caveats whose real terms live in the
@@ -78,7 +79,7 @@ export async function executeActionHandler(
 
   try {
     const result = await client.execution.execute({
-      redeemer: sessionKeypair,
+      redeemer: sessionSigner,
       delegationChains: [[delegation]],
       executions: [
         {

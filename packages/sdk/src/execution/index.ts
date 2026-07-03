@@ -1,16 +1,19 @@
-import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Address, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
-import { Delegation, Execution, TransactionResult } from '../types';
+import { Delegation, Execution, Signer, TransactionResult } from '../types';
 import { TransactionSimulationError } from '../errors';
 
 export class ExecutionModule {
   constructor(private client: KairosClient) {}
 
   /**
-   * Executes one or more delegation executions on-chain.
+   * Executes one or more delegation executions on-chain. `redeemer` may be a local
+   * `Keypair` or a `RemoteSigner` (e.g. an MPC-backed agent key) — either way, only the
+   * redeemer's public key ever needs to be resolvable synchronously; signing itself may
+   * be an async round-trip to a remote signer (see `KairosClient.submitTransaction`).
    */
   async execute(params: {
-    redeemer: Keypair;
+    redeemer: Signer;
     delegationChains: Delegation[][] | Delegation[];
     executions: Execution[] | Execution;
   }): Promise<TransactionResult> {
