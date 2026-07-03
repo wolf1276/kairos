@@ -46,10 +46,12 @@ export function computeAvgCostAndRealize(
   if (side === 'buy') return { realizedPnl: null };
 
   const priorTrades = listTradesForAgent(agentId);
-  const { avgCost } = replayCostBasis(priorTrades, pair);
+  const { avgCost, openAmount } = replayCostBasis(priorTrades, pair);
   const sellPrice = parseFloat(price);
-  const sellAmount = parseFloat(amount);
-  const realized = (sellPrice - avgCost) * sellAmount;
+  // Only the portion covered by an actual open position realizes P&L. Selling with no (or a
+  // smaller) open position must not book phantom profit against avgCost=0 — clamp to openAmount.
+  const realizedAmount = Math.min(parseFloat(amount), openAmount);
+  const realized = realizedAmount > 0 ? (sellPrice - avgCost) * realizedAmount : 0;
   return { realizedPnl: String(realized) };
 }
 

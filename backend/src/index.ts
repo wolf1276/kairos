@@ -17,6 +17,10 @@ app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.use('/api/auth', authRouter);
+// Public — must be registered before the broad `/api` requireAuth mount below, otherwise that
+// middleware runs first and 401s every unauthenticated strategies fetch (the frontend's
+// listStrategies sends no bearer token).
+app.use('/api/strategies', strategiesRouter);
 // statsRouter's GET /agents/summary must be reachable before agentsRouter's GET /:id — otherwise
 // that catch-all treats "summary" as an agent id and 404s (see agentStatsRouter/etc. below,
 // which are safe since their patterns need an extra /:id/segment that "summary" alone can't match).
@@ -27,7 +31,6 @@ app.use('/api/agents', requireAuth, agentAuditRouter);
 app.use('/api/agents', requireAuth, agentsRouter);
 app.use('/api/positions', requireAuth, positionsRouter);
 app.use('/api/audit', requireAuth, auditRouter);
-app.use('/api/strategies', strategiesRouter);
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const message = error instanceof Error ? error.message : String(error);
