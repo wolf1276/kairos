@@ -109,6 +109,7 @@ export default function HistoryPage() {
   const [view, setView] = useState<"activity" | "trades">("activity");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [selectedEvent, setSelectedEvent] = useState<AuditLogRow | null>(null);
 
   const refresh = async (showSpinner = false) => {
     if (!walletOwner) return;
@@ -271,7 +272,11 @@ export default function HistoryPage() {
               </thead>
               <tbody className="divide-y divide-white/5">
                 {activity.map((e) => (
-                  <tr key={e.id} className="transition-colors hover:bg-white/[0.02]">
+                  <tr
+                    key={e.id}
+                    onClick={() => setSelectedEvent(e)}
+                    className="cursor-pointer transition-colors hover:bg-white/[0.02]"
+                  >
                     <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-text-secondary">
                       {new Date(e.created_at).toLocaleString()}
                     </td>
@@ -382,6 +387,79 @@ export default function HistoryPage() {
           </div>
         </>
       )}
+
+      {selectedEvent && (
+        <AuditDetailModal event={selectedEvent} agentName={agentLabel(selectedEvent.agent_id, agents)} onClose={() => setSelectedEvent(null)} />
+      )}
+    </div>
+  );
+}
+
+function prettyMaybeJson(v: string): string {
+  try {
+    return JSON.stringify(JSON.parse(v), null, 2);
+  } catch {
+    return v;
+  }
+}
+
+/** Full-detail drill-down for a single audit event — every event type (market_analysis,
+ *  policy_check, delegation_check, risk_check, trade_opened/closed, etc.) carries whichever of
+ *  these structured fields are relevant to it, so this renders whatever's actually present
+ *  instead of assuming a fixed shape. Same depth as the Autonomous page's decision replay
+ *  modal, but reachable for every event on every agent from one place. */
+function AuditDetailModal({ event, agentName, onClose }: { event: AuditLogRow; agentName: string; onClose: () => void }) {
+  const blocks: [string, string | null][] = [
+    ["Message", event.message],
+    ["Market snapshot", event.market_snapshot_json],
+    ["Indicators", event.indicators_json],
+    ["Signal", event.signal],
+    ["Policy validation", event.policy_validation_json],
+    ["Delegation validation", event.delegation_validation_json],
+    ["Position after", event.position_after_json],
+    ["PnL after", event.pnl_after_json],
+  ];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-white/10 bg-bg-primary p-5" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-3 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Badge tone={eventTone(event.event_type)}>{EVENT_LABELS[event.event_type] ?? event.event_type}</Badge>
+            {event.mode && <Badge tone={event.mode === "live" ? "error" : "neutral"}>{event.mode}</Badge>}
+            <span className="font-mono text-[11px] text-text-muted">{agentName} · {new Date(event.created_at).toLocaleString()}</span>
+          </div>
+          <button onClick={onClose} className="text-xs text-text-muted hover:text-text-primary">✕</button>
+        </div>
+        <p className="mb-3 text-[10px] text-text-muted">
+          Event {event.id} · strategy {event.strategy_id ?? "—"} · pair {event.pair ?? "—"}
+          {event.execution_status ? ` · ${event.execution_status}` : ""}
+        </p>
+        {event.tx_hash && (
+          <p className="mb-3 text-[10px]">
+            {event.tx_hash.startsWith("paper-") ? (
+              <span className="font-mono text-text-muted">paper fill</span>
+            ) : (
+              <a
+                href={`https://stellar.expert/explorer/testnet/tx/${event.tx_hash}`}
+                target="_blank"
+                rel="noreferrer"
+                className="font-mono text-accent/70 hover:text-accent"
+              >
+                view tx: {event.tx_hash}
+              </a>
+            )}
+          </p>
+        )}
+        <div className="space-y-2">
+          {blocks.filter(([, v]) => v).map(([label, v]) => (
+            <div key={label}>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted">{label}</p>
+              <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap rounded-lg bg-bg-elevated px-2.5 py-1.5 text-[11px] text-text-secondary">{prettyMaybeJson(v as string)}</pre>
+            </div>
+          ))}
+          {blocks.every(([, v]) => !v) && <p className="py-4 text-center text-xs text-text-muted">No additional detail recorded for this event.</p>}
+        </div>
+      </div>
     </div>
   );
 }
