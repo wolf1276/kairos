@@ -1,0 +1,32 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "4001:4001"
+    environment:
+      PORT: 4001
+      AGENTS_DB_PATH: /app/backend/data/agents.db
+      STELLAR_NETWORK: ${STELLAR_NETWORK:-testnet}
+      ALLOWED_ORIGIN: ${ALLOWED_ORIGIN:-*}
+      HUGGINGFACE_API_KEY: ${HUGGINGFACE_API_KEY}
+      CUSTOM_ACCOUNT_CONTRACT_ID: ${CUSTOM_ACCOUNT_CONTRACT_ID}
+    volumes:
+      - backend-data:/app/backend/data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_AGENTS_API_URL: ${NEXT_PUBLIC_AGENTS_API_URL:-http://localhost:4001}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  backend-data:
