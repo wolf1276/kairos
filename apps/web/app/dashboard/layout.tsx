@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { href: "/dashboard/trade", label: "Trade", exact: false },
   { href: "/dashboard/portfolio", label: "Portfolio", exact: false },
   { href: "/dashboard/delegations-v2", label: "Delegations", exact: false },
+  { href: "/dashboard/agents", label: "Agents", exact: false },
   { href: "/dashboard/history", label: "History", exact: false },
   { href: "/dashboard/settings", label: "Settings", exact: true },
 ] as const;

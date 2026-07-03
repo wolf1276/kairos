@@ -8,6 +8,7 @@ export interface ToastData {
   kind: ToastKind;
   title: string;
   message?: string;
+  action?: { label: string; onClick: () => void };
 }
 
 export function ToastBar({
@@ -33,7 +34,8 @@ export function ToastBar({
 
   useEffect(() => {
     if (!toast) return;
-    const t = setTimeout(onDismiss, 4000);
+    const duration = toast.action ? 10000 : 4000;
+    const t = setTimeout(onDismiss, duration);
     return () => clearTimeout(t);
   }, [toast, onDismiss]);
 
@@ -78,9 +80,17 @@ export function ToastBar({
           <p className="text-xs font-medium">{toast.title}</p>
           {toast.message && <p className="mt-0.5 text-[11px] opacity-80">{toast.message}</p>}
         </div>
+        {toast.action && (
+          <button
+            onClick={() => { toast.action!.onClick(); onDismiss(); }}
+            className="shrink-0 rounded-lg px-2.5 py-1 text-[11px] font-semibold text-white bg-accent/70 hover:bg-accent transition-colors cursor-pointer"
+          >
+            {toast.action.label}
+          </button>
+        )}
         <button
           onClick={onDismiss}
-          className="ml-2 shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+          className="ml-1 shrink-0 rounded p-0.5 opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
             <line x1="18" y1="6" x2="6" y2="18" />

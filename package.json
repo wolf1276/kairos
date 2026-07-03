@@ -5,7 +5,8 @@
   "workspaces": [
     "packages/*",
     "apps/web",
-    "apps/comming-soon"
+    "apps/comming-soon",
+    "backend"
   ],
   "scripts": {
     "build": "pnpm --filter @wolf1276/kairos-sdk build",
@@ -18,7 +19,8 @@
     "onlyBuiltDependencies": [
       "esbuild",
       "sharp",
-      "unrs-resolver"
+      "unrs-resolver",
+      "better-sqlite3"
     ]
   },
   "dependencies": {

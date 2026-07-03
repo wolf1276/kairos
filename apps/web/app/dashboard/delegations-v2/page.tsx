@@ -13,6 +13,8 @@ import { CreateDelegationWizard } from "./components/CreateDelegationWizard";
 import { ActivityTimeline } from "./components/ActivityTimeline";
 import { TemplateSelector } from "./components/TemplateSelector";
 import { ToastBar, type ToastData } from "./components/Toast";
+import { ConfirmRevokeDialog } from "./components/ConfirmRevokeDialog";
+import { DelegationDetailDrawer } from "./components/DelegationDetailDrawer";
 import { useActivityTimeline } from "./hooks/useActivityTimeline";
 import type { DelegationRecord, DelegationFilters, DelegationTemplate } from "./types/delegation";
 
@@ -39,14 +41,17 @@ export default function DelegationsV2Page() {
   const [selectedHashes, setSelectedHashes] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<ToastData | null>(null);
 
+  // Confirmation dialog state
+  const [confirmRevoke, setConfirmRevoke] = useState<DelegationRecord[] | null>(null);
+
   const filtered = delegationsApi.filteredDelegations(filters);
   const shouldShowDelegations = wallet.walletOwner && !delegationsApi.error;
   const isInitialLoading = delegationsApi.loading && delegationsApi.delegations.length === 0;
 
   const dismissToast = useCallback(() => setToast(null), []);
 
-  const showToast = useCallback((kind: ToastData["kind"], title: string, message?: string) => {
-    setToast({ kind, title, message });
+  const showToast = useCallback((kind: ToastData["kind"], title: string, message?: string, action?: { label: string; onClick: () => void }) => {
+    setToast({ kind, title, message, action });
   }, []);
 
   // Close drawer on Escape
@@ -101,14 +106,65 @@ export default function DelegationsV2Page() {
     [delegationsApi, showToast, timeline]
   );
 
-  const handleRevoke = useCallback(
+  // ── Revoke with confirmation and undo ──
+
+  const executeRevoke = useCallback(
     async (d: DelegationRecord) => {
       await delegationsApi.revoke(d);
       timeline.addEvent(d.hash, "revoked");
-      showToast("info", "Delegation Revoked", `${d.hash.slice(0, 8)}…${d.hash.slice(-6)} has been disabled`);
+      showToast("info", "Delegation Revoked", `${d.hash.slice(0, 8)}…${d.hash.slice(-6)} has been disabled`, {
+        label: "Undo",
+        onClick: async () => {
+          await delegationsApi.enable(d);
+          timeline.addEvent(d.hash, "enabled");
+          showToast("success", "Delegation Restored", `${d.hash.slice(0, 8)}…${d.hash.slice(-6)} is active again`);
+        },
+      });
     },
     [delegationsApi, showToast, timeline]
   );
+
+  const handleRevokeClick = useCallback(
+    async (d: DelegationRecord) => {
+      setConfirmRevoke([d]);
+      pendingRevokeRef.current = executeRevoke;
+    },
+    [executeRevoke]
+  );
+
+  const handleConfirmRevoke = useCallback(async () => {
+    const list = confirmRevoke;
+    setConfirmRevoke(null);
+    if (!list || list.length === 0) return;
+
+    if (list.length === 1) {
+      await executeRevoke(list[0]);
+    } else {
+      // Batch revoke
+      const hashes: string[] = [];
+      for (const d of list) {
+        if (!d.disabled) {
+          await delegationsApi.revoke(d);
+          timeline.addEvent(d.hash, "revoked");
+          hashes.push(d.hash);
+        }
+      }
+      showToast("info", "Batch Revoke", `${hashes.length} delegation${hashes.length !== 1 ? "s" : ""} revoked`, hashes.length > 0 ? {
+        label: "Undo All",
+        onClick: async () => {
+          for (const d of list) {
+            if (hashes.includes(d.hash)) {
+              await delegationsApi.enable(d);
+              timeline.addEvent(d.hash, "enabled");
+            }
+          }
+          showToast("success", "Batch Restored", `${hashes.length} delegation${hashes.length !== 1 ? "s" : ""} re-enabled`);
+        },
+      } : undefined);
+      setSelectedHashes(new Set());
+      setSelectMode(false);
+    }
+  }, [confirmRevoke, executeRevoke, delegationsApi, showToast, timeline]);
 
   const toggleSelectMode = useCallback(() => {
     setSelectMode((prev) => {
@@ -126,19 +182,13 @@ export default function DelegationsV2Page() {
     });
   }, []);
 
-  const handleBatchRevoke = useCallback(async () => {
-    const hashes = [...selectedHashes];
-    for (const hash of hashes) {
-      const d = delegationsApi.delegations.find((d) => d.hash === hash);
-      if (d && !d.disabled) {
-        await delegationsApi.revoke(d);
-        timeline.addEvent(d.hash, "revoked");
-      }
-    }
-    showToast("info", "Batch Revoke", `${hashes.length} delegation${hashes.length !== 1 ? "s" : ""} revoked`);
-    setSelectedHashes(new Set());
-    setSelectMode(false);
-  }, [selectedHashes, delegationsApi, showToast, timeline]);
+  const handleBatchRevokeClick = useCallback(() => {
+    const dels = [...selectedHashes]
+      .map((hash) => delegationsApi.delegations.find((d) => d.hash === hash))
+      .filter((d): d is DelegationRecord => !!d && !d.disabled);
+    if (dels.length === 0) return;
+    setConfirmRevoke(dels);
+  }, [selectedHashes, delegationsApi.delegations]);
 
   const handleEnable = useCallback(
     async (d: DelegationRecord) => {
@@ -151,15 +201,15 @@ export default function DelegationsV2Page() {
 
   return (
     <div className="space-y-6">
-      {/* Phase 2: Page Header */}
+      {/* Page Header */}
       <DelegationHeader stats={delegationsApi.stats} onCreateClick={handleCreate} />
 
-      {/* Phase 2: Statistics Cards */}
+      {/* Statistics Cards */}
       {isInitialLoading ? <StatsSkeleton /> : shouldShowDelegations && (
         <StatsCards stats={delegationsApi.stats} loading={delegationsApi.loading} />
       )}
 
-      {/* Phase 3: Search & Filter */}
+      {/* Search & Filter */}
       {shouldShowDelegations && (
         <SearchFilter
           filters={filters}
@@ -168,7 +218,7 @@ export default function DelegationsV2Page() {
         />
       )}
 
-      {/* Phase 6: Error State */}
+      {/* Error State */}
       {delegationsApi.error && (
         <div className="rounded-xl border border-error/15 bg-error/6 px-5 py-4">
           <div className="flex items-center justify-between">
@@ -190,7 +240,7 @@ export default function DelegationsV2Page() {
         </div>
       )}
 
-      {/* Phase 9: Select mode toggle + Batch bar */}
+      {/* Select mode toggle + Batch bar */}
       {shouldShowDelegations && delegationsApi.delegations.length > 0 && (
         <div className="flex items-center justify-between">
           <button
@@ -207,7 +257,7 @@ export default function DelegationsV2Page() {
             <div className="flex items-center gap-3">
               <span className="text-[11px] text-text-muted">{selectedHashes.size} selected</span>
               <button
-                onClick={handleBatchRevoke}
+                onClick={handleBatchRevokeClick}
                 className="rounded-lg bg-error/10 px-3 py-1.5 text-[11px] font-medium text-error hover:bg-error/15 transition-colors cursor-pointer"
               >
                 Revoke {selectedHashes.size > 1 ? `(${selectedHashes.size})` : ""}
@@ -217,7 +267,7 @@ export default function DelegationsV2Page() {
         </div>
       )}
 
-      {/* Phase 4 & 7: Delegation List / Empty / Loading */}
+      {/* Delegation List / Empty / Loading */}
       {isInitialLoading ? (
         <DelegationListSkeleton />
       ) : !wallet.walletOwner || delegationsApi.delegations.length === 0 ? (
@@ -230,10 +280,11 @@ export default function DelegationsV2Page() {
       ) : filtered.length > 0 ? (
         <DelegationList
           delegations={filtered}
-          onRevoke={handleRevoke}
+          onRevoke={handleRevokeClick}
           onEnable={handleEnable}
           onView={handleView}
           actionLoading={delegationsApi.actionLoading}
+          actionErrors={delegationsApi.actionErrors}
           selectMode={selectMode}
           selectedHashes={selectedHashes}
           onToggleSelect={toggleSelectHash}
@@ -258,7 +309,7 @@ export default function DelegationsV2Page() {
         </div>
       )}
 
-      {/* Phase 9: Template picker modal (shown before wizard) */}
+      {/* Template picker modal (shown before wizard) */}
       {showWizard && showTemplatePicker && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
           <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => { setShowWizard(false); setShowTemplatePicker(false); }} />
@@ -283,7 +334,7 @@ export default function DelegationsV2Page() {
         </div>
       )}
 
-      {/* Phase 5: Create Delegation Wizard */}
+      {/* Create Delegation Wizard */}
       <CreateDelegationWizard
         open={showWizard}
         walletOwner={wallet.walletOwner}
@@ -292,145 +343,28 @@ export default function DelegationsV2Page() {
         onClose={handleWizardClose}
       />
 
-      {/* Phase 5: Detail Drawer */}
+      {/* Detail Drawer */}
       {selectedDelegation && (
-        <SlideOverDrawer
+        <DelegationDetailDrawer
           delegation={selectedDelegation}
           onClose={handleCloseDetail}
-          onRevoke={handleRevoke}
+          onRevoke={handleRevokeClick}
           onEnable={handleEnable}
+          onDuplicate={handleDuplicate}
           actionLoading={delegationsApi.actionLoading}
+          actionErrors={delegationsApi.actionErrors}
         />
       )}
 
+      {/* Confirmation Dialog */}
+      <ConfirmRevokeDialog
+        open={confirmRevoke !== null}
+        delegations={confirmRevoke ?? []}
+        onClose={() => setConfirmRevoke(null)}
+        onConfirm={handleConfirmRevoke}
+      />
+
       <ToastBar toast={toast} onDismiss={dismissToast} />
-    </div>
-  );
-}
-
-function SlideOverDrawer({
-  delegation,
-  onClose,
-  onRevoke,
-  onEnable,
-  actionLoading,
-}: {
-  delegation: DelegationRecord;
-  onClose: () => void;
-  onRevoke: (d: DelegationRecord) => void;
-  onEnable: (d: DelegationRecord) => void;
-  actionLoading: string | null;
-}) {
-  return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div className="absolute inset-0 bg-black/40" onClick={onClose} />
-      <div className="relative w-full max-w-lg bg-bg-primary border-l border-white/5 shadow-2xl overflow-y-auto animate-slide-in-right">
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/5 bg-bg-primary/90 backdrop-blur-sm px-6 py-4">
-          <h2 className="font-display text-sm font-medium text-text-primary">
-            Delegation Details
-          </h2>
-          <button
-            onClick={onClose}
-            className="rounded-lg p-1.5 text-text-muted hover:text-text-secondary hover:bg-white/[0.04] transition-colors cursor-pointer"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <line x1="18" y1="6" x2="6" y2="18" />
-              <line x1="6" y1="6" x2="18" y2="18" />
-            </svg>
-          </button>
-        </div>
-
-        <div className="p-6 space-y-6">
-          {/* Overview */}
-          <section>
-            <h3 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted mb-3">
-              Overview
-            </h3>
-            <div className="space-y-3">
-              <DetailRow label="Hash" value={delegation.hash} mono />
-              <DetailRow label="Delegator" value={delegation.delegator} mono />
-              {delegation.full && (
-                <>
-                  <DetailRow label="Delegate" value={delegation.full.delegate} mono />
-                  <DetailRow label="Authority" value={delegation.full.authority} mono />
-                  <DetailRow label="Nonce" value={delegation.full.nonce} mono />
-                </>
-              )}
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-text-muted">Status</span>
-                <span className={`text-[11px] font-mono font-medium ${delegation.disabled ? "text-error" : "text-success"}`}>
-                  {delegation.disabled ? "Disabled" : "Active"}
-                </span>
-              </div>
-            </div>
-          </section>
-
-          {/* Policies */}
-          <section>
-            <h3 className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted mb-3">
-              Policies ({delegation.full?.caveats.length ?? 0})
-            </h3>
-            {delegation.full && delegation.full.caveats.length > 0 ? (
-              <div className="space-y-2">
-                {delegation.full.caveats.map((c, i) => (
-                  <div key={i} className="rounded-xl border border-white/5 bg-white/[0.02] p-3">
-                    <p className="text-xs font-mono text-text-primary">
-                      Enforcer: {c.enforcer.slice(0, 8)}…{c.enforcer.slice(-4)}
-                    </p>
-                    <p className="mt-1 text-[11px] text-text-muted">
-                      Terms: {c.terms.length} bytes
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="text-xs text-text-muted">No policies attached (unrestricted)</p>
-            )}
-          </section>
-
-          {/* Actions */}
-          <section className="pt-2 border-t border-white/5">
-            <div className="flex gap-3">
-              {delegation.full && (
-                <button
-                  onClick={() => (delegation.disabled ? onEnable(delegation) : onRevoke(delegation))}
-                  disabled={actionLoading === delegation.hash}
-                  className={`flex-1 rounded-xl px-4 py-2.5 text-xs font-semibold text-white transition-all duration-200 cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 ${
-                    delegation.disabled
-                      ? "bg-emerald-600/80 hover:bg-emerald-600"
-                      : "bg-red-600/80 hover:bg-red-600"
-                  }`}
-                >
-                  {actionLoading === delegation.hash
-                    ? "Processing..."
-                    : delegation.disabled
-                      ? "Enable Delegation"
-                      : "Revoke Delegation"}
-                </button>
-              )}
-              <button
-                onClick={() => {
-                  navigator.clipboard.writeText(delegation.hash);
-                }}
-                className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2.5 text-xs text-text-secondary hover:text-text-primary transition-colors cursor-pointer"
-              >
-                Copy Hash
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DetailRow({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
-  return (
-    <div className="flex items-center justify-between">
-      <span className="text-[11px] text-text-muted">{label}</span>
-      <span className={`text-[11px] ${mono ? "font-mono" : ""} text-text-secondary truncate ml-4 max-w-[240px] text-right`} title={value}>
-        {value}
-      </span>
     </div>
   );
 }

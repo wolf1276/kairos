@@ -52,11 +52,9 @@ export default function DashboardOverview() {
   // `localStorage` doesn't exist during SSR — this component is a client component, but
   // Next.js still server-renders it for the initial HTML, so reading it in a useState
   // initializer (which runs on that first render) crashed the whole page with a 500.
-  // Default to dismissed=false and reconcile after mount instead.
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  useEffect(() => {
-    setOnboardingDismissed(localStorage.getItem("kairos:onboarding-dismissed") === "1");
-  }, []);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(
+    typeof window !== "undefined" ? localStorage.getItem("kairos:onboarding-dismissed") === "1" : false
+  );
   const dismissOnboarding = () => {
     localStorage.setItem("kairos:onboarding-dismissed", "1");
     setOnboardingDismissed(true);

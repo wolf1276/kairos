@@ -1,5 +1,6 @@
 "use client";
 
+import { useCallback } from "react";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import type { DelegationRecord } from "../types/delegation";
@@ -40,6 +41,7 @@ export function DelegationCard({
   onEnable,
   onView,
   actionLoading,
+  actionErrors,
   selectMode,
   selected,
   onToggleSelect,
@@ -50,15 +52,29 @@ export function DelegationCard({
   onEnable: (d: DelegationRecord) => void;
   onView: (d: DelegationRecord) => void;
   actionLoading: string | null;
+  actionErrors?: Record<string, string>;
   selectMode?: boolean;
   selected?: boolean;
   onToggleSelect?: (hash: string) => void;
   onDuplicate?: (d: DelegationRecord) => void;
 }) {
   const isLoading = actionLoading === delegation.hash;
+  const error = actionErrors?.[delegation.hash];
   const { hash, disabled, full } = delegation;
   const policyCount = full?.caveats.length ?? 0;
   const health = calcHealthScore(delegation);
+
+  const handleExportJson = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!full) return;
+    const blob = new Blob([JSON.stringify(full, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `delegation-${hash.slice(0, 8)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [full, hash]);
 
   return (
     <div
@@ -66,7 +82,7 @@ export function DelegationCard({
         selected
           ? "border-accent/30 bg-accent-muted/20"
           : disabled
-            ? "border-white/5 bg-white/[0.01] opacity-60"
+            ? "border-red-900/20 bg-white/[0.01]"
             : isLoading
               ? "border-accent/20 bg-white/[0.03] animate-glow-subtle"
               : "border-white/5 bg-white/[0.02] hover:border-accent/15 hover:bg-white/[0.03] hover:shadow-[0_8px_30px_-8px_rgba(0,0,0,0.3)]"
@@ -116,7 +132,7 @@ export function DelegationCard({
                   {shortHash(hash)}
                 </span>
                 <Badge tone={disabled ? "error" : "success"} dot>
-                  {disabled ? "Disabled" : "Active"}
+                  {disabled ? "Revoked" : "Active"}
                 </Badge>
                 <span className={`text-[10px] font-mono ${health.color}`}>
                   {health.label}
@@ -145,6 +161,19 @@ export function DelegationCard({
             >
               View
             </button>
+            {full && (
+              <button
+                onClick={handleExportJson}
+                className="rounded-lg px-2.5 py-1.5 text-[11px] font-medium text-text-muted hover:text-text-secondary hover:bg-white/[0.04] transition-all duration-200 cursor-pointer"
+                title="Export JSON"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              </button>
+            )}
             {onDuplicate && (
               <button
                 onClick={() => onDuplicate(delegation)}
@@ -179,35 +208,35 @@ export function DelegationCard({
           </div>
         </div>
 
-        {/* Details row */}
-        <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 text-[11px]">
-          {full && full.caveats.length > 0 ? (
+        {/* Caveat summary row */}
+        {full && full.caveats.length > 0 && (
+          <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1.5">
             <div className="flex items-center gap-1.5">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-text-muted">
                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
                 <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              <span className="text-text-secondary">
+              <span className="text-[11px] text-text-secondary">
                 {policyCount} polic{policyCount !== 1 ? "ies" : "y"}
               </span>
             </div>
-          ) : full ? (
-            <span className="text-text-muted">No policies (unrestricted)</span>
-          ) : null}
+            {full.caveats.map((c, i) => (
+              <span
+                key={i}
+                className="rounded-full border border-white/5 bg-white/[0.02] px-2 py-0.5 text-[10px] text-text-muted"
+              >
+                {describeCaveat(c.terms)}
+              </span>
+            ))}
+          </div>
+        )}
 
-          {full && full.caveats.length > 0 && (
-            <div className="flex items-center gap-1.5 flex-wrap">
-              {full.caveats.map((c, i) => (
-                <span
-                  key={i}
-                  className="rounded-full border border-white/5 bg-white/[0.02] px-2 py-0.5 text-[10px] text-text-muted"
-                >
-                  {describeCaveat(c.terms)}
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Error banner */}
+        {error && (
+          <div className="mt-3 rounded-lg border border-error/15 bg-error/6 px-3 py-2">
+            <p className="text-[11px] text-error/90">{error}</p>
+          </div>
+        )}
       </div>
     </div>
   );

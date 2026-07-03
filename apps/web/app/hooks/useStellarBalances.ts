@@ -4,12 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchAccountBalances,
   TESTNET_USDC_ISSUER,
+  type AccountBalance,
 } from "@/app/lib/stellar";
 
 export interface StellarBalances {
   xlmBalance: number;
   usdcBalance: number;
   hasUsdcTrustline: boolean;
+  allBalances: AccountBalance[];
   loading: boolean;
   error: string | null;
   refresh: () => Promise<void>;
@@ -24,6 +26,7 @@ export function useStellarBalances(
   const [xlmBalance, setXlmBalance] = useState(0);
   const [usdcBalance, setUsdcBalance] = useState(0);
   const [hasUsdcTrustline, setHasUsdcTrustline] = useState(false);
+  const [allBalances, setAllBalances] = useState<AccountBalance[]>([]);
   const [loading, setLoading] = useState(address ? true : false);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +35,7 @@ export function useStellarBalances(
     setError(null);
     try {
       const balances = await fetchAccountBalances(address, networkPassphrase);
+      setAllBalances(balances);
       const xlm = balances.find((b) => b.code === "XLM");
       const usdc = balances.find(
         (b) => b.code === "USDC" && b.issuer === TESTNET_USDC_ISSUER,
@@ -56,5 +60,5 @@ export function useStellarBalances(
     return () => clearInterval(id);
   }, [address, networkPassphrase, refresh]);
 
-  return { xlmBalance, usdcBalance, hasUsdcTrustline, loading, error, refresh };
+  return { xlmBalance, usdcBalance, hasUsdcTrustline, allBalances, loading, error, refresh };
 }

@@ -19,28 +19,29 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={cn("h-full", "font-sans", geist.variable)}>
-      <head />
-      <Script
-        id="suppress-extension-errors"
-        strategy="beforeInteractive"
-        dangerouslySetInnerHTML={{
-          __html: `
-            window.addEventListener('error', function(e) {
-              if (e.filename && (e.filename.includes('chrome-extension://') || e.filename.includes('metamask'))) {
-                e.stopImmediatePropagation();
-              }
-            }, true);
-            window.addEventListener('unhandledrejection', function(e) {
-              var stack = e.reason && e.reason.stack || '';
-              var msg = e.reason && e.reason.message || '';
-              if (stack.includes('chrome-extension://') || stack.includes('metamask') || msg.includes('MetaMask') || msg.includes('connect')) {
-                e.stopImmediatePropagation();
-                e.preventDefault();
-              }
-            }, true);
-          `,
-        }}
-      />
+      <head>
+        <Script
+          id="suppress-extension-errors"
+          strategy="beforeInteractive"
+          dangerouslySetInnerHTML={{
+            __html: `
+              window.addEventListener('error', function(e) {
+                if (e.filename && (e.filename.includes('chrome-extension://') || e.filename.includes('metamask'))) {
+                  e.stopImmediatePropagation();
+                }
+              }, true);
+              window.addEventListener('unhandledrejection', function(e) {
+                var stack = e.reason && e.reason.stack || '';
+                var msg = e.reason && e.reason.message || '';
+                if (stack.includes('chrome-extension://') || stack.includes('metamask') || msg.includes('MetaMask') || msg.includes('connect')) {
+                  e.stopImmediatePropagation();
+                  e.preventDefault();
+                }
+              }, true);
+            `,
+          }}
+        />
+      </head>
       <body className="min-h-full bg-bg-primary text-text-primary antialiased">
         {children}
       </body>

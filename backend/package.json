@@ -1,0 +1,33 @@
+{
+  "name": "@wolf1276/kairos-agent-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Custodial agent-wallet runtime: generates and holds agent keypairs, runs their scheduled spend strategy against an attached Kairos delegation, exposed via a REST API.",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "start": "node --env-file=.env dist/index.js",
+    "build": "tsup"
+  },
+  "dependencies": {
+    "@wolf1276/kairos-sdk": "workspace:^",
+    "@stellar/stellar-sdk": "^14.6.1",
+    "better-sqlite3": "^11.3.0",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "technicalindicators": "^3.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

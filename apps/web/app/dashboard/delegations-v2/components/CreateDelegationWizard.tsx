@@ -14,11 +14,7 @@ interface WizardState {
   permissions: string[];
   limits: {
     dailyLimit: string;
-    perTxLimit: string;
-    slippage: string;
     expiration: string;
-    cooldown: string;
-    spendingCap: string;
   };
   policies: {
     targetWhitelist: { enabled: boolean; address: string };
@@ -34,12 +30,8 @@ const INITIAL_STATE: WizardState = {
   assets: [{ symbol: "XLM", amount: 0 }],
   permissions: [],
   limits: {
-    dailyLimit: "1000",
-    perTxLimit: "500",
-    slippage: "1",
+    dailyLimit: "",
     expiration: "",
-    cooldown: "0",
-    spendingCap: "10000",
   },
   policies: {
     targetWhitelist: { enabled: false, address: "" },
@@ -88,6 +80,7 @@ export function CreateDelegationWizard({
   const [error, setError] = useState<string | null>(null);
   const [createdHash, setCreatedHash] = useState<string | null>(null);
   const [showTooltip, setShowTooltip] = useState<string | null>(null);
+  const [attemptedProceed, setAttemptedProceed] = useState(false);
 
   const update = useCallback(<K extends keyof WizardState>(key: K, value: WizardState[K]) => {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -106,6 +99,7 @@ export function CreateDelegationWizard({
   const goTo = useCallback((step: number) => {
     setForm((prev) => ({ ...prev, step }));
     setError(null);
+    setAttemptedProceed(false);
   }, []);
 
   const reset = useCallback(() => {
@@ -113,6 +107,7 @@ export function CreateDelegationWizard({
     setCreating(false);
     setError(null);
     setCreatedHash(null);
+    setAttemptedProceed(false);
   }, []);
 
   // Close on Escape
@@ -159,9 +154,25 @@ export function CreateDelegationWizard({
       case 3:
         return form.permissions.length > 0;
       case 4:
+        return (
+          form.limits.dailyLimit !== "" &&
+          !isNaN(Number(form.limits.dailyLimit)) &&
+          Number(form.limits.dailyLimit) > 0 &&
+          form.limits.expiration !== ""
+        );
+      case 5: {
+        const p = form.policies;
+        if (p.targetWhitelist.enabled && !StrKey.isValidEd25519PublicKey(p.targetWhitelist.address)) return false;
+        if (p.spendLimit.enabled) {
+          if (p.spendLimit.amount === "" || isNaN(Number(p.spendLimit.amount)) || Number(p.spendLimit.amount) <= 0) return false;
+          if (p.spendLimit.token === "") return false;
+        }
+        if (p.timeRestriction.enabled) {
+          if (!p.timeRestriction.start || !p.timeRestriction.expiry) return false;
+          if (new Date(p.timeRestriction.start) >= new Date(p.timeRestriction.expiry)) return false;
+        }
         return true;
-      case 5:
-        return true;
+      }
       case 6:
         return true;
       default:
@@ -170,8 +181,11 @@ export function CreateDelegationWizard({
   }, [form, walletOwner, delegateAddressError]);
 
   const handleNext = useCallback(() => {
+    setAttemptedProceed(true);
+    if (!canProceed()) return;
     if (form.step < 7) goTo(form.step + 1);
-  }, [form.step, goTo]);
+    setAttemptedProceed(false);
+  }, [form.step, goTo, canProceed]);
 
   const handleBack = useCallback(() => {
     if (form.step > 1) goTo(form.step - 1);
@@ -193,7 +207,15 @@ export function CreateDelegationWizard({
         policies.push({ type: "target-whitelist", target: p.targetWhitelist.address });
       }
 
-      if (p.spendLimit.enabled && p.spendLimit.amount) {
+      const limits = form.limits;
+      if (!p.spendLimit.enabled && limits.dailyLimit) {
+        policies.push({
+          type: "spend-limit",
+          token: Asset.native().contractId(networkPassphrase),
+          spendLimit: limits.dailyLimit,
+          period: "86400",
+        });
+      } else if (p.spendLimit.enabled && p.spendLimit.amount) {
         policies.push({
           type: "spend-limit",
           token: p.spendLimit.token || Asset.native().contractId(networkPassphrase),
@@ -202,7 +224,17 @@ export function CreateDelegationWizard({
         });
       }
 
-      if (p.timeRestriction.enabled && p.timeRestriction.start && p.timeRestriction.expiry) {
+      if (!p.timeRestriction.enabled && limits.expiration) {
+        const now = Math.floor(Date.now() / 1000);
+        const expiry = Math.floor(new Date(limits.expiration).getTime() / 1000);
+        if (expiry > now) {
+          policies.push({
+            type: "time-restriction",
+            start: now.toString(),
+            expiry: expiry.toString(),
+          });
+        }
+      } else if (p.timeRestriction.enabled && p.timeRestriction.start && p.timeRestriction.expiry) {
         policies.push({
           type: "time-restriction",
           start: Math.floor(new Date(p.timeRestriction.start).getTime() / 1000).toString(),
@@ -321,10 +353,10 @@ export function CreateDelegationWizard({
               />
             )}
             {form.step === 4 && (
-              <Step4Limits form={form} updateNested={updateNested} />
+              <Step4Limits form={form} updateNested={updateNested} attemptedProceed={attemptedProceed} />
             )}
             {form.step === 5 && (
-              <Step5Policies form={form} updateNested={updateNested} />
+              <Step5Policies form={form} updateNested={updateNested} attemptedProceed={attemptedProceed} />
             )}
             {form.step === 6 && (
               <Step6Review
@@ -642,11 +674,18 @@ function Step3Permissions({
 function Step4Limits({
   form,
   updateNested,
+  attemptedProceed,
 }: {
   form: WizardState;
   updateNested: (parent: keyof WizardState, field: string, value: unknown) => void;
+  attemptedProceed: boolean;
 }) {
   const limits = form.limits;
+
+  const dailyLimitErr = attemptedProceed && (
+    limits.dailyLimit === "" || isNaN(Number(limits.dailyLimit)) || Number(limits.dailyLimit) <= 0
+  );
+  const expirationErr = attemptedProceed && limits.expiration === "";
 
   return (
     <div className="space-y-5">
@@ -654,54 +693,34 @@ function Step4Limits({
         Set execution limits and safeguards for the delegation.
       </p>
 
-      <div className="grid grid-cols-2 gap-4">
-        <NumberField
-          label="Daily Limit ($)"
-          value={limits.dailyLimit}
-          onChange={(v) => updateNested("limits" as keyof WizardState, "dailyLimit", v)}
-          placeholder="1000"
+      <NumberField
+        label="Daily Limit ($)"
+        value={limits.dailyLimit}
+        onChange={(v) => updateNested("limits" as keyof WizardState, "dailyLimit", v)}
+        placeholder="1000"
+        error={dailyLimitErr ? "Enter a daily limit greater than 0" : undefined}
+      />
+
+      <div>
+        <label className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
+          Expiration
+        </label>
+        <input
+          type="datetime-local"
+          value={limits.expiration}
+          onChange={(e) => updateNested("limits" as keyof WizardState, "expiration", e.target.value)}
+          className={`w-full rounded-xl border bg-white/[0.02] px-4 py-2.5 font-mono text-xs text-text-primary transition-all duration-300 focus:outline-none focus:ring-2 ${
+            expirationErr
+              ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+              : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+          }`}
         />
-        <NumberField
-          label="Per-Tx Limit ($)"
-          value={limits.perTxLimit}
-          onChange={(v) => updateNested("limits" as keyof WizardState, "perTxLimit", v)}
-          placeholder="500"
-        />
-        <NumberField
-          label="Max Slippage (%)"
-          value={limits.slippage}
-          onChange={(v) => updateNested("limits" as keyof WizardState, "slippage", v)}
-          placeholder="1"
-          step="0.1"
-        />
-        <NumberField
-          label="Cooldown (seconds)"
-          value={limits.cooldown}
-          onChange={(v) => updateNested("limits" as keyof WizardState, "cooldown", v)}
-          placeholder="0"
-        />
-        <NumberField
-          label="Spending Cap ($)"
-          value={limits.spendingCap}
-          onChange={(v) => updateNested("limits" as keyof WizardState, "spendingCap", v)}
-          placeholder="10000"
-        />
-        <div>
-          <label className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
-            Expiration
-          </label>
-          <input
-            type="datetime-local"
-            value={limits.expiration}
-            onChange={(e) => updateNested("limits" as keyof WizardState, "expiration", e.target.value)}
-            className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2.5 font-mono text-xs text-text-primary transition-all duration-300 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
-          />
-        </div>
+        {expirationErr && <p className="mt-1.5 text-[11px] text-error/80">Set an expiration date</p>}
       </div>
 
       <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.05] px-4 py-3">
         <p className="text-[11px] text-amber-300/85">
-          Limits are enforced by on-chain policy caveats. Exceeding any limit will cause the
+          These limits create on-chain policy caveats. Exceeding them will cause the
           transaction to revert.
         </p>
       </div>
@@ -714,11 +733,20 @@ function Step4Limits({
 function Step5Policies({
   form,
   updateNested,
+  attemptedProceed,
 }: {
   form: WizardState;
   updateNested: (parent: keyof WizardState, field: string, value: unknown) => void;
+  attemptedProceed: boolean;
 }) {
   const p = form.policies;
+
+  const whitelistErr = attemptedProceed && p.targetWhitelist.enabled && !StrKey.isValidEd25519PublicKey(p.targetWhitelist.address);
+  const spendAmtErr = attemptedProceed && p.spendLimit.enabled && (p.spendLimit.amount === "" || isNaN(Number(p.spendLimit.amount)) || Number(p.spendLimit.amount) <= 0);
+  const spendTokErr = attemptedProceed && p.spendLimit.enabled && p.spendLimit.token === "";
+  const timeStartErr = attemptedProceed && p.timeRestriction.enabled && !p.timeRestriction.start;
+  const timeExpiryErr = attemptedProceed && p.timeRestriction.enabled && !p.timeRestriction.expiry;
+  const timeOrderErr = attemptedProceed && p.timeRestriction.enabled && p.timeRestriction.start && p.timeRestriction.expiry && new Date(p.timeRestriction.start) >= new Date(p.timeRestriction.expiry);
 
   return (
     <div className="space-y-5">
@@ -767,8 +795,13 @@ function Step5Policies({
                   address: e.target.value,
                 })
               }
-              className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all duration-200"
+              className={`w-full rounded-lg border bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 transition-all duration-200 focus:outline-none focus:ring-2 ${
+                whitelistErr
+                  ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+                  : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+              }`}
             />
+            {whitelistErr && <p className="mt-1.5 text-[11px] text-error/80">Enter a valid Stellar G address</p>}
           </div>
         )}
       </div>
@@ -818,8 +851,13 @@ function Step5Policies({
                     token: e.target.value,
                   })
                 }
-                className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all duration-200"
+                className={`w-full rounded-lg border bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 transition-all duration-200 focus:outline-none focus:ring-2 ${
+                  spendTokErr
+                    ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+                    : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+                }`}
               />
+              {spendTokErr && <p className="mt-1.5 text-[11px] text-error/80">Enter a token symbol</p>}
             </div>
             <div>
               <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-text-muted">
@@ -835,9 +873,14 @@ function Step5Policies({
                     amount: e.target.value,
                   })
                 }
-                className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15 transition-all duration-200"
+                className={`w-full rounded-lg border bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary placeholder:text-text-muted/50 transition-all duration-200 focus:outline-none focus:ring-2 ${
+                  spendAmtErr
+                    ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+                    : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+                }`}
               />
-              {p.spendLimit.amount && !Number.isNaN(Number(p.spendLimit.amount)) && (
+              {spendAmtErr && <p className="mt-1.5 text-[11px] text-error/80">Enter an amount greater than 0</p>}
+              {!spendAmtErr && p.spendLimit.amount && !Number.isNaN(Number(p.spendLimit.amount)) && (
                 <p className="mt-1 text-[10px] text-text-muted">
                   ≈ {(Number(p.spendLimit.amount) / 1e7).toFixed(2)} XLM
                 </p>
@@ -908,8 +951,13 @@ function Step5Policies({
                     start: e.target.value,
                   })
                 }
-                className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
+                className={`w-full rounded-lg border bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus:outline-none focus:ring-2 ${
+                  timeStartErr
+                    ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+                    : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+                }`}
               />
+              {timeStartErr && <p className="mt-1.5 text-[11px] text-error/80">Set a start time</p>}
             </div>
             <div>
               <label className="mb-1 block text-[10px] font-mono uppercase tracking-wider text-text-muted">
@@ -924,8 +972,14 @@ function Step5Policies({
                     expiry: e.target.value,
                   })
                 }
-                className="w-full rounded-lg border border-white/5 bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
+                className={`w-full rounded-lg border bg-bg-elevated px-3 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus:outline-none focus:ring-2 ${
+                  timeExpiryErr || timeOrderErr
+                    ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+                    : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+                }`}
               />
+              {timeExpiryErr && <p className="mt-1.5 text-[11px] text-error/80">Set an expiry time</p>}
+              {timeOrderErr && <p className="mt-1.5 text-[11px] text-error/80">Expiry must be after start</p>}
             </div>
           </div>
         )}
@@ -994,23 +1048,35 @@ function Step6Review({
 
       <ReviewSection title="Limits">
         <ReviewRow label="Daily Limit" value={`$${form.limits.dailyLimit}`} />
-        <ReviewRow label="Per-Tx Limit" value={`$${form.limits.perTxLimit}`} />
-        <ReviewRow label="Slippage" value={`${form.limits.slippage}%`} />
         {form.limits.expiration && <ReviewRow label="Expires" value={new Date(form.limits.expiration).toLocaleString()} />}
       </ReviewSection>
 
       <ReviewSection title="Policies">
-        {activePolicies.length > 0 ? (
-          <div className="flex flex-wrap gap-1.5">
-            {activePolicies.map((p) => (
-              <span key={p} className="rounded-full border border-accent/10 bg-accent-muted/40 px-2.5 py-0.5 text-[10px] text-accent">
-                {p}
-              </span>
-            ))}
-          </div>
-        ) : (
-          <p className="text-[11px] text-text-muted">None (unrestricted)</p>
-        )}
+        {(() => {
+          const manualPolicies = [...activePolicies];
+          const autoFromLimits: string[] = [];
+          if (!form.policies.spendLimit.enabled && form.limits.dailyLimit) autoFromLimits.push("Spend Limit (from Daily Limit)");
+          if (!form.policies.timeRestriction.enabled && form.limits.expiration) autoFromLimits.push("Time Restriction (from Expiration)");
+          const all = [...manualPolicies, ...autoFromLimits];
+          return all.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {all.map((p) => (
+                <span
+                  key={p}
+                  className={`rounded-full border px-2.5 py-0.5 text-[10px] ${
+                    autoFromLimits.includes(p)
+                      ? "border-amber-400/15 bg-amber-400/[0.06] text-amber-300/85"
+                      : "border-accent/10 bg-accent-muted/40 text-accent"
+                  }`}
+                >
+                  {p}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <p className="text-[11px] text-text-muted">None (unrestricted)</p>
+          );
+        })()}
       </ReviewSection>
 
       {!delegateAddr || delegateAddr === "—" ? (
@@ -1137,12 +1203,14 @@ function NumberField({
   onChange,
   placeholder,
   step,
+  error,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   step?: string;
+  error?: string;
 }) {
   return (
     <div>
@@ -1156,8 +1224,13 @@ function NumberField({
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
+        className={`w-full rounded-xl border bg-white/[0.02] px-4 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:outline-none focus:ring-2 ${
+          error
+            ? "border-error/30 focus:border-error/30 focus:ring-error/15"
+            : "border-white/5 focus:border-accent/30 focus:ring-accent/15"
+        }`}
       />
+      {error && <p className="mt-1.5 text-[11px] text-error/80">{error}</p>}
     </div>
   );
 }

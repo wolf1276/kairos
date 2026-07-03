@@ -1,23 +1,20 @@
 "use client";
 
-import { Suspense, useMemo, useState, useCallback, useEffect } from "react";
+import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { Asset } from "@stellar/stellar-sdk";
 import { AdvancedChart } from "@/app/components/charts/AdvancedChart";
 import { PriceViewPanel } from "@/app/components/panels/PriceViewPanel";
 import { Card, CardBody } from "@/app/components/ui/Card";
-import { Segmented } from "@/app/components/ui/Segmented";
 import { usePrices } from "@/app/hooks/usePrices";
 import { useSmartWallet } from "@/app/hooks/useSmartWallet";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import {
   formatNumber,
-  formatUsd,
 } from "@/app/lib/format";
 import { cn } from "@/lib/utils";
 import {
   fetchOrderBookQuote,
   executeSwap,
-  executeSwapStrictReceive,
   addTrustline,
   signDelegationHashWithFreighter,
   signAuthEntryWithFreighter,
@@ -26,11 +23,13 @@ import {
   type SwapAsset,
   type OrderBookQuote,
 } from "@/app/lib/stellar";
+import { TokenSearchSelect } from "./components/TokenSearchSelect";
+import { TickerTape } from "./components/TickerTape";
 
-type Side = "BUY" | "SELL";
 type TradeMode = "manual" | "strategy" | "intent" | "agent";
 
-const SYMBOL = "XLMUSDT";
+const CHART_SYMBOLS = ["XLMUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT"];
+const TICKER_SYMBOLS = ["XLMUSDT", "BTCUSDT", "ETHUSDT", "SOLUSDT", "USDCUSDT"];
 
 const MODES: { value: TradeMode; label: string }[] = [
   { value: "manual", label: "Manual" },
@@ -40,11 +39,12 @@ const MODES: { value: TradeMode; label: string }[] = [
 ];
 
 function TradeInner() {
-  const { tickers, wsStatus } = usePrices([SYMBOL], 10000);
-  const ticker = tickers[SYMBOL];
+  const [chartSymbol, setChartSymbol] = useState("XLMUSDT");
+  const { tickers, wsStatus } = usePrices(TICKER_SYMBOLS, 10000);
+  const ticker = tickers[chartSymbol];
 
   const { wallet, connected, connecting, connect, disconnect, smartWalletAddress, deploying, deployError } = useSmartWallet();
-  const { xlmBalance, usdcBalance, hasUsdcTrustline, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
+  const { xlmBalance, usdcBalance, hasUsdcTrustline, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
     wallet?.address ?? null,
     wallet?.networkPassphrase ?? null,
   );
@@ -65,50 +65,82 @@ function TradeInner() {
   const [mode, setMode] = useState<TradeMode>("manual");
 
   // ── Manual trade ──
-  const [side, setSide] = useState<Side>("BUY");
+  const [sendAsset, setSendAsset] = useState<SwapAsset>({ code: "USDC", issuer: TESTNET_USDC_ISSUER });
+  const [destAsset, setDestAsset] = useState<SwapAsset>({ code: "XLM" });
   const [amount, setAmount] = useState("");
   const amountNum = parseFloat(amount) || 0;
 
-  const XLM_ASSET: SwapAsset = useMemo(() => ({ code: "XLM" }), []);
-  const USDC_ASSET: SwapAsset = useMemo(() => ({ code: "USDC", issuer: TESTNET_USDC_ISSUER }), []);
-
   const [dexQuote, setDexQuote] = useState<OrderBookQuote>({ hasLiquidity: false, price: null });
+  const [quoteUpdated, setQuoteUpdated] = useState<number>(0);
+  const [quoteAge, setQuoteAge] = useState(0);
   const [swapping, setSwapping] = useState(false);
   const [swapError, setSwapError] = useState<string | null>(null);
   const [addingTrustline, setAddingTrustline] = useState(false);
 
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
+  const getBalance = useCallback(
+    (asset: SwapAsset): number => {
+      if (asset.code === "XLM" && !asset.issuer) return xlmBalance;
+      const entry = allBalances.find((b) => b.code === asset.code && b.issuer === asset.issuer);
+      return entry ? parseFloat(entry.balance) : 0;
+    },
+    [allBalances, xlmBalance],
+  );
+
+  const sendBalance = getBalance(sendAsset);
+  const destBalance = getBalance(destAsset);
+
+  const needsTrustline = useCallback(
+    (asset: SwapAsset): boolean => {
+      if (!asset.issuer) return false;
+      return !allBalances.some((b) => b.code === asset.code && b.issuer === asset.issuer);
+    },
+    [allBalances],
+  );
+
+  const sendNeedsTrustline = needsTrustline(sendAsset);
+  const destNeedsTrustline = needsTrustline(destAsset);
+
   useEffect(() => {
     let cancelled = false;
     const load = async () => {
       try {
-        const q = side === "BUY"
-          ? await fetchOrderBookQuote(USDC_ASSET, XLM_ASSET, networkPassphrase)
-          : await fetchOrderBookQuote(XLM_ASSET, USDC_ASSET, networkPassphrase);
-        if (!cancelled) setDexQuote(q);
+        const q = await fetchOrderBookQuote(sendAsset, destAsset, networkPassphrase);
+        if (!cancelled) { setDexQuote(q); setQuoteUpdated(Date.now()); setQuoteAge(0); }
       } catch {
         if (!cancelled) setDexQuote({ hasLiquidity: false, price: null });
       }
     };
     load();
-    const id = setInterval(load, 10000);
+    const id = setInterval(load, 3000);
     return () => { cancelled = true; clearInterval(id); };
-  }, [side, USDC_ASSET, XLM_ASSET, networkPassphrase]);
+  }, [sendAsset, destAsset, networkPassphrase]);
 
-  const maxAmount = side === "BUY"
-    ? (dexQuote.price ? usdcBalance / dexQuote.price : 0)
-    : xlmBalance;
+  useEffect(() => {
+    if (quoteUpdated === 0) return;
+    const id = setInterval(() => setQuoteAge((a) => a + 1), 1000);
+    return () => clearInterval(id);
+  }, [quoteUpdated]);
+
+  const maxAmount = sendBalance;
 
   const SLIPPAGE = 0.01;
 
-  const handleAddUsdcTrustline = async () => {
-    if (!wallet) return;
+  const flipPair = useCallback(() => {
+    setSendAsset(destAsset);
+    setDestAsset(sendAsset);
+    setAmount("");
+    setSwapError(null);
+  }, [destAsset, sendAsset]);
+
+  const handleAddTrustline = async (asset: SwapAsset) => {
+    if (!wallet || !asset.issuer) return;
     setAddingTrustline(true);
     setSwapError(null);
     try {
-      await addTrustline(wallet.address, USDC_ASSET, wallet.networkPassphrase);
-      flash("ok", "USDC trustline added");
+      await addTrustline(wallet.address, asset, wallet.networkPassphrase);
+      flash("ok", `${asset.code} trustline added`);
       await refreshBalances();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -124,29 +156,16 @@ function TradeInner() {
     setSwapping(true);
     setSwapError(null);
     try {
-      if (side === "BUY") {
-        const sendMax = (amountNum * dexQuote.price * (1 + SLIPPAGE)).toFixed(7);
-        const result = await executeSwapStrictReceive({
-          sourceAddress: wallet.address,
-          sendAsset: USDC_ASSET,
-          sendMax,
-          destAsset: XLM_ASSET,
-          destAmount: amountNum.toFixed(7),
-          networkPassphrase: wallet.networkPassphrase,
-        });
-        flash("ok", `Bought ${formatNumber(amountNum)} XLM — tx ${result.hash.slice(0, 8)}…`);
-      } else {
-        const destMin = (amountNum * dexQuote.price * (1 - SLIPPAGE)).toFixed(7);
-        const result = await executeSwap({
-          sourceAddress: wallet.address,
-          sendAsset: XLM_ASSET,
-          sendAmount: amountNum.toFixed(7),
-          destAsset: USDC_ASSET,
-          destMin,
-          networkPassphrase: wallet.networkPassphrase,
-        });
-        flash("ok", `Sold ${formatNumber(amountNum)} XLM — tx ${result.hash.slice(0, 8)}…`);
-      }
+      const destMin = (amountNum * dexQuote.price * (1 - SLIPPAGE)).toFixed(7);
+      const result = await executeSwap({
+        sourceAddress: wallet.address,
+        sendAsset,
+        sendAmount: amountNum.toFixed(7),
+        destAsset,
+        destMin,
+        networkPassphrase: wallet.networkPassphrase,
+      });
+      flash("ok", `Swapped ${formatNumber(amountNum)} ${sendAsset.code} — tx ${result.hash.slice(0, 8)}…`);
       setAmount("");
       await refreshBalances();
     } catch (e) {
@@ -453,6 +472,9 @@ function TradeInner() {
         </div>
       )}
 
+      {/* Ticker tape */}
+      <TickerTape tickers={tickers} />
+
       {/* Mode tabs */}
       <div className="inline-flex gap-1 rounded-xl border border-white/5 bg-bg-elevated/50 p-1">
         {MODES.map((m) => (
@@ -471,41 +493,34 @@ function TradeInner() {
         ))}
       </div>
 
-      {/* Main layout */}
+      {/* Main layout — bento grid */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-        {/* Chart column */}
+        {/* Chart + Price panel column */}
         <div className="space-y-6 lg:col-span-2">
-          <AdvancedChart symbol={SYMBOL} symbols={[SYMBOL]} onSymbolChange={() => {}} />
-          <PriceViewPanel symbol={SYMBOL} ticker={ticker} wsStatus={wsStatus} />
+          <AdvancedChart
+            symbol={chartSymbol}
+            symbols={CHART_SYMBOLS}
+            onSymbolChange={setChartSymbol}
+          />
+          <PriceViewPanel symbol={chartSymbol} ticker={ticker} wsStatus={wsStatus} />
         </div>
 
-        {/* Sidebar */}
-        <div className="space-y-6">
+        {/* Sidebar — form + wallet */}
+        <div className="space-y-6 lg:col-span-1">
           {/* Mode-specific form */}
           <Card>
             <CardBody className="space-y-4">
               {/* ── MANUAL ── */}
               {mode === "manual" && (
                 <>
-                  <div className="flex items-center justify-between">
-                    <Segmented
-                      options={[
-                        { value: "BUY", label: "Buy" },
-                        { value: "SELL", label: "Sell" },
-                      ]}
-                      value={side}
-                      onChange={(v) => { setSide(v); setAmount(""); setSwapError(null); }}
-                      className="flex-1"
-                    />
-                    <span className="ml-3 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-400/85">
-                      Real
-                    </span>
-                  </div>
+                  <span className="mb-2 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-400/85 self-start">
+                    Real
+                  </span>
 
                   {!connected ? (
                     <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 text-center">
                       <p className="text-xs text-text-secondary">
-                        Connect Freighter to trade real XLM/USDC on Stellar testnet.
+                        Connect Freighter to trade on Stellar testnet.
                       </p>
                       <button
                         onClick={connect}
@@ -517,41 +532,96 @@ function TradeInner() {
                     </div>
                   ) : (
                     <>
-                      <div className="flex items-center justify-between rounded-lg bg-white/[0.02] px-3.5 py-2.5">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                          DEX Price (XLM/USDC)
-                        </span>
-                        <span className="font-mono text-sm tabular-nums text-text-primary">
-                          {dexQuote.price ? dexQuote.price.toFixed(4) : "No liquidity"}
-                        </span>
+                      <TokenSearchSelect
+                        balances={allBalances}
+                        value={sendAsset}
+                        onChange={setSendAsset}
+                        label="You Pay"
+                        otherAsset={destAsset}
+                      />
+
+                      <div className="flex justify-center">
+                        <button
+                          type="button"
+                          onClick={flipPair}
+                          className="flex h-8 w-8 items-center justify-center rounded-full border border-white/5 bg-white/[0.02] text-text-muted hover:border-accent/30 hover:text-accent transition-all duration-200 cursor-pointer"
+                        >
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                            <polyline points="17 1 21 5 17 9" />
+                            <polyline points="7 15 3 19 7 23" />
+                            <line x1="21" y1="5" x2="3" y2="5" />
+                            <line x1="15" y1="19" x2="3" y2="19" />
+                          </svg>
+                        </button>
+                      </div>
+
+                      <TokenSearchSelect
+                        balances={allBalances}
+                        value={destAsset}
+                        onChange={setDestAsset}
+                        label="You Receive"
+                        otherAsset={sendAsset}
+                      />
+
+                      <div className="rounded-lg bg-white/[0.02] px-3.5 py-2.5">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
+                            DEX Price
+                          </span>
+                          <span className="font-mono text-sm tabular-nums text-text-primary">
+                            {dexQuote.price
+                              ? `1 ${sendAsset.code} ≈ ${dexQuote.price.toFixed(4)} ${destAsset.code}`
+                              : "No liquidity"}
+                          </span>
+                        </div>
+                        {quoteUpdated > 0 && (
+                          <p className="mt-0.5 text-right font-mono text-[9px] text-text-muted">
+                            {quoteAge}s ago
+                          </p>
+                        )}
                       </div>
 
                       <div className="flex items-center justify-between text-[11px] text-text-muted">
-                        <span>Balance</span>
+                        <span>Balances</span>
                         <span className="font-mono tabular-nums text-text-secondary">
-                          {balancesLoading ? "Loading…" : `${formatNumber(xlmBalance)} XLM · ${hasUsdcTrustline ? `${formatNumber(usdcBalance)} USDC` : "no USDC trustline"}`}
+                          {balancesLoading
+                            ? "Loading…"
+                            : `${formatNumber(sendBalance)} ${sendAsset.code} | ${formatNumber(destBalance)} ${destAsset.code}`}
                         </span>
                       </div>
 
-                      {!hasUsdcTrustline && (
+                      {(sendNeedsTrustline || destNeedsTrustline) && (
                         <div className="rounded-xl border border-amber-400/15 bg-amber-400/[0.05] p-3.5">
                           <p className="text-xs text-amber-300/85">
-                            You need a USDC trustline to {side === "BUY" ? "spend USDC" : "receive USDC"} on this swap.
+                            Need trustline{destNeedsTrustline && sendNeedsTrustline ? "s" : ""}:
+                            {sendNeedsTrustline && ` ${sendAsset.code}`}
+                            {destNeedsTrustline && ` ${destAsset.code}`}
                           </p>
-                          <button
-                            onClick={handleAddUsdcTrustline}
-                            disabled={addingTrustline}
-                            className="mt-2.5 w-full rounded-lg bg-amber-400/15 px-3 py-2 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            {addingTrustline ? "Adding trustline…" : "Add USDC Trustline"}
-                          </button>
+                          {sendNeedsTrustline && (
+                            <button
+                              onClick={() => handleAddTrustline(sendAsset)}
+                              disabled={addingTrustline}
+                              className="mt-2 w-full rounded-lg bg-amber-400/15 px-3 py-2 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {addingTrustline ? "Adding…" : `Add ${sendAsset.code} Trustline`}
+                            </button>
+                          )}
+                          {destNeedsTrustline && (
+                            <button
+                              onClick={() => handleAddTrustline(destAsset)}
+                              disabled={addingTrustline}
+                              className="mt-2 w-full rounded-lg bg-amber-400/15 px-3 py-2 text-xs font-semibold text-amber-200 transition-colors hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {addingTrustline ? "Adding…" : `Add ${destAsset.code} Trustline`}
+                            </button>
+                          )}
                         </div>
                       )}
 
                       <div>
                         <div className="mb-1.5 flex items-center justify-between">
                           <label className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
-                            Amount (XLM)
+                            Amount ({sendAsset.code})
                           </label>
                           <span className="font-mono text-[10px] text-text-muted">
                             Max {formatNumber(maxAmount)}
@@ -582,10 +652,10 @@ function TradeInner() {
 
                       <div className="flex items-center justify-between text-xs">
                         <span className="text-text-muted">
-                          Est. {side === "BUY" ? "cost" : "proceeds"} (1% slippage tolerance)
+                          Est. proceeds (1% slippage tolerance)
                         </span>
                         <span className="font-mono tabular-nums text-text-secondary">
-                          {dexQuote.price ? formatUsd(amountNum * dexQuote.price) : "—"}
+                          {dexQuote.price ? `${formatNumber(amountNum * dexQuote.price)} ${destAsset.code}` : "—"}
                         </span>
                       </div>
 
@@ -597,18 +667,15 @@ function TradeInner() {
                         onClick={handleSwap}
                         disabled={
                           swapping ||
-                          !hasUsdcTrustline ||
+                          sendNeedsTrustline ||
+                          destNeedsTrustline ||
                           !dexQuote.hasLiquidity ||
                           amountNum <= 0 ||
                           amountNum > maxAmount + 1e-9
                         }
-                        className={`w-full rounded-xl px-5 py-2.5 text-sm font-semibold text-white transition-all duration-300 disabled:cursor-not-allowed disabled:opacity-30 ${
-                          side === "BUY"
-                            ? "bg-emerald-600/80 shadow-[0_0_25px_-10px_rgba(52,211,153,0.15)] hover:bg-emerald-600"
-                            : "bg-red-600/80 shadow-[0_0_25px_-10px_rgba(239,68,68,0.15)] hover:bg-red-600"
-                        }`}
+                        className="w-full rounded-xl bg-emerald-600/80 px-5 py-2.5 text-sm font-semibold text-white shadow-[0_0_25px_-10px_rgba(52,211,153,0.15)] transition-all duration-300 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-30"
                       >
-                        {swapping ? "Submitting…" : `${side} XLM`}
+                        {swapping ? "Submitting…" : `Swap ${sendAsset.code} → ${destAsset.code}`}
                       </button>
                     </>
                   )}
