@@ -6,18 +6,23 @@
 // decision timeline, and the live audit feed. All state is backend-sourced, so it survives
 // refresh/login.
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Asset } from "@stellar/stellar-sdk";
 import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
+import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
 import {
-  provisionRoleAgents,
+  provisionSingleRoleAgent,
+  attachAgentDelegation,
+  startAgentWallet,
   getAgentsSummary,
   getPortfolioOverview,
   getOwnerDecisions,
   getAuditLog,
   type AgentDashboard,
   type AgentRole,
+  type AgentMode,
   type PortfolioOverview,
   type DecisionRecord,
   type AuditLogRow,
@@ -46,21 +51,28 @@ function timeAgo(ts: number | null): string {
 }
 
 export default function AutonomousPage() {
-  const { connected, connecting, connect, walletOwner, smartWalletAddress, ensureAgentAuth, deploying } = useWalletContext();
+  const { wallet, connected, connecting, connect, walletOwner, smartWalletAddress, ensureAgentAuth, deploying } = useWalletContext();
+  const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
   const [dashboards, setDashboards] = useState<AgentDashboard[]>([]);
   const [portfolio, setPortfolio] = useState<PortfolioOverview | null>(null);
   const [decisions, setDecisions] = useState<DecisionRecord[]>([]);
   const [audit, setAudit] = useState<AuditLogRow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [provisioning, setProvisioning] = useState(false);
   const [selectedDecision, setSelectedDecision] = useState<DecisionRecord | null>(null);
+
+  // Add-agent flow: click "Add Agent" → pick which role → set its delegation → done.
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [pickedRole, setPickedRole] = useState<AgentRole | null>(null);
 
   const roleAgents = useMemo(
     () => dashboards.filter((d) => d.role !== null),
     [dashboards],
   );
-  const provisioned = roleAgents.length >= 3;
+  const availableRoles = useMemo(
+    () => ROLE_ORDER.filter((r) => !roleAgents.some((a) => a.role === r)),
+    [roleAgents],
+  );
 
   const refresh = useCallback(async () => {
     if (!walletOwner) return;
@@ -95,19 +107,6 @@ export default function AutonomousPage() {
     return () => clearInterval(id);
   }, [walletOwner, ensureAgentAuth, refresh]);
 
-  const handleProvision = async () => {
-    setProvisioning(true);
-    setError(null);
-    try {
-      await provisionRoleAgents({ mode: "paper", capital: "1000" });
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setProvisioning(false);
-    }
-  };
-
   if (!connected) {
     return (
       <Shell>
@@ -132,21 +131,26 @@ export default function AutonomousPage() {
   }
 
   return (
-    <Shell>
+    <Shell
+      onAddAgent={availableRoles.length > 0 ? () => { setPickedRole(null); setAddAgentOpen(true); } : undefined}
+    >
       {error && (
         <div className="rounded-xl border border-error/15 bg-error/6 px-4 py-3"><p className="text-xs text-error/90">{error}</p></div>
       )}
 
-      {!provisioned ? (
+      {roleAgents.length === 0 ? (
         <Card>
           <CardBody className="space-y-3 py-8 text-center">
             <p className="text-sm text-text-secondary">Provision your autonomous trading desk.</p>
             <p className="mx-auto max-w-md text-xs text-text-muted">
-              Three agents — Strategic, Yield and Portfolio Balancer — will run continuously in paper mode:
-              reading the live oracle, reasoning with the LLM, validating against policy &amp; risk, executing, and logging every decision.
+              Strategic, Yield and Portfolio Balancer agents run continuously once added: reading the live
+              oracle, reasoning with the LLM, validating against policy &amp; risk, executing, and logging every decision.
             </p>
-            <button onClick={handleProvision} disabled={provisioning} className="mx-auto rounded-xl bg-accent/80 px-5 py-2.5 text-xs font-semibold text-white hover:bg-accent disabled:opacity-50">
-              {provisioning ? "Provisioning…" : "Provision 3 Agents"}
+            <button
+              onClick={() => { setPickedRole(null); setAddAgentOpen(true); }}
+              className="mx-auto rounded-xl bg-accent/80 px-5 py-2.5 text-xs font-semibold text-white hover:bg-accent"
+            >
+              + Add Agent
             </button>
           </CardBody>
         </Card>
@@ -157,7 +161,14 @@ export default function AutonomousPage() {
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
             {ROLE_ORDER.map((role) => {
               const d = roleAgents.find((a) => a.role === role);
-              return <AgentRoleCard key={role} role={role} dash={d} />;
+              return (
+                <AgentRoleCard
+                  key={role}
+                  role={role}
+                  dash={d}
+                  onAdd={!d ? () => { setPickedRole(role); setAddAgentOpen(true); } : undefined}
+                />
+              );
             })}
           </div>
 
@@ -169,11 +180,23 @@ export default function AutonomousPage() {
       )}
 
       {selectedDecision && <DecisionReplayModal decision={selectedDecision} onClose={() => setSelectedDecision(null)} />}
+
+      {addAgentOpen && (
+        <AddAgentFlow
+          availableRoles={availableRoles}
+          initialRole={pickedRole}
+          smartWalletAddress={smartWalletAddress}
+          walletOwner={walletOwner!}
+          networkPassphrase={networkPassphrase}
+          onClose={() => setAddAgentOpen(false)}
+          onDone={async () => { setAddAgentOpen(false); await refresh(); }}
+        />
+      )}
     </Shell>
   );
 }
 
-function Shell({ children }: { children: React.ReactNode }) {
+function Shell({ children, onAddAgent }: { children: React.ReactNode; onAddAgent?: () => void }) {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -181,6 +204,14 @@ function Shell({ children }: { children: React.ReactNode }) {
           <h1 className="font-display text-lg font-medium text-text-primary">Autonomous Desk</h1>
           <p className="mt-1 text-xs text-text-muted">Live multi-agent trading terminal — decisions, positions, PnL and full audit.</p>
         </div>
+        {onAddAgent && (
+          <button
+            onClick={onAddAgent}
+            className="rounded-xl bg-accent/80 px-4 py-2 text-xs font-semibold text-white transition-colors hover:bg-accent"
+          >
+            + Add Agent
+          </button>
+        )}
       </div>
       {children}
     </div>
@@ -239,19 +270,30 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function AgentRoleCard({ role, dash }: { role: AgentRole; dash?: AgentDashboard }) {
+function AgentRoleCard({ role, dash, onAdd }: { role: AgentRole; dash?: AgentDashboard; onAdd?: () => void }) {
   const meta = ROLE_META[role];
   return (
     <Card>
       <CardHeader
         title={<span className={meta.accent}>{meta.label}</span>}
-        action={dash ? <Badge tone={dash.agent.status === "running" ? "success" : dash.agent.status === "error" ? "error" : "warning"} dot>{dash.agent.status}</Badge> : <Spinner className="h-3 w-3" />}
+        action={dash ? <Badge tone={dash.agent.status === "running" ? "success" : dash.agent.status === "error" ? "error" : "warning"} dot>{dash.agent.status}</Badge> : undefined}
       />
       <CardBody className="space-y-3 pt-3">
         <p className="text-[11px] text-text-muted">{meta.blurb}</p>
 
         {!dash ? (
-          <p className="text-xs text-text-muted">Provisioning…</p>
+          onAdd ? (
+            <button
+              onClick={onAdd}
+              className="w-full rounded-xl border border-dashed border-white/10 bg-white/[0.02] py-4 text-xs text-text-muted transition-colors hover:border-accent/30 hover:text-text-primary"
+            >
+              + Add {meta.label}
+            </button>
+          ) : (
+            <div className="flex items-center justify-center gap-2 py-4 text-xs text-text-muted">
+              <Spinner className="h-3 w-3" /> Provisioning…
+            </div>
+          )
         ) : (
           <>
             <div className="rounded-xl border border-accent/10 bg-accent-muted/40 px-3 py-2">
@@ -384,6 +426,191 @@ function DecisionReplayModal({ decision, onClose }: { decision: DecisionRecord; 
             </div>
           ))}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** "+ Add Agent" flow: pick which role (skipped if the caller already picked one, e.g. clicking
+ *  an empty role slot directly), then a delegation form for how much capital to grant that
+ *  agent's MPC wallet. Live mode actually signs + submits an on-chain spend-limit delegation
+ *  from the capital wallet to the agent's own key (same mechanism as the Agents page); paper
+ *  mode just records the capital figure since no funds move. */
+function AddAgentFlow({
+  availableRoles,
+  initialRole,
+  smartWalletAddress,
+  walletOwner,
+  networkPassphrase,
+  onClose,
+  onDone,
+}: {
+  availableRoles: AgentRole[];
+  initialRole: AgentRole | null;
+  smartWalletAddress: string | null;
+  walletOwner: string;
+  networkPassphrase: string;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [role, setRole] = useState<AgentRole | null>(initialRole);
+  const [mode, setMode] = useState<AgentMode>("live");
+  const [amount, setAmount] = useState("100");
+  const [periodDays, setPeriodDays] = useState("1");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    if (!role) return;
+    const amt = parseFloat(amount) || 0;
+    if (amt <= 0) { setError("Enter a valid amount"); return; }
+    if (mode === "live" && !smartWalletAddress) { setError("Capital wallet not ready yet"); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const agent = await provisionSingleRoleAgent({ role, mode, capital: amount });
+
+      if (mode === "live") {
+        const prepareRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "PREPARE_DELEGATION",
+            delegate: agent.publicKey,
+            delegator: smartWalletAddress,
+            policies: [
+              {
+                type: "spend-limit",
+                token: Asset.native().contractId(networkPassphrase),
+                spendLimit: BigInt(Math.round(amt * 10_000_000)).toString(),
+                period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
+              },
+            ],
+          }),
+        });
+        const prepared = await prepareRes.json();
+        if (!prepareRes.ok) throw new Error(prepared.error);
+
+        const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
+
+        const submitRes = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "SUBMIT_DELEGATION", unsignedDelegation: prepared.unsignedDelegation, signatureHex }),
+        });
+        const submitted = await submitRes.json();
+        if (!submitRes.ok) throw new Error(submitted.error);
+
+        await attachAgentDelegation(agent.id, submitted.delegation);
+        await startAgentWallet(agent.id);
+      }
+
+      onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full max-w-md rounded-2xl border border-white/10 bg-bg-primary p-5" onClick={(e) => e.stopPropagation()}>
+        {!role ? (
+          <>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-medium text-text-primary">Which agent?</h2>
+              <button onClick={onClose} className="text-xs text-text-muted hover:text-text-primary">✕</button>
+            </div>
+            <div className="space-y-2">
+              {availableRoles.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setRole(r)}
+                  className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-4 py-3 text-left transition-colors hover:border-accent/30 hover:bg-white/[0.05]"
+                >
+                  <span className={`block text-xs font-semibold ${ROLE_META[r].accent}`}>{ROLE_META[r].label}</span>
+                  <span className="mt-0.5 block text-[11px] text-text-muted">{ROLE_META[r].blurb}</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="font-display text-sm font-medium text-text-primary">
+                Delegate to <span className={ROLE_META[role].accent}>{ROLE_META[role].label}</span>
+              </h2>
+              <button onClick={onClose} className="text-xs text-text-muted hover:text-text-primary">✕</button>
+            </div>
+
+            <div className="space-y-3">
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setMode("live")}
+                  className={`flex-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${mode === "live" ? "border-accent/40 bg-accent-muted/40 text-text-primary" : "border-white/5 bg-white/[0.02] text-text-muted"}`}
+                >
+                  Live — real delegation
+                </button>
+                <button
+                  onClick={() => setMode("paper")}
+                  className={`flex-1 rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${mode === "paper" ? "border-accent/40 bg-accent-muted/40 text-text-primary" : "border-white/5 bg-white/[0.02] text-text-muted"}`}
+                >
+                  Paper — simulated
+                </button>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-muted">
+                  {mode === "live" ? "Spend limit (XLM) to this agent's MPC wallet" : "Simulated capital (USD)"}
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.0001"
+                  value={amount}
+                  onChange={(e) => setAmount(e.target.value)}
+                  className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-primary focus:outline-none"
+                />
+              </div>
+
+              {mode === "live" && (
+                <div>
+                  <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-muted">Renews every (days)</label>
+                  <input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={periodDays}
+                    onChange={(e) => setPeriodDays(e.target.value)}
+                    className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-primary focus:outline-none"
+                  />
+                </div>
+              )}
+
+              {error && <p className="text-xs text-error/90">{error}</p>}
+
+              <div className="flex gap-2 pt-1">
+                {!initialRole && (
+                  <button
+                    onClick={() => setRole(null)}
+                    disabled={busy}
+                    className="rounded-xl border border-white/5 bg-white/[0.02] px-4 py-2 text-xs text-text-secondary hover:text-text-primary disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                )}
+                <button
+                  onClick={handleSubmit}
+                  disabled={busy}
+                  className="flex-1 rounded-xl bg-accent/80 px-4 py-2 text-xs font-semibold text-white hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy ? "Setting up…" : mode === "live" ? "Sign & Delegate" : "Create Agent"}
+                </button>
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

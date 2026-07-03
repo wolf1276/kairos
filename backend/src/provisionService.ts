@@ -36,44 +36,49 @@ export interface ProvisionOptions {
   capital?: string; // per-agent USD capital under management
 }
 
-export async function provisionRoleAgents(owner: string, opts?: ProvisionOptions): Promise<AgentSummary[]> {
+/** Idempotently provisions a single role agent — returns the existing one if already created
+ *  for this owner, otherwise creates + configures it (and starts it immediately in paper mode,
+ *  same rule as provisionRoleAgents). Used by the Autonomous page's per-role "Add Agent" flow,
+ *  which lets the user pick one role and set its delegation before it goes live, rather than
+ *  minting all three roles at once with a single shared capital figure. */
+export async function provisionSingleRoleAgent(owner: string, role: AgentRole, opts?: ProvisionOptions): Promise<AgentSummary> {
   const mode = opts?.mode ?? 'paper';
   const capital = opts?.capital ?? '1000';
   const interval = getRoleIntervalSeconds();
-  const existing = existingRoleAgents(owner);
+  const existing = existingRoleAgents(owner).get(role);
+  if (existing) return getAgent(existing.id)!;
+
+  const created = await createAgent(owner, { mode, capital, role });
+  const defaults = ROLE_DEFAULTS[role];
+  const config: RoleStrategyConfig = {
+    type: 'role',
+    role,
+    pair: 'XLM/USDC',
+    amountPerTrade: defaults.amountPerTrade,
+    intervalSeconds: interval,
+    minConfidence: defaults.minConfidence,
+    destination: '',
+  };
+  setStrategy(created.id, config);
+  logEvent({
+    agentId: created.id,
+    owner,
+    eventType: 'agent_provisioned',
+    mode,
+    strategyId: 'role',
+    mpcAccount: created.publicKey,
+    message: `Provisioned ${role} agent`,
+  });
+  // Paper mode has no funds at risk — start it ticking immediately. Live mode waits for a
+  // delegation to be attached and started explicitly (see routes/agents.ts POST /:id/start).
+  if (mode === 'paper') startAgent(created.id);
+  return getAgent(created.id)!;
+}
+
+export async function provisionRoleAgents(owner: string, opts?: ProvisionOptions): Promise<AgentSummary[]> {
   const summaries: AgentSummary[] = [];
-
   for (const role of ROLES) {
-    let row = existing.get(role);
-    if (!row) {
-      const created = await createAgent(owner, { mode, capital, role });
-      const defaults = ROLE_DEFAULTS[role];
-      const config: RoleStrategyConfig = {
-        type: 'role',
-        role,
-        pair: 'XLM/USDC',
-        amountPerTrade: defaults.amountPerTrade,
-        intervalSeconds: interval,
-        minConfidence: defaults.minConfidence,
-        destination: '',
-      };
-      setStrategy(created.id, config);
-      logEvent({
-        agentId: created.id,
-        owner,
-        eventType: 'agent_provisioned',
-        mode,
-        strategyId: 'role',
-        mpcAccount: created.publicKey,
-        message: `Provisioned ${role} agent`,
-      });
-      // Paper mode has no funds at risk — start it ticking immediately. Live mode waits for a
-      // delegation to be attached and started explicitly.
-      if (mode === 'paper') startAgent(created.id);
-      row = getAgentRow(created.id)!;
-    }
-    summaries.push(getAgent(row.id)!);
+    summaries.push(await provisionSingleRoleAgent(owner, role, opts));
   }
-
   return summaries;
 }

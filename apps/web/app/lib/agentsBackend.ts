@@ -320,6 +320,16 @@ export async function provisionRoleAgents(opts?: { mode?: AgentMode; capital?: s
   return data.agents;
 }
 
+/** Idempotently creates (and, in paper mode, starts) a single role agent — lets the UI offer
+ *  "pick one role, then set its delegation" instead of minting all three roles at once. */
+export async function provisionSingleRoleAgent(opts: { role: AgentRole; mode?: AgentMode; capital?: string }): Promise<AgentSummary> {
+  const data = await request<{ agent: AgentSummary }>("/api/agents/provision-role", {
+    method: "POST",
+    body: JSON.stringify(opts),
+  });
+  return data.agent;
+}
+
 export async function getOwnerDecisions(opts?: { limit?: number; before?: number }): Promise<DecisionRecord[]> {
   const params = new URLSearchParams();
   if (opts?.limit) params.set("limit", String(opts.limit));

@@ -5,7 +5,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getAgentRow } from '../agentService.js';
-import { provisionRoleAgents } from '../provisionService.js';
+import { provisionRoleAgents, provisionSingleRoleAgent } from '../provisionService.js';
 import { listDecisionsForAgent, listDecisionsForOwner, getDecision } from '../decisionService.js';
 import { listPerformanceForAgent } from '../performanceService.js';
 import { computeAllocation, getTargets, managedCapitalUsd } from '../portfolioService.js';
@@ -50,6 +50,26 @@ autonomousAgentRouter.post('/provision', async (req, res) => {
   try {
     const agents = await provisionRoleAgents(req.auth!.publicKey, parsed.data);
     res.json({ success: true, agents });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+const provisionRoleSchema = z.object({
+  role: z.enum(['strategic', 'yield', 'balancer']),
+  mode: z.enum(['paper', 'live']).optional(),
+  capital: z.string().optional(),
+});
+
+// POST /api/agents/provision-role — idempotently create + (paper mode only) start a single
+// role agent, so the UI can offer "pick one role, set its delegation" instead of minting all
+// three at once with one shared capital figure.
+autonomousAgentRouter.post('/provision-role', async (req, res) => {
+  const parsed = provisionRoleSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+  try {
+    const agent = await provisionSingleRoleAgent(req.auth!.publicKey, parsed.data.role, parsed.data);
+    res.json({ success: true, agent });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
   }
