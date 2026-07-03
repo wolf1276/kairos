@@ -166,6 +166,39 @@ export interface DecisionRow {
   created_at: number;
 }
 
+export type ExecutionJournalStatus = 'pending' | 'broadcast' | 'recorded' | 'failed';
+
+/**
+ * Execution journal (outbox pattern) — one row per intended trade, written *before* the
+ * on-chain/paper broadcast and updated after. Closes the "broadcast succeeded but DB write
+ * failed" gap: if the process crashes between a successful Horizon submission and
+ * `recordCompletedTrade`'s insert into `trades`, the journal row is left at 'broadcast' with
+ * the real `tx_hash` already captured, and `reconcilePendingExecutions()` (run at scheduler
+ * start) replays it into `trades`/`positions` instead of losing it or letting the next tick
+ * blindly resubmit. Rows still at 'pending' after a crash never reached broadcast confirmation
+ * (or genuinely never sent) — recorded as 'failed' since there is no tx_hash to reconcile
+ * against, surfaced via audit log for manual review rather than silently retried (a blind
+ * resubmit could double-spend if the original broadcast actually landed).
+ */
+export interface ExecutionJournalRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  role: string | null;
+  pair: string;
+  side: TradeSide;
+  amount: string;
+  price: string;
+  strategy_id: string;
+  mode: 'paper' | 'live';
+  status: ExecutionJournalStatus;
+  tx_hash: string | null;
+  trade_id: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface PerformanceSnapshotRow {
   id: string;
   agent_id: string;
@@ -191,12 +224,168 @@ export interface PortfolioStateRow {
 
 let db: Database.Database | null = null;
 
+/**
+ * SQLite can't ALTER TABLE ADD CONSTRAINT — a table created before this migration existed has
+ * no FOREIGN KEY clause and adding one requires rebuilding it (create-with-FK, copy, drop,
+ * rename). Runs once per table (skipped if `PRAGMA foreign_key_list` already shows the FK),
+ * so it's a no-op on every startup after the first. FK enforcement is switched off for the
+ * copy — pre-existing orphaned rows (agent_id pointing at a since-deleted agent, from before
+ * this migration existed) must not block startup — then back on before the process serves
+ * any traffic.
+ */
+function addForeignKeys(db: Database.Database): void {
+  const hasFk = (table: string): boolean => (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as unknown[]).length > 0;
+
+  const rebuilds: { table: string; createSql: string; columns: string }[] = [
+    {
+      table: 'trades',
+      columns: 'id, agent_id, strategy_id, side, pair, amount, price, tx_hash, status, realized_pnl, reversed_trade_id, created_at, mode',
+      createSql: `CREATE TABLE trades_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+        strategy_id TEXT NOT NULL,
+        side TEXT NOT NULL,
+        pair TEXT NOT NULL,
+        amount TEXT NOT NULL,
+        price TEXT NOT NULL,
+        tx_hash TEXT,
+        status TEXT NOT NULL,
+        realized_pnl TEXT,
+        reversed_trade_id TEXT REFERENCES trades(id) ON DELETE SET NULL,
+        created_at INTEGER NOT NULL,
+        mode TEXT NOT NULL DEFAULT 'live'
+      )`,
+    },
+    {
+      table: 'positions',
+      columns: 'id, agent_id, pair, side, open_amount, avg_cost, realized_pnl_total, updated_at',
+      createSql: `CREATE TABLE positions_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        pair TEXT NOT NULL,
+        side TEXT NOT NULL,
+        open_amount TEXT NOT NULL,
+        avg_cost TEXT NOT NULL,
+        realized_pnl_total TEXT NOT NULL DEFAULT '0',
+        updated_at INTEGER NOT NULL,
+        UNIQUE(agent_id, pair)
+      )`,
+    },
+    {
+      table: 'decisions',
+      columns:
+        'id, agent_id, owner, role, mode, pair, market_snapshot_json, oracle_json, indicators_json, regime_json, llm_model, llm_prompt_summary, llm_response_json, action, selected_strategy, confidence, reasoning, policy_validation_json, delegation_validation_json, risk_json, execution_result, trade_id, position_before_json, position_after_json, pnl_before_json, pnl_after_json, created_at',
+      createSql: `CREATE TABLE decisions_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+        owner TEXT NOT NULL,
+        role TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        pair TEXT NOT NULL,
+        market_snapshot_json TEXT,
+        oracle_json TEXT,
+        indicators_json TEXT,
+        regime_json TEXT,
+        llm_model TEXT,
+        llm_prompt_summary TEXT,
+        llm_response_json TEXT,
+        action TEXT NOT NULL,
+        selected_strategy TEXT,
+        confidence REAL NOT NULL DEFAULT 0,
+        reasoning TEXT NOT NULL DEFAULT '',
+        policy_validation_json TEXT,
+        delegation_validation_json TEXT,
+        risk_json TEXT,
+        execution_result TEXT,
+        trade_id TEXT REFERENCES trades(id) ON DELETE SET NULL,
+        position_before_json TEXT,
+        position_after_json TEXT,
+        pnl_before_json TEXT,
+        pnl_after_json TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+    },
+    {
+      table: 'audit_log',
+      columns:
+        'id, agent_id, owner, event_type, mode, strategy_id, mpc_account, pair, market_snapshot_json, indicators_json, signal, policy_validation_json, delegation_validation_json, execution_status, tx_hash, position_after_json, pnl_after_json, message, created_at',
+      createSql: `CREATE TABLE audit_log_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+        owner TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        mode TEXT,
+        strategy_id TEXT,
+        mpc_account TEXT,
+        pair TEXT,
+        market_snapshot_json TEXT,
+        indicators_json TEXT,
+        signal TEXT,
+        policy_validation_json TEXT,
+        delegation_validation_json TEXT,
+        execution_status TEXT,
+        tx_hash TEXT,
+        position_after_json TEXT,
+        pnl_after_json TEXT,
+        message TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+    },
+    {
+      table: 'performance_snapshots',
+      columns: 'id, agent_id, owner, realized_pnl, unrealized_pnl, open_position, trade_count, win_rate, capital_managed, created_at',
+      createSql: `CREATE TABLE performance_snapshots_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        owner TEXT NOT NULL,
+        realized_pnl TEXT NOT NULL,
+        unrealized_pnl TEXT NOT NULL,
+        open_position TEXT NOT NULL,
+        trade_count INTEGER NOT NULL,
+        win_rate REAL NOT NULL,
+        capital_managed TEXT,
+        created_at INTEGER NOT NULL
+      )`,
+    },
+  ];
+
+  const pending = rebuilds.filter((r) => !hasFk(r.table));
+  if (pending.length === 0) return;
+
+  db.pragma('foreign_keys = OFF');
+  const migrate = db.transaction(() => {
+    for (const r of pending) {
+      db.exec(r.createSql);
+      // Orphaned rows referencing a since-deleted agent can't satisfy the new FK — drop them
+      // rather than fail the whole migration; they were already unreachable via any app query
+      // (every read is scoped by a live agent/owner join).
+      db.exec(`INSERT INTO ${r.table}_new (${r.columns}) SELECT ${r.columns} FROM ${r.table} WHERE agent_id IN (SELECT id FROM agents)`);
+      db.exec(`DROP TABLE ${r.table}`);
+      db.exec(`ALTER TABLE ${r.table}_new RENAME TO ${r.table}`);
+    }
+  });
+  migrate();
+  db.pragma('foreign_keys = ON');
+
+  // Indexes are dropped along with the old table — recreate them.
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_trades_agent ON trades(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_positions_agent ON positions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_decisions_owner ON decisions(owner, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_log(owner, created_at);
+    CREATE INDEX IF NOT EXISTS idx_perf_agent ON performance_snapshots(agent_id, created_at);
+  `);
+}
+
 export function getDb(): Database.Database {
   if (db) return db;
   const dbPath = getDbPath();
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  db.pragma('foreign_keys = ON');
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -333,6 +522,27 @@ export function getDb(): Database.Database {
       last_allocation_json TEXT,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS execution_journal (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+      owner TEXT NOT NULL,
+      role TEXT,
+      pair TEXT NOT NULL,
+      side TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      price TEXT NOT NULL,
+      strategy_id TEXT NOT NULL,
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      tx_hash TEXT,
+      trade_id TEXT REFERENCES trades(id) ON DELETE SET NULL,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_agent ON execution_journal(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_journal_status ON execution_journal(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_txhash ON execution_journal(tx_hash) WHERE tx_hash IS NOT NULL;
   `);
 
   const agentCols0 = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
@@ -369,6 +579,8 @@ export function getDb(): Database.Database {
   if (!tradeColumns.some((c) => c.name === 'mode')) {
     db.exec("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
   }
+
+  addForeignKeys(db);
 
   return db;
 }

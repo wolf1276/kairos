@@ -1,7 +1,7 @@
 import { HfInference } from "@huggingface/inference";
 import { TradingContext, TradeProposal } from "./types";
 
-const MODEL = "mistralai/Mixtral-8x7B-Instruct-v0.1";
+const MODEL = "meta-llama/Llama-3.1-8B-Instruct";
 const MAX_RETRIES = 2;
 const INITIAL_BACKOFF_MS = 2000;
 

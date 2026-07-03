@@ -13,7 +13,7 @@ import { getHuggingFaceApiKey } from './config.js';
 import type { AgentDecision, IndicatorSnapshot, MarketContext, RegimeMetrics } from './types.js';
 import type { Candle } from './strategies/index.js';
 
-const MODEL = 'mistralai/Mixtral-8x7B-Instruct-v0.1';
+const MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
 const MAX_RETRIES = 2;
 const BACKOFF_MS = 1500;
 

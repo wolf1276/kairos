@@ -23,6 +23,7 @@ import { executeQuantTrade } from './tick.js';
 import { executePaperQuantTrade } from './paperExecutor.js';
 import { mapThrownError } from './errors.js';
 import { recordCompletedTrade } from './executionEngine.js';
+import { openExecution, markBroadcast, markRecorded } from './executionJournal.js';
 
 /** stroops (integer string) → decimal asset units string, matching tick.ts's convention. */
 function stroopsToAmount(stroops: string): string {
@@ -89,29 +90,42 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     let pnlAfter = pnlBefore;
 
     if (willExecute && side) {
-      // 7. Execute (paper or live) → 8. update positions.
+      // 7. Execute (paper or live) → 8. update positions. Journaled (outbox pattern) so a
+      // crash between broadcast and the DB write is recoverable — see executionJournal.ts.
       const amount = stroopsToAmount(config.amountPerTrade);
-      const txHash =
-        row.mode === 'paper'
-          ? await executePaperQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side)
-          : await executeQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side);
+      const strategyId = decision.selectedStrategy ?? config.role;
+      const journal = openExecution({ row, role: config.role, pair: config.pair, side, amount, price: String(ctx.price), strategyId });
 
-      const { tradeId: tid, position: pos, pnl } = recordCompletedTrade({
-        row,
-        strategyId: decision.selectedStrategy ?? config.role,
-        side,
-        pair: config.pair,
-        amount,
-        price: String(ctx.price),
-        txHash,
-        mode: row.mode,
-        eventType: side === 'buy' ? 'trade_opened' : 'trade_closed',
-        message: `${config.role}: ${side} ${amount} ${config.pair} @ ${ctx.price.toFixed(5)}. Tx: ${txHash}`,
-      });
-      tradeId = tid;
-      positionAfter = pos;
-      pnlAfter = pnl;
-      executionResult = `success:${txHash}`;
+      const txHash = await (row.mode === 'paper'
+        ? executePaperQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side)
+        : executeQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side));
+      markBroadcast(journal.id, txHash);
+
+      try {
+        const { tradeId: tid, position: pos, pnl } = recordCompletedTrade({
+          row,
+          strategyId,
+          side,
+          pair: config.pair,
+          amount,
+          price: String(ctx.price),
+          txHash,
+          mode: row.mode,
+          eventType: side === 'buy' ? 'trade_opened' : 'trade_closed',
+          message: `${config.role}: ${side} ${amount} ${config.pair} @ ${ctx.price.toFixed(5)}. Tx: ${txHash}`,
+        });
+        markRecorded(journal.id, tid);
+        tradeId = tid;
+        positionAfter = pos;
+        pnlAfter = pnl;
+        executionResult = `success:${txHash}`;
+      } catch (error) {
+        // Broadcast succeeded (tx_hash already captured via markBroadcast above) but the local
+        // DB write failed — deliberately leave the journal row at 'broadcast' (not 'failed') so
+        // reconcilePendingExecutions() recovers it on next restart instead of the fill being
+        // silently lost.
+        throw error;
+      }
     } else {
       executionResult = side === null ? 'no-action' : !policy.ok ? `blocked:policy` : delegationBlocks ? 'blocked:delegation' : !risk.ok ? 'blocked:risk' : 'held';
       recordTick(row.id, { ok: true, message: `${config.role}: ${decision.action} (${executionResult}) — ${decision.reasoning.slice(0, 100)}` });
@@ -148,7 +162,9 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
 
     snapshotPerformance(row, config.pair, ctx.price);
   } catch (error) {
-    recordTick(row.id, { ok: false, message: mapThrownError(error) });
+    // Role agents run continuously — a transient failure here logs but doesn't halt the
+    // agent (see recordTick's keepRunning doc), so it self-heals on the next tick.
+    recordTick(row.id, { ok: false, message: mapThrownError(error) }, { keepRunning: true });
   }
 }
 

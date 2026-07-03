@@ -215,10 +215,18 @@ export function deleteAgent(id: string): void {
   getDb().prepare('DELETE FROM agents WHERE id = ?').run(id);
 }
 
-export function recordTick(id: string, result: { ok: boolean; message: string }): void {
+/**
+ * `keepRunning` — role agents are documented to run continuously (see autonomous/page.tsx);
+ * a transient failure (HF timeout, Horizon blip, oracle hiccup) must not permanently kill
+ * them, since `listRunningAgents()` only re-ticks agents with status 'running' and nothing
+ * ever auto-restarts an 'error' one. User-configured strategy agents (tick.ts) keep the
+ * original halt-on-error behavior — that's a deliberate stop for the user to review.
+ */
+export function recordTick(id: string, result: { ok: boolean; message: string }, opts?: { keepRunning?: boolean }): void {
+  const status = result.ok ? 'running' : opts?.keepRunning ? 'running' : 'error';
   getDb()
     .prepare('UPDATE agents SET last_tick_at = ?, last_result = ?, last_error = ?, status = ? WHERE id = ?')
-    .run(Date.now(), result.ok ? result.message : null, result.ok ? null : result.message, result.ok ? 'running' : 'error', id);
+    .run(Date.now(), result.ok ? result.message : null, result.ok ? null : result.message, status, id);
 
   if (!result.ok) {
     const row = getAgentRow(id);

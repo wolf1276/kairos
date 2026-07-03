@@ -240,6 +240,15 @@ agentsRouter.delete('/:id', (req, res) => {
   if (row.status === 'running') {
     return res.status(400).json({ error: 'Stop the agent before deleting it' });
   }
-  deleteAgent(req.params.id);
+  try {
+    deleteAgent(req.params.id);
+  } catch (error) {
+    // trades/decisions/audit_log reference agents(id) ON DELETE RESTRICT — an agent with real
+    // trade/decision history can't be deleted (would orphan or silently erase that history).
+    if (error instanceof Error && /FOREIGN KEY constraint failed/.test(error.message)) {
+      return res.status(409).json({ error: 'Cannot delete an agent with existing trade/decision history' });
+    }
+    return handleError(res, error);
+  }
   res.json({ success: true });
 });

@@ -12,6 +12,7 @@ import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
+import { reconcilePendingExecutions } from './executionJournal.js';
 
 const app = express();
 app.use(cors({ origin: getAllowedOrigin() }));
@@ -49,6 +50,18 @@ app.use((error: unknown, _req: express.Request, res: express.Response, _next: ex
 const port = getPort();
 app.listen(port, () => {
   console.log(`kairos-agent-backend listening on :${port}`);
-  startScheduler();
-  getPriceFeedService().start();
+  // Recover any execution journal rows left mid-flight by a previous crash (verified against
+  // Horizon — see executionJournal.ts) before the scheduler starts ticking agents against
+  // potentially-stale positions.
+  reconcilePendingExecutions()
+    .then(({ recovered, markedFailed }) => {
+      if (recovered > 0 || markedFailed > 0) {
+        console.log(`[startup] execution journal reconciliation: recovered=${recovered} markedFailed=${markedFailed}`);
+      }
+    })
+    .catch((error) => console.error('[startup] execution journal reconciliation failed:', error))
+    .finally(() => {
+      startScheduler();
+      getPriceFeedService().start();
+    });
 });

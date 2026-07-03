@@ -32,11 +32,29 @@ export function clearStoredSessionToken(publicKey: string) {
   } catch {}
 }
 
-/** Runs the challenge/sign/verify handshake and returns a bearer token, caching it in sessionStorage. */
+const inFlight = new Map<string, Promise<string>>();
+
+/**
+ * Runs the challenge/sign/verify handshake and returns a bearer token, caching it in
+ * sessionStorage. Concurrent callers for the same key (e.g. React effect double-invoke in
+ * dev, or multiple pages mounting at once) share one in-flight request instead of each
+ * popping a separate Freighter signature prompt.
+ */
 export async function challengeAndVerify(publicKey: string, networkPassphrase: string): Promise<string> {
   const cached = getStoredSessionToken(publicKey);
   if (cached) return cached;
 
+  const existing = inFlight.get(publicKey);
+  if (existing) return existing;
+
+  const promise = runChallengeAndVerify(publicKey, networkPassphrase).finally(() => {
+    inFlight.delete(publicKey);
+  });
+  inFlight.set(publicKey, promise);
+  return promise;
+}
+
+async function runChallengeAndVerify(publicKey: string, networkPassphrase: string): Promise<string> {
   const challengeRes = await fetch(`${backendBase()}/api/auth/challenge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

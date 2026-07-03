@@ -1,6 +1,7 @@
 import type { AgentRow, PositionRow } from './db.js';
 import type { PnlSummary } from './pnl.js';
 import type { AuditEventType } from '@kairos/types';
+import { getDb } from './db.js';
 import { computeAvgCostAndRealize, computePnlSummary } from './pnl.js';
 import { insertTrade } from './tradeService.js';
 import { upsertPosition } from './positionService.js';
@@ -28,19 +29,26 @@ export interface RecordTradeInput {
 
 export function recordCompletedTrade(input: RecordTradeInput): CompletedTrade {
   const { realizedPnl } = computeAvgCostAndRealize(input.row.id, input.pair, input.side, input.amount, input.price);
-  const trade = insertTrade({
-    agentId: input.row.id,
-    strategyId: input.strategyId,
-    side: input.side,
-    pair: input.pair,
-    amount: input.amount,
-    price: input.price,
-    txHash: input.txHash,
-    status: 'success',
-    realizedPnl,
-    mode: input.mode,
-  });
-  const position = upsertPosition(input.row.id, input.pair);
+
+  // trades + positions must land together — a crash between the two would otherwise leave a
+  // recorded fill with a stale/missing position row until the next trade happens to replay it.
+  const { trade, position } = getDb().transaction(() => {
+    const t = insertTrade({
+      agentId: input.row.id,
+      strategyId: input.strategyId,
+      side: input.side,
+      pair: input.pair,
+      amount: input.amount,
+      price: input.price,
+      txHash: input.txHash,
+      status: 'success',
+      realizedPnl,
+      mode: input.mode,
+    });
+    const p = upsertPosition(input.row.id, input.pair);
+    return { trade: t, position: p };
+  })();
+
   const pnl = computePnlSummary(input.row.id, input.pair, Number(input.price));
   logEvent({
     agentId: input.row.id,
