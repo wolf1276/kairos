@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { useDelegations } from "./hooks/useDelegations";
-import { useWallet } from "./hooks/useWallet";
+import { useWalletContext } from "@/app/contexts/WalletContext";
 import { DelegationHeader } from "./components/DelegationHeader";
 import { StatsCards } from "./components/StatsCards";
 import { SearchFilter } from "./components/SearchFilter";
@@ -26,7 +26,7 @@ const DEFAULT_FILTERS: DelegationFilters = {
 };
 
 export default function DelegationsV2Page() {
-  const wallet = useWallet();
+  const wallet = useWalletContext();
   const delegationsApi = useDelegations(
     wallet.walletOwner,
     wallet.smartWalletAddress,
