@@ -139,25 +139,77 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
     [walletOwner, smartWalletAddress, networkPassphrase, refresh]
   );
 
+  const refreshSingle = useCallback(
+    async (hash: string): Promise<boolean> => {
+      if (!smartWalletAddress) return false;
+      try {
+        const res = await fetch("/api/delegate-sdk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "LIST_DELEGATIONS", delegator: smartWalletAddress }),
+        });
+        const data = await res.json();
+        if (!res.ok) return false;
+        const chain = (data.delegations ?? []) as { hash: string; disabled: boolean }[];
+        const match = chain.find((c) => c.hash === hash);
+        if (match) {
+          setDelegations((prev) => prev.map((x) => (x.hash === hash ? { ...x, disabled: match.disabled } : x)));
+          setStats((prev) => {
+            const wasActive = !match.disabled;
+            return {
+              ...prev,
+              activeCount: prev.activeCount + (wasActive ? 1 : -1),
+              revokedCount: prev.revokedCount + (wasActive ? -1 : 1),
+            };
+          });
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [smartWalletAddress]
+  );
+
   const setDelegationDisabled = useCallback(
     async (d: DelegationRecord, disabled: boolean) => {
       if (!d.full || !walletOwner) return;
       const prepareAction = disabled ? "PREPARE_REVOKE_DELEGATION" : "PREPARE_ENABLE_DELEGATION";
       const submitAction = disabled ? "SUBMIT_REVOKE_DELEGATION" : "SUBMIT_ENABLE_DELEGATION";
+      const label = disabled ? "revoke" : "enable";
       setActionLoading(d.hash);
       setActionErrors((prev) => ({ ...prev, [d.hash]: "" }));
       try {
-        // Sponsored, same pattern as wallet deploy: the funder pays fees, but
-        // disable_delegation/enable_delegation calls delegation.delegator.require_auth() —
-        // for a smart-wallet delegator that means a separately-signed authorization entry
-        // from the wallet's owner, not just the funder's transaction signature.
         const prepareRes = await fetch("/api/delegate-sdk", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: prepareAction, delegation: d.full }),
         });
         const prepared = await prepareRes.json();
-        if (!prepareRes.ok) throw new Error(prepared.error);
+        if (!prepareRes.ok) {
+          const errMsg = (prepared.error as string) || "";
+          // Error(Contract, #2) = AlreadyDisabled, Error(Contract, #3) = AlreadyEnabled
+          // The delegation's on-chain state doesn't match local state — reconcile.
+          if (errMsg.includes("Error(Contract, #2)") || errMsg.includes("AlreadyDisabled")) {
+            setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled: true } : x)));
+            setStats((prev) => ({
+              ...prev,
+              activeCount: Math.max(0, prev.activeCount - 1),
+              revokedCount: prev.revokedCount + 1,
+            }));
+            throw new Error(`Delegation was already revoked on-chain. Local state updated.`);
+          }
+          if (errMsg.includes("Error(Contract, #3)") || errMsg.includes("AlreadyEnabled")) {
+            setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled: false } : x)));
+            setStats((prev) => ({
+              ...prev,
+              activeCount: prev.activeCount + 1,
+              revokedCount: Math.max(0, prev.revokedCount - 1),
+            }));
+            throw new Error(`Delegation is already enabled on-chain. Local state updated.`);
+          }
+          throw new Error(errMsg);
+        }
 
         const signedEntryXdr = await signAuthEntryWithFreighter(
           prepared.unsignedEntryXdr,
@@ -172,7 +224,14 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
           body: JSON.stringify({ action: submitAction, delegation: d.full, signedEntryXdr }),
         });
         const data = await submitRes.json();
-        if (!submitRes.ok) throw new Error(data.error);
+        if (!submitRes.ok) {
+          const errMsg = (data.error as string) || "";
+          if (errMsg.includes("Error(Contract, #2)") || errMsg.includes("Error(Contract, #3)")) {
+            await refreshSingle(d.hash);
+            throw new Error(`Delegation state changed before ${label} could complete. Refreshed.`);
+          }
+          throw new Error(errMsg);
+        }
 
         setDelegations((prev) => prev.map((x) => (x.hash === d.hash ? { ...x, disabled } : x)));
         setStats((prev) => ({
@@ -186,7 +245,7 @@ export function useDelegations(walletOwner: string | null, smartWalletAddress: s
         setActionLoading(null);
       }
     },
-    [walletOwner, networkPassphrase]
+    [walletOwner, networkPassphrase, refreshSingle]
   );
 
   const revoke = useCallback((d: DelegationRecord) => setDelegationDisabled(d, true), [setDelegationDisabled]);

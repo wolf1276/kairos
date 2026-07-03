@@ -5,7 +5,7 @@ import { Asset } from "@stellar/stellar-sdk";
 import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
-import { useSmartWallet } from "@/app/hooks/useSmartWallet";
+import { useWalletContext } from "@/app/contexts/WalletContext";
 import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
 import {
   createAgentWallet,
@@ -42,7 +42,7 @@ export default function AgentsPage() {
     deploying,
     deployError,
     deployAnotherSmartWallet,
-  } = useSmartWallet();
+  } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
   const [agents, setAgents] = useState<AgentSummary[]>([]);

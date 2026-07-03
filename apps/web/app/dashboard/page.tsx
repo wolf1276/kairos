@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { connectWallet, tryCheckConnection, type WalletState } from "@/app/lib/stellar";
+import { useCallback, useState } from "react";
+import { useWalletContext } from "@/app/contexts/WalletContext";
 import { Badge } from "@/app/components/ui/Badge";
 import { Card } from "@/app/components/ui/Card";
 
@@ -29,25 +29,7 @@ function shortAddress(addr: string) {
 }
 
 export default function DashboardOverview() {
-  const [wallet, setWallet] = useState<WalletState | null>(null);
-  const [connecting, setConnecting] = useState(false);
-  const [checked, setChecked] = useState(false);
-
-  const connect = useCallback(async () => {
-    setConnecting(true);
-    const result = await connectWallet();
-    if (result.success && result.wallet) setWallet(result.wallet);
-    setConnecting(false);
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    tryCheckConnection().then(async (ok) => {
-      if (ok && !cancelled) await connect();
-      if (!cancelled) setChecked(true);
-    });
-    return () => { cancelled = true; };
-  }, [connect]);
+  const { wallet, connected, connecting, connect, checked } = useWalletContext();
 
   // `localStorage` doesn't exist during SSR — this component is a client component, but
   // Next.js still server-renders it for the initial HTML, so reading it in a useState

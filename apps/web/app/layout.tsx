@@ -1,10 +1,13 @@
 import type { Metadata } from "next";
 import "./globals.css";
-import { Geist } from "next/font/google";
+import { Geist, Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import Script from "next/script";
 import { cn } from "@/lib/utils";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
+const inter = Inter({subsets:['latin'],variable:'--font-body'});
+const spaceGrotesk = Space_Grotesk({subsets:['latin'],variable:'--font-display'});
+const jetbrainsMono = JetBrains_Mono({subsets:['latin'],variable:'--font-mono'});
 
 export const metadata: Metadata = {
   title: "PaperTrade Agent — Stellar",
@@ -18,7 +21,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={cn("h-full", "font-sans", geist.variable)}>
+    <html lang="en" className={cn("h-full", "font-sans", geist.variable, inter.variable, spaceGrotesk.variable, jetbrainsMono.variable)}>
       <head>
         <Script
           id="suppress-extension-errors"

@@ -1,6 +1,12 @@
 "use client";
 
-import { Maximize2, RotateCcw } from "lucide-react";
+import {
+  CandlestickChart,
+  LineChart,
+  BookOpen,
+  Maximize2,
+  RotateCcw,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Interval, ChartType, IndicatorConfig } from "@/app/hooks/useChartConfig";
 
@@ -20,16 +26,42 @@ const INDICATOR_DEFS: { key: keyof IndicatorConfig; label: string }[] = [
   { key: "vwap", label: "VWAP" },
   { key: "ema8", label: "EMA8" },
   { key: "ema21", label: "EMA21" },
+  { key: "bb", label: "BB" },
+  { key: "rsi", label: "RSI" },
+  { key: "macd", label: "MACD" },
   { key: "currentPrice", label: "Price" },
-];
-
-const CHART_TYPES: { value: ChartType; label: string }[] = [
-  { value: "candlestick", label: "Candlestick" },
-  { value: "line", label: "Line" },
 ];
 
 function Divider() {
   return <div className="h-4 w-px shrink-0 bg-border" />;
+}
+
+function IconButton({
+  active,
+  title,
+  onClick,
+  children,
+}: {
+  active?: boolean;
+  title: string;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={active}
+      className={cn(
+        "flex shrink-0 cursor-pointer items-center justify-center rounded-lg p-1.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
+        active
+          ? "bg-accent-muted text-accent"
+          : "text-text-muted hover:bg-bg-card hover:text-text-primary",
+      )}
+    >
+      {children}
+    </button>
+  );
 }
 
 export function ChartToolbar({
@@ -45,9 +77,7 @@ export function ChartToolbar({
   symbols,
   onSymbolChange,
   showOrderBook,
-  showTradingPanel,
   onToggleOrderBook,
-  onToggleTradingPanel,
 }: {
   symbol: string;
   interval: Interval;
@@ -61,9 +91,7 @@ export function ChartToolbar({
   symbols?: string[];
   onSymbolChange?: (symbol: string) => void;
   showOrderBook?: boolean;
-  showTradingPanel?: boolean;
   onToggleOrderBook?: () => void;
-  onToggleTradingPanel?: () => void;
 }) {
   return (
     <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded-xl border border-border bg-bg-elevated/80 px-2 py-1.5 text-xs backdrop-blur-xl scrollbar-none">
@@ -112,21 +140,26 @@ export function ChartToolbar({
       <Divider />
 
       {/* Chart Type */}
-      <select
-        value={chartType}
-        onChange={(e) => onChartTypeChange(e.target.value as ChartType)}
-        className="cursor-pointer rounded-lg border border-border bg-transparent px-2 py-1 font-mono text-[11px] text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-      >
-        {CHART_TYPES.map((t) => (
-          <option key={t.value} value={t.value} className="bg-bg-elevated">
-            {t.label}
-          </option>
-        ))}
-      </select>
+      <div className="flex items-center gap-0.5 shrink-0">
+        <IconButton
+          title="Candlestick"
+          active={chartType === "candlestick"}
+          onClick={() => onChartTypeChange("candlestick")}
+        >
+          <CandlestickChart size={14} />
+        </IconButton>
+        <IconButton
+          title="Line"
+          active={chartType === "line"}
+          onClick={() => onChartTypeChange("line")}
+        >
+          <LineChart size={14} />
+        </IconButton>
+      </div>
 
       <Divider />
 
-      {/* Indicators */}
+      {/* Indicators — always-visible toggle chips, one click to flip state */}
       <div className="flex items-center gap-1 shrink-0">
         {INDICATOR_DEFS.map((ind) => {
           const active = indicators[ind.key];
@@ -134,11 +167,12 @@ export function ChartToolbar({
             <button
               key={ind.key}
               onClick={() => onToggleIndicator(ind.key)}
+              aria-pressed={active}
               className={cn(
                 "cursor-pointer rounded-lg px-2 py-1 font-mono text-[10px] whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
                 active
                   ? "border border-accent/20 bg-accent-muted text-accent"
-                  : "text-text-muted hover:text-text-secondary",
+                  : "border border-transparent text-text-muted hover:text-text-secondary",
               )}
             >
               {ind.label}
@@ -147,48 +181,19 @@ export function ChartToolbar({
         })}
       </div>
 
-      <div className="ml-auto flex items-center gap-1 shrink-0">
+      <div className="ml-auto flex items-center gap-0.5 shrink-0">
         {onToggleOrderBook && (
-          <button
-            onClick={onToggleOrderBook}
-            className={cn(
-              "cursor-pointer rounded-lg px-2 py-1 font-mono text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
-              showOrderBook
-                ? "text-accent"
-                : "text-text-muted hover:text-text-secondary",
-            )}
-          >
-            Book
-          </button>
+          <IconButton title="Order Book" active={showOrderBook} onClick={onToggleOrderBook}>
+            <BookOpen size={14} />
+          </IconButton>
         )}
-        {onToggleTradingPanel && (
-          <button
-            onClick={onToggleTradingPanel}
-            className={cn(
-              "cursor-pointer rounded-lg px-2 py-1 font-mono text-[10px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40",
-              showTradingPanel
-                ? "text-accent"
-                : "text-text-muted hover:text-text-secondary",
-            )}
-          >
-            Panel
-          </button>
-        )}
-        <div className="h-4 w-px bg-border" />
-        <button
-          onClick={onFitContent}
-          title="Fit Content"
-          className="cursor-pointer rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-card hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        >
+        <Divider />
+        <IconButton title="Fit Content" onClick={onFitContent}>
           <RotateCcw size={14} />
-        </button>
-        <button
-          onClick={onFullscreen}
-          title="Fullscreen"
-          className="cursor-pointer rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-card hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/40"
-        >
+        </IconButton>
+        <IconButton title="Fullscreen" onClick={onFullscreen}>
           <Maximize2 size={14} />
-        </button>
+        </IconButton>
       </div>
     </div>
   );

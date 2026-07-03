@@ -4,9 +4,11 @@ import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { Asset } from "@stellar/stellar-sdk";
 import { AdvancedChart } from "@/app/components/charts/AdvancedChart";
 import { PriceViewPanel } from "@/app/components/panels/PriceViewPanel";
-import { Card, CardBody } from "@/app/components/ui/Card";
+import { Card, CardBody, CardHeader } from "@/app/components/ui/Card";
+import { Badge } from "@/app/components/ui/Badge";
+import { Spinner } from "@/app/components/ui/Spinner";
 import { usePrices } from "@/app/hooks/usePrices";
-import { useSmartWallet } from "@/app/hooks/useSmartWallet";
+import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import {
   formatNumber,
@@ -25,6 +27,17 @@ import {
 } from "@/app/lib/stellar";
 import { TokenSearchSelect } from "./components/TokenSearchSelect";
 import { TickerTape } from "./components/TickerTape";
+import { LiveTradeCard } from "./components/LiveTradeCard";
+import {
+  createAgentWallet,
+  attachAgentDelegation,
+  setAgentStrategy,
+  startAgentWallet,
+  listStrategies,
+  listAgentWallets,
+  type StrategyMeta,
+  type AgentSummary,
+} from "@/app/lib/agentsBackend";
 
 type TradeMode = "manual" | "strategy" | "intent" | "agent";
 
@@ -43,7 +56,7 @@ function TradeInner() {
   const { tickers, wsStatus } = usePrices(TICKER_SYMBOLS, 10000);
   const ticker = tickers[chartSymbol];
 
-  const { wallet, connected, connecting, connect, disconnect, smartWalletAddress, deploying, deployError } = useSmartWallet();
+  const { wallet, connected, connecting, connect, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
   const { xlmBalance, usdcBalance, hasUsdcTrustline, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
     wallet?.address ?? null,
     wallet?.networkPassphrase ?? null,
@@ -238,44 +251,117 @@ function TradeInner() {
     }
   }, [flash]);
 
-  // ── Strategy trade ──
-  const [strategyTemplate, setStrategyTemplate] = useState("grid");
-  const [tpPercent, setTpPercent] = useState("5");
-  const [slPercent, setSlPercent] = useState("2");
-  const [stratAmount, setStratAmount] = useState("");
-  const [strategyResult, setStrategyResult] = useState<{ hash: string } | null>(null);
+  // ── Strategy trade — launches a real custodial agent (see /backend) that trades a chosen
+  // quant strategy's buy/sell signal live on the Stellar testnet DEX from its own account,
+  // funded via a spend-limit delegation from this smart wallet. ──
+  const [strategies, setStrategies] = useState<StrategyMeta[]>([]);
+  const [loadingStrategies, setLoadingStrategies] = useState(true);
+  const [strategiesError, setStrategiesError] = useState<string | null>(null);
 
-  const handleDeployStrategy = async () => {
-    const amt = parseFloat(stratAmount) || 0;
-    if (amt <= 0) { flash("err", "Enter a valid amount"); return; }
+  useEffect(() => {
+    listStrategies()
+      .then(setStrategies)
+      .catch((e) => setStrategiesError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setLoadingStrategies(false));
+  }, []);
+
+  const [selectedStrategy, setSelectedStrategy] = useState<StrategyMeta | null>(null);
+  const [quantAmount, setQuantAmount] = useState("10");
+  const [quantIntervalMinutes, setQuantIntervalMinutes] = useState("15");
+  const [launching, setLaunching] = useState(false);
+  const [launchError, setLaunchError] = useState<string | null>(null);
+  const [liveAgentId, setLiveAgentId] = useState<string | null>(null);
+  // Overrides the live-feed view to show the picker even when agents are already running.
+  const [showStrategyPicker, setShowStrategyPicker] = useState(false);
+
+  // Active strategy agents live in the backend, not local component state — reload them on
+  // mount so navigating away and back (or a full refresh) still shows the live feed instead
+  // of losing it to a wiped `liveAgentId`.
+  const [activeAgents, setActiveAgents] = useState<AgentSummary[]>([]);
+  const [loadingActiveAgents, setLoadingActiveAgents] = useState(false);
+
+  const refreshActiveAgents = useCallback(async () => {
+    if (!walletOwner) return;
+    setLoadingActiveAgents(true);
+    try {
+      const agents = await listAgentWallets(walletOwner);
+      setActiveAgents(
+        agents.filter((a) => a.strategy?.type === "quant" && (a.status === "running" || a.status === "error"))
+      );
+    } catch {
+      // Non-fatal — the launch form still works even if this listing fails.
+    } finally {
+      setLoadingActiveAgents(false);
+    }
+  }, [walletOwner]);
+
+  useEffect(() => {
+    refreshActiveAgents();
+  }, [refreshActiveAgents]);
+
+  const strategyGroups = strategies.reduce<Record<string, StrategyMeta[]>>((acc, s) => {
+    (acc[s.category] ??= []).push(s);
+    return acc;
+  }, {});
+
+  const handleLaunchStrategy = async () => {
+    if (!selectedStrategy) return;
+    const amt = parseFloat(quantAmount) || 0;
+    if (amt <= 0) { flash("err", "Enter a valid amount per trade"); return; }
     if (!walletOwner) { flash("err", "Connect your wallet first"); return; }
     if (!smartWalletAddress) { flash("err", "Deploy a smart wallet first"); return; }
 
-    const result = await createTradeDelegation(walletOwner, [
-      {
-        type: "spend-limit",
-        token: Asset.native().contractId(networkPassphrase),
-        spendLimit: (BigInt(Math.round(amt * 10_000_000))).toString(),
-        period: "86400",
-      },
-      {
-        type: "time-restriction",
-        start: Math.floor(Date.now() / 1000),
-        expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
-      },
-    ]);
+    setLaunching(true);
+    setLaunchError(null);
+    try {
+      const agent = await createAgentWallet(walletOwner);
 
-    if (result) {
-      setStrategyResult({ hash: result.hash });
-      flash("ok", `Strategy deployed — delegation ${result.hash.slice(0, 8)}…`);
+      // Cap the delegation well above amountPerTrade so the agent can run for a while
+      // before needing a fresh delegation — 100 ticks' worth of spend per day.
+      const result = await createTradeDelegation(agent.publicKey, [
+        {
+          type: "spend-limit",
+          token: Asset.native().contractId(networkPassphrase),
+          spendLimit: (BigInt(Math.round(amt * 10_000_000 * 100))).toString(),
+          period: "86400",
+        },
+        {
+          type: "time-restriction",
+          start: Math.floor(Date.now() / 1000),
+          expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
+        },
+      ]);
+      if (!result) throw new Error("Failed to create delegation");
+
+      await attachAgentDelegation(agent.id, result.delegation);
+      await setAgentStrategy(agent.id, {
+        type: "quant",
+        strategyId: selectedStrategy.id,
+        pair: "XLM/USDC",
+        amountPerTrade: (BigInt(Math.round(amt * 10_000_000))).toString(),
+        intervalSeconds: Math.max(60, Math.round((parseFloat(quantIntervalMinutes) || 15) * 60)),
+      });
+      await startAgentWallet(agent.id);
+
+      setLiveAgentId(agent.id);
+      setSelectedStrategy(null);
+      setShowStrategyPicker(false);
+      await refreshActiveAgents();
+      flash("ok", `${selectedStrategy.name} launched — trading live`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLaunchError(msg);
+      flash("err", msg);
+    } finally {
+      setLaunching(false);
     }
   };
 
-  const STRATEGY_LABELS: Record<string, string> = {
-    grid: "Grid Trading",
-    dca: "DCA",
-    momentum: "Momentum Breakout",
-    mean: "Mean Reversion",
+  const handleResetStrategy = () => {
+    setLiveAgentId(null);
+    setSelectedStrategy(null);
+    setLaunchError(null);
+    setShowStrategyPicker(false);
   };
 
   // ── Intent trade ──
@@ -502,11 +588,49 @@ function TradeInner() {
             symbols={CHART_SYMBOLS}
             onSymbolChange={setChartSymbol}
           />
-          <PriceViewPanel symbol={chartSymbol} ticker={ticker} wsStatus={wsStatus} />
+          {mode === "strategy" ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted">
+                  Live policies ({activeAgents.length})
+                </p>
+                {(activeAgents.length > 0 || liveAgentId) && (
+                  <button
+                    onClick={() => setShowStrategyPicker((v) => !v)}
+                    className="text-xs text-accent/70 hover:text-accent"
+                  >
+                    {showStrategyPicker ? "← Back to live feed" : "+ Launch another"}
+                  </button>
+                )}
+              </div>
+              {loadingActiveAgents && activeAgents.length === 0 ? (
+                <Card><CardBody className="flex justify-center py-8"><Spinner className="h-4 w-4" /></CardBody></Card>
+              ) : activeAgents.length === 0 && !liveAgentId ? (
+                <Card>
+                  <CardBody className="py-8 text-center">
+                    <p className="text-xs text-text-muted">
+                      No strategies running yet — pick one in the panel on the right to start live trading.
+                    </p>
+                  </CardBody>
+                </Card>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  {(liveAgentId && !activeAgents.some((a) => a.id === liveAgentId)
+                    ? [liveAgentId, ...activeAgents.map((a) => a.id)]
+                    : activeAgents.map((a) => a.id)
+                  ).map((id) => (
+                    <LiveTradeCard key={id} agentId={id} strategies={strategies} />
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : (
+            <PriceViewPanel symbol={chartSymbol} ticker={ticker} wsStatus={wsStatus} />
+          )}
         </div>
 
         {/* Sidebar — form + wallet */}
-        <div className="space-y-6 lg:col-span-1">
+        <div className="space-y-6">
           {/* Mode-specific form */}
           <Card>
             <CardBody className="space-y-4">
@@ -684,105 +808,151 @@ function TradeInner() {
 
               {/* ── STRATEGY ── */}
               {mode === "strategy" && (
-                strategyResult ? (
-                  <div className="space-y-4">
-                    <div className="flex items-center gap-2 rounded-xl border border-success/15 bg-success/6 px-4 py-3">
-                      <span className="text-sm text-success">✓</span>
-                      <p className="text-xs font-medium text-success/85">Strategy deployed</p>
+                <>
+                  <span className="mb-1 inline-flex w-fit items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-emerald-400/85">
+                    Live · {strategies.length || 25}+ quant strategies
+                  </span>
+
+                  {!connected ? (
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 text-center">
+                      <p className="text-xs text-text-secondary">Connect Freighter to launch a strategy.</p>
+                      <button
+                        onClick={connect}
+                        disabled={connecting}
+                        className="mt-3 w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {connecting ? "Connecting…" : "Connect Freighter"}
+                      </button>
                     </div>
-                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5">
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Strategy</span>
-                        <span className="font-mono text-xs text-text-secondary">{STRATEGY_LABELS[strategyTemplate] ?? strategyTemplate}</span>
+                  ) : !smartWalletAddress ? (
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 text-center">
+                      <p className="text-xs text-text-secondary">
+                        {deploying ? "Deploying your smart wallet…" : "Deploy a smart wallet to fund a strategy agent."}
+                      </p>
+                      {deployError && <p className="mt-2 text-xs text-error/90">{deployError}</p>}
+                    </div>
+                  ) : (activeAgents.length > 0 || liveAgentId) && !selectedStrategy && !showStrategyPicker ? (
+                    <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 text-center">
+                      <p className="text-xs text-text-secondary">
+                        {activeAgents.length} strateg{activeAgents.length === 1 ? "y" : "ies"} live — see the feed below the chart.
+                      </p>
+                      <button
+                        onClick={() => setShowStrategyPicker(true)}
+                        className="mt-3 w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent"
+                      >
+                        + Launch another strategy
+                      </button>
+                    </div>
+                  ) : !selectedStrategy ? (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Pick a strategy</p>
+                        {activeAgents.length > 0 && (
+                          <button onClick={() => setShowStrategyPicker(false)} className="text-xs text-accent/70 hover:text-accent">
+                            ← Back to live feed
+                          </button>
+                        )}
                       </div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Amount</span>
-                        <span className="font-mono text-xs text-text-secondary">{formatNumber(parseFloat(stratAmount) || 0)} XLM</span>
+                      {strategiesError && (
+                        <div className="rounded-xl border border-error/15 bg-error/6 px-3 py-2">
+                          <p className="text-xs text-error/90">{strategiesError}</p>
+                        </div>
+                      )}
+                      {loadingStrategies ? (
+                        <div className="flex justify-center py-6"><Spinner className="h-4 w-4" /></div>
+                      ) : (
+                        <div className="max-h-[420px] space-y-3 overflow-y-auto pr-1">
+                          {Object.entries(strategyGroups).map(([category, items]) => (
+                            <div key={category} className="space-y-1.5">
+                              <p className="font-mono text-[9px] font-medium uppercase tracking-widest text-text-muted">{category}</p>
+                              <div className="space-y-1.5">
+                                {items.map((s) => (
+                                  <button
+                                    key={s.id}
+                                    onClick={() => setSelectedStrategy(s)}
+                                    className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3.5 py-2.5 text-left transition-all duration-200 hover:border-accent/20 hover:bg-white/[0.04]"
+                                  >
+                                    <p className="text-xs font-medium text-text-primary">{s.name}</p>
+                                    <p className="mt-0.5 truncate text-[10px] text-text-muted">{s.description}</p>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-medium text-text-primary">{selectedStrategy.name}</p>
+                        <span className="rounded-full bg-white/5 px-2 py-0.5 font-mono text-[9px] uppercase tracking-wider text-text-muted">
+                          {selectedStrategy.category}
+                        </span>
                       </div>
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">TP / SL</span>
-                        <span className="font-mono text-xs text-text-secondary">{tpPercent}% / {slPercent}%</span>
-                      </div>
-                      <div className="flex items-center justify-between border-t border-white/5 pt-2">
-                        <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Delegation</span>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs text-text-secondary">{strategyResult.hash.slice(0, 8)}…</span>
-                          <button onClick={() => copyToClipboard(strategyResult.hash)} className="text-[10px] text-accent/70 hover:text-accent">Copy</button>
+                      <p className="text-xs text-text-muted">{selectedStrategy.description}</p>
+
+                      {launchError && <p className="text-xs text-error/90">{launchError}</p>}
+
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Pair</label>
+                          <input value="XLM/USDC" disabled className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-muted" />
+                        </div>
+                        <div>
+                          <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Amount / trade (XLM)</label>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={quantAmount}
+                            onChange={(e) => setQuantAmount(e.target.value)}
+                            className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-primary outline-none transition-all duration-200 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
+                          />
                         </div>
                       </div>
-                    </div>
-                    <div className="flex gap-2">
-                      <a href="/dashboard/delegations-v2" className="flex-1 rounded-xl bg-accent/70 px-3 py-2 text-center text-xs font-semibold text-white transition-all duration-300 hover:bg-accent">View Delegations →</a>
-                      <button onClick={() => setStrategyResult(null)} className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-muted transition-all duration-200 hover:bg-white/[0.05] hover:text-text-secondary">Deploy Another</button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <div>
-                      <label className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
-                        Strategy
-                      </label>
-                      <select
-                        value={strategyTemplate}
-                        onChange={(e) => setStrategyTemplate(e.target.value)}
-                        className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2.5 font-mono text-sm text-text-primary outline-none transition-all duration-300 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
-                      >
-                        <option value="grid">Grid Trading</option>
-                        <option value="dca">DCA (Dollar Cost Avg)</option>
-                        <option value="momentum">Momentum Breakout</option>
-                        <option value="mean">Mean Reversion</option>
-                      </select>
-                    </div>
-
-                    <div className="flex gap-3">
-                      <div className="flex-1">
-                        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                          TP %
-                        </label>
+                      <div>
+                        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">Check interval (minutes)</label>
                         <input
                           type="number"
-                          value={tpPercent}
-                          onChange={(e) => setTpPercent(e.target.value)}
+                          min="1"
+                          value={quantIntervalMinutes}
+                          onChange={(e) => setQuantIntervalMinutes(e.target.value)}
                           className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-primary outline-none transition-all duration-200 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
                         />
                       </div>
-                      <div className="flex-1">
-                        <label className="mb-1 block font-mono text-[10px] uppercase tracking-[0.12em] text-text-muted">
-                          SL %
-                        </label>
-                        <input
-                          type="number"
-                          value={slPercent}
-                          onChange={(e) => setSlPercent(e.target.value)}
-                          className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-primary outline-none transition-all duration-200 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
-                        />
+
+                      <p className="text-[10px] text-text-muted">
+                        Creates a dedicated agent wallet, delegates a spend limit from your smart wallet, and
+                        starts it trading this strategy's live signal on the Stellar testnet DEX.
+                      </p>
+
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={() => setSelectedStrategy(null)}
+                          disabled={launching}
+                          className="flex-1 rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          Back
+                        </button>
+                        <button
+                          onClick={handleLaunchStrategy}
+                          disabled={launching || delegating !== null}
+                          className="flex-[2] rounded-xl bg-emerald-600/80 px-4 py-2 text-xs font-semibold text-white shadow-[0_0_25px_-10px_rgba(52,211,153,0.15)] transition-all duration-300 hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          {launching || delegating ? (
+                            <span className="flex items-center justify-center gap-2">
+                              <Spinner className="h-3 w-3" />
+                              {delegating ? `Delegation ${delegating}…` : "Starting agent…"}
+                            </span>
+                          ) : (
+                            "Launch Strategy"
+                          )}
+                        </button>
                       </div>
-                    </div>
-
-                    <div>
-                      <label className="mb-1.5 block font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">
-                        Amount (XLM)
-                      </label>
-                      <input
-                        type="number"
-                        min="0"
-                        step="any"
-                        value={stratAmount}
-                        onChange={(e) => setStratAmount(e.target.value)}
-                        placeholder="0.00"
-                        className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3.5 py-2.5 font-mono text-sm text-text-primary placeholder:text-text-muted/50 transition-all duration-300 focus:border-accent/30 focus:outline-none focus:ring-2 focus:ring-accent/15"
-                      />
-                    </div>
-
-                    <button
-                      onClick={handleDeployStrategy}
-                      disabled={delegating !== null}
-                      className="w-full rounded-xl bg-white/8 px-5 py-2.5 text-sm font-semibold text-text-primary transition-all duration-300 hover:bg-white/10 hover:shadow-[0_0_25px_-8px_rgba(120,81,233,0.1)] disabled:cursor-not-allowed disabled:opacity-40"
-                    >
-                      {delegating ? `Delegation ${delegating}…` : "Deploy Strategy"}
-                    </button>
-                  </>
-                )
+                    </>
+                  )}
+                </>
               )}
 
               {/* ── INTENT ── */}

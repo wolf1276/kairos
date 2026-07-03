@@ -127,9 +127,8 @@ export default function DelegationsV2Page() {
   const handleRevokeClick = useCallback(
     async (d: DelegationRecord) => {
       setConfirmRevoke([d]);
-      pendingRevokeRef.current = executeRevoke;
     },
-    [executeRevoke]
+    []
   );
 
   const handleConfirmRevoke = useCallback(async () => {

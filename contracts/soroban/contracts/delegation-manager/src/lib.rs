@@ -51,6 +51,8 @@ pub enum DataKey {
     Owner,
     Paused,
     Locked,
+    WalletDelegation(Address), // delegator wallet -> active delegation hash (one per wallet)
+    Policy(Address, u64),      // (delegator, policy_id) -> terms bytes, updatable in place
 }
 
 #[contracterror]
@@ -69,6 +71,8 @@ pub enum ManagerError {
     Paused = 10,
     InvalidNonce = 11,
     Locked = 12,
+    WalletAlreadyDelegated = 13,
+    NoActiveDelegation = 14,
 }
 
 const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
@@ -188,6 +192,86 @@ impl DelegationManager {
             (symbol_short!("del_en"), delegator),
             hash,
         );
+    }
+
+    // Register the single active delegation for a wallet. Enforces one delegation
+    // per wallet; reject if an active (non-disabled) delegation already exists.
+    pub fn register_delegation(env: Env, delegator: Address, delegation: Delegation) {
+        delegator.require_auth();
+        if delegation.delegator != delegator {
+            panic_with_error!(&env, ManagerError::NotAuthorized);
+        }
+        let key = DataKey::WalletDelegation(delegator.clone());
+        if let Some(existing_hash) = env.storage().persistent().get::<_, BytesN<32>>(&key) {
+            if !Self::is_delegation_disabled(env.clone(), existing_hash) {
+                panic_with_error!(&env, ManagerError::WalletAlreadyDelegated);
+            }
+        }
+        let hash = Self::get_delegation_hash(env.clone(), delegation);
+        env.storage().persistent().set(&key, &hash);
+        env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+
+        env.events().publish((symbol_short!("del_reg"), delegator), hash);
+    }
+
+    // Get the active delegation hash for a wallet, if any.
+    pub fn get_wallet_delegation(env: Env, delegator: Address) -> Option<BytesN<32>> {
+        let key = DataKey::WalletDelegation(delegator);
+        env.storage().persistent().get(&key)
+    }
+
+    // Revoke by wallet, without needing to reconstruct the Delegation struct.
+    pub fn revoke_by_wallet(env: Env, delegator: Address) {
+        delegator.require_auth();
+        let key = DataKey::WalletDelegation(delegator.clone());
+        let hash: BytesN<32> = match env.storage().persistent().get(&key) {
+            Some(h) => h,
+            None => panic_with_error!(&env, ManagerError::NoActiveDelegation),
+        };
+        let disabled_key = DataKey::Disabled(hash.clone());
+        if env.storage().persistent().has(&disabled_key) {
+            panic_with_error!(&env, ManagerError::AlreadyDisabled);
+        }
+        env.storage().persistent().set(&disabled_key, &true);
+        env.storage().persistent().extend_ttl(&disabled_key, BUMP_THRESHOLD, BUMP_LIMIT);
+
+        env.events().publish((symbol_short!("del_dis"), delegator), hash);
+    }
+
+    // Update policy terms in place for (delegator, policy_id). Does not touch the
+    // Delegation struct, its hash, or its signature — caveats reference policy_id
+    // via a marker-prefixed terms blob (see resolve_terms), so this lets Policy
+    // be edited (limits/assets/expiry/schedule/allowed actions) without minting
+    // a new delegation.
+    pub fn set_policy(env: Env, delegator: Address, policy_id: u64, terms: Bytes) {
+        delegator.require_auth();
+        let key = DataKey::Policy(delegator, policy_id);
+        env.storage().persistent().set(&key, &terms);
+        env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+
+        env.events().publish((symbol_short!("pol_set"),), policy_id);
+    }
+
+    pub fn get_policy(env: Env, delegator: Address, policy_id: u64) -> Bytes {
+        let key = DataKey::Policy(delegator, policy_id);
+        env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
+        env.storage().persistent().get(&key).unwrap_or(Bytes::new(&env))
+    }
+
+    // Resolve a caveat's terms: if terms is `0xFE ++ policy_id:u64_be`, look up the
+    // live policy blob for (delegator, policy_id); otherwise use terms literally
+    // (backward compatible with existing inline-terms delegations).
+    fn resolve_terms(env: &Env, delegator: &Address, terms: &Bytes) -> Bytes {
+        if terms.len() == 9 && terms.get(0).unwrap() == 0xFE {
+            let mut arr = [0u8; 8];
+            for i in 0..8 {
+                arr[i] = terms.get(1 + i as u32).unwrap();
+            }
+            let policy_id = u64::from_be_bytes(arr);
+            Self::get_policy(env.clone(), delegator.clone(), policy_id)
+        } else {
+            terms.clone()
+        }
     }
 
     // Check if delegation is disabled
@@ -390,10 +474,11 @@ impl DelegationManager {
                 let hash = hashes.get(j).unwrap();
                 
                 for caveat in delegation.caveats.iter() {
+                    let terms = Self::resolve_terms(&env, &delegation.delegator, &caveat.terms);
                     env.invoke_contract::<Val>(
                         &caveat.enforcer,
                         &Symbol::new(&env, "before_all"),
-                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                        (terms, hash.clone(), context.clone()).into_val(&env),
                     );
                 }
             }
@@ -402,12 +487,13 @@ impl DelegationManager {
             for j in 0..chain.len() {
                 let delegation = chain.get(j).unwrap();
                 let hash = hashes.get(j).unwrap();
-                
+
                 for caveat in delegation.caveats.iter() {
+                    let terms = Self::resolve_terms(&env, &delegation.delegator, &caveat.terms);
                     env.invoke_contract::<Val>(
                         &caveat.enforcer,
                         &Symbol::new(&env, "before_hook"),
-                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                        (terms, hash.clone(), context.clone()).into_val(&env),
                     );
                 }
             }
@@ -430,10 +516,11 @@ impl DelegationManager {
                 let hash = hashes.get(j).unwrap();
                 
                 for caveat in delegation.caveats.iter() {
+                    let terms = Self::resolve_terms(&env, &delegation.delegator, &caveat.terms);
                     env.invoke_contract::<Val>(
                         &caveat.enforcer,
                         &Symbol::new(&env, "after_hook"),
-                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                        (terms, hash.clone(), context.clone()).into_val(&env),
                     );
                 }
             }
@@ -442,12 +529,13 @@ impl DelegationManager {
             for j in (0..chain.len()).rev() {
                 let delegation = chain.get(j).unwrap();
                 let hash = hashes.get(j).unwrap();
-                
+
                 for caveat in delegation.caveats.iter() {
+                    let terms = Self::resolve_terms(&env, &delegation.delegator, &caveat.terms);
                     env.invoke_contract::<Val>(
                         &caveat.enforcer,
                         &Symbol::new(&env, "after_all"),
-                        (caveat.terms.clone(), hash.clone(), context.clone()).into_val(&env),
+                        (terms, hash.clone(), context.clone()).into_val(&env),
                     );
                 }
             }

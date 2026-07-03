@@ -6,10 +6,12 @@ import {
   ColorType,
   CandlestickSeries,
   LineSeries,
+  HistogramSeries,
   type IChartApi,
   type ISeriesApi,
   type CandlestickData,
   type LineData,
+  type HistogramData,
   type SeriesType,
   type Time,
 } from "lightweight-charts";
@@ -17,13 +19,12 @@ import { formatPrice, formatPct } from "@/app/lib/format";
 import { useStreamingKlines } from "@/app/hooks/useStreamingKlines";
 import { useChartConfig } from "@/app/hooks/useChartConfig";
 import { ChartToolbar } from "@/app/components/charts/ChartToolbar";
+import { DrawingToolbar } from "@/app/components/charts/DrawingToolbar";
 import { DrawingManager } from "@/app/components/charts/drawing-tools/DrawingManager";
 import { useDrawings } from "@/app/hooks/useDrawings";
 import { useKeyboardShortcuts } from "@/app/hooks/useKeyboardShortcuts";
-import { usePriceAlerts } from "@/app/hooks/usePriceAlerts";
 import type { ToolMode } from "@/app/components/charts/drawing-tools/types";
 import { OrderBook } from "@/app/components/charts/OrderBook";
-import { TradingPanel } from "@/app/components/charts/TradingPanel";
 
 type AnySeries = ISeriesApi<SeriesType>;
 
@@ -49,6 +50,64 @@ function calcEMA(values: number[], period: number): number[] {
   return result;
 }
 
+function calcSMA(values: number[], period: number): (number | undefined)[] {
+  const result: (number | undefined)[] = [];
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) sum -= values[i - period];
+    result.push(i >= period - 1 ? sum / period : undefined);
+  }
+  return result;
+}
+
+function calcBollinger(values: number[], period = 20, mult = 2) {
+  const basis = calcSMA(values, period);
+  const upper: (number | undefined)[] = [];
+  const lower: (number | undefined)[] = [];
+  for (let i = 0; i < values.length; i++) {
+    const b = basis[i];
+    if (b === undefined) { upper.push(undefined); lower.push(undefined); continue; }
+    let sq = 0;
+    for (let j = i - period + 1; j <= i; j++) sq += (values[j] - b) ** 2;
+    const sd = Math.sqrt(sq / period);
+    upper.push(b + mult * sd);
+    lower.push(b - mult * sd);
+  }
+  return { basis, upper, lower };
+}
+
+function calcRSI(values: number[], period = 14): (number | undefined)[] {
+  const result: (number | undefined)[] = new Array(values.length).fill(undefined);
+  if (values.length <= period) return result;
+  let gainSum = 0, lossSum = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = values[i] - values[i - 1];
+    if (diff >= 0) gainSum += diff; else lossSum -= diff;
+  }
+  let avgGain = gainSum / period;
+  let avgLoss = lossSum / period;
+  result[period] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  for (let i = period + 1; i < values.length; i++) {
+    const diff = values[i] - values[i - 1];
+    const gain = diff >= 0 ? diff : 0;
+    const loss = diff < 0 ? -diff : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+    result[i] = avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss);
+  }
+  return result;
+}
+
+function calcMACD(values: number[], fast = 12, slow = 26, signalPeriod = 9) {
+  const emaFast = calcEMA(values, fast);
+  const emaSlow = calcEMA(values, slow);
+  const macd = values.map((_, i) => emaFast[i] - emaSlow[i]);
+  const signal = calcEMA(macd, signalPeriod);
+  const hist = macd.map((v, i) => v - signal[i]);
+  return { macd, signal, hist };
+}
+
 export function AdvancedChart({
   symbol,
   height = 440,
@@ -64,13 +123,19 @@ export function AdvancedChart({
     useChartConfig();
   const { candles, loading, error } = useStreamingKlines(symbol, bi);
   const { drawings: savedDrawings, save: saveDrawings } = useDrawings(symbol);
-  const { alerts: priceAlerts, addAlert, removeAlert, clearTriggered, checkAlerts } = usePriceAlerts();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<AnySeries | null>(null);
   const ema8SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const ema21SeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bbUpperRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bbBasisRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const bbLowerRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const rsiSeriesRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdLineRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdSignalRef = useRef<ISeriesApi<"Line"> | null>(null);
+  const macdHistRef = useRef<ISeriesApi<"Histogram"> | null>(null);
   const fittedRef = useRef(false);
   const prevDataRef = useRef<CandlestickData[]>([]);
   const vwapLineRef = useRef<ReturnType<AnySeries["createPriceLine"]> | null>(null);
@@ -79,7 +144,12 @@ export function AdvancedChart({
 
   const [toolMode, setToolMode] = useState<ToolMode>("select");
   const [showOrderBook, setShowOrderBook] = useState(true);
-  const [showTradingPanel, setShowTradingPanel] = useState(true);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [undoState, setUndoState] = useState({ canUndo: false, canRedo: false });
+  const syncUndoState = () => {
+    const mgr = mgrRef.current;
+    setUndoState({ canUndo: mgr?.canUndo ?? false, canRedo: mgr?.canRedo ?? false });
+  };
 
   const TOOL_LABELS: Record<ToolMode, string> = {
     select: "",
@@ -140,6 +210,42 @@ export function AdvancedChart({
         time: Math.floor(c.openTime / 1000) as Time,
         value: e21[i],
       })),
+    };
+  }, [candles]);
+
+  // Bollinger Bands / RSI / MACD (all derived from sorted, de-duped closes)
+  const { bbData, rsiData, macdData } = useMemo(() => {
+    if (candles.length < 2) {
+      return {
+        bbData: { upper: [] as LineData[], basis: [] as LineData[], lower: [] as LineData[] },
+        rsiData: [] as LineData[],
+        macdData: { macd: [] as LineData[], signal: [] as LineData[], hist: [] as HistogramData[] },
+      };
+    }
+    const sorted = [...candles].sort((a, b) => a.openTime - b.openTime)
+      .filter((c, i, self) => i === 0 || c.openTime !== self[i - 1].openTime);
+    const closes = sorted.map((c) => c.close || 0);
+    const times = sorted.map((c) => Math.floor(c.openTime / 1000) as Time);
+
+    const bb = calcBollinger(closes);
+    const rsi = calcRSI(closes);
+    const macd = calcMACD(closes);
+
+    const toLine = (vals: (number | undefined)[]): LineData[] =>
+      times.map((t, i) => ({ time: t, value: vals[i] })).filter((d) => d.value !== undefined) as LineData[];
+
+    return {
+      bbData: { upper: toLine(bb.upper), basis: toLine(bb.basis), lower: toLine(bb.lower) },
+      rsiData: toLine(rsi),
+      macdData: {
+        macd: times.map((t, i) => ({ time: t, value: macd.macd[i] })),
+        signal: times.map((t, i) => ({ time: t, value: macd.signal[i] })),
+        hist: times.map((t, i) => ({
+          time: t,
+          value: macd.hist[i],
+          color: macd.hist[i] >= 0 ? "rgba(52,211,153,0.6)" : "rgba(239,68,68,0.6)",
+        })),
+      },
     };
   }, [candles]);
 
@@ -210,16 +316,54 @@ export function AdvancedChart({
       priceFormat: { type: "price" },
     });
 
+    const bbUpper = chart.addSeries(LineSeries, { color: "rgba(148,163,184,0.5)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const bbBasis = chart.addSeries(LineSeries, { color: "rgba(148,163,184,0.7)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+    const bbLower = chart.addSeries(LineSeries, { color: "rgba(148,163,184,0.5)", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
+
+    // RSI — its own pane below the main chart
+    const rsiPane = chart.addPane();
+    const rsiSeries = chart.addSeries(LineSeries, {
+      color: "#a78bfa", lineWidth: 1, priceLineVisible: false, lastValueVisible: true,
+    }, rsiPane.paneIndex());
+    rsiPane.setHeight(0);
+
+    // MACD — its own pane below RSI
+    const macdPane = chart.addPane();
+    const macdHist = chart.addSeries(HistogramSeries, { priceLineVisible: false, lastValueVisible: false }, macdPane.paneIndex());
+    const macdLine = chart.addSeries(LineSeries, { color: "#f59e0b", lineWidth: 1, priceLineVisible: false, lastValueVisible: true }, macdPane.paneIndex());
+    const macdSignal = chart.addSeries(LineSeries, { color: "#06b6d4", lineWidth: 1, priceLineVisible: false, lastValueVisible: true }, macdPane.paneIndex());
+    macdPane.setHeight(0);
+
     chartRef.current = chart;
     seriesRef.current = mainSeries;
     ema8SeriesRef.current = ema8;
     ema21SeriesRef.current = ema21;
+    bbUpperRef.current = bbUpper;
+    bbBasisRef.current = bbBasis;
+    bbLowerRef.current = bbLower;
+    rsiSeriesRef.current = rsiSeries;
+    macdLineRef.current = macdLine;
+    macdSignalRef.current = macdSignal;
+    macdHistRef.current = macdHist;
+
+    // `autoSize` (set above) already tracks the container via its own internal
+    // ResizeObserver — calling `chart.resize()` ourselves on top of that fights it
+    // and pins the container to a stale width (this caused the order-book panel to
+    // reopen misaligned). Only nudge `fitContent()` after a fullscreen transition,
+    // which doesn't touch sizing and so can't conflict with autoSize.
+    const handleFullscreenChange = () => {
+      requestAnimationFrame(() => {
+        chartRef.current?.timeScale().fitContent();
+      });
+    };
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
 
     // Drawing manager
     const mgr = new DrawingManager();
     mgrRef.current = mgr;
     mgr.attach(chart, mainSeries, containerRef.current, {
-      onChange: (drawings) => saveDrawings(drawings),
+      onChange: (drawings) => { saveDrawings(drawings); syncUndoState(); },
+      onSelect: (id) => setSelectedId(id),
       onRequestText: (callback) => {
         const text = window.prompt("Enter annotation text:");
         if (text) callback(text);
@@ -227,6 +371,7 @@ export function AdvancedChart({
     });
 
     return () => {
+      document.removeEventListener("fullscreenchange", handleFullscreenChange);
       mgr.detach();
       mgrRef.current = null;
       chart.remove();
@@ -234,6 +379,13 @@ export function AdvancedChart({
       seriesRef.current = null;
       ema8SeriesRef.current = null;
       ema21SeriesRef.current = null;
+      bbUpperRef.current = null;
+      bbBasisRef.current = null;
+      bbLowerRef.current = null;
+      rsiSeriesRef.current = null;
+      macdLineRef.current = null;
+      macdSignalRef.current = null;
+      macdHistRef.current = null;
       vwapLineRef.current = null;
       priceLineRef.current = null;
     };
@@ -335,6 +487,41 @@ export function AdvancedChart({
       e21.applyOptions({ visible: indicators.ema21 });
     }
 
+    // Bollinger Bands
+    const bu = bbUpperRef.current, bb = bbBasisRef.current, bl = bbLowerRef.current;
+    if (bu && bb && bl) {
+      if (bbData.basis.length >= 2) {
+        bu.setData(bbData.upper);
+        bb.setData(bbData.basis);
+        bl.setData(bbData.lower);
+      }
+      bu.applyOptions({ visible: indicators.bb });
+      bb.applyOptions({ visible: indicators.bb });
+      bl.applyOptions({ visible: indicators.bb });
+    }
+
+    // RSI (own pane)
+    const rsiSeries = rsiSeriesRef.current;
+    if (rsiSeries) {
+      if (rsiData.length >= 2) rsiSeries.setData(rsiData);
+      const pane = rsiSeries.getPane();
+      const targetHeight = indicators.rsi ? 100 : 0;
+      if (pane.getHeight() !== targetHeight) pane.setHeight(targetHeight);
+    }
+
+    // MACD (own pane)
+    const mLine = macdLineRef.current, mSignal = macdSignalRef.current, mHist = macdHistRef.current;
+    if (mLine && mSignal && mHist) {
+      if (macdData.macd.length >= 2) {
+        mLine.setData(macdData.macd);
+        mSignal.setData(macdData.signal);
+        mHist.setData(macdData.hist);
+      }
+      const pane = mLine.getPane();
+      const targetHeight = indicators.macd ? 100 : 0;
+      if (pane.getHeight() !== targetHeight) pane.setHeight(targetHeight);
+    }
+
     // VWAP
     if (vwap > 0) {
       if (!indicators.vwap) {
@@ -376,27 +563,25 @@ export function AdvancedChart({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, chartType, vwap, last, indicators.vwap, indicators.currentPrice, indicators.ema8, indicators.ema21]);
-
-  // ── Price alert checker ──
-  useEffect(() => {
-    if (!last) return;
-    const id = window.setInterval(() => { checkAlerts({ [symbol.toUpperCase()]: last }); }, 2000);
-    return () => window.clearInterval(id);
-  }, [symbol, last, checkAlerts]);
+  }, [data, chartType, vwap, last, bbData, rsiData, macdData, indicators.vwap, indicators.currentPrice, indicators.ema8, indicators.ema21, indicators.bb, indicators.rsi, indicators.macd]);
 
   // ── Keyboard shortcuts ──
+  const handleToolChange = (mode: ToolMode) => {
+    setToolMode(mode);
+    mgrRef.current?.setToolMode(mode);
+  };
+  const handleUndo = () => { mgrRef.current?.undo(); syncUndoState(); };
+  const handleRedo = () => { mgrRef.current?.redo(); syncUndoState(); };
+  const handleDelete = () => {
+    const id = mgrRef.current?.getSelectedId();
+    if (id) { mgrRef.current?.removeDrawing(id); syncUndoState(); }
+  };
+
   useKeyboardShortcuts(
-    (mode) => {
-      setToolMode(mode);
-      mgrRef.current?.setToolMode(mode);
-    },
-    () => mgrRef.current?.undo(),
-    () => mgrRef.current?.redo(),
-    () => {
-      const id = mgrRef.current?.getSelectedId();
-      if (id) mgrRef.current?.removeDrawing(id);
-    },
+    handleToolChange,
+    handleUndo,
+    handleRedo,
+    handleDelete,
     () => {
       setToolMode("select");
       mgrRef.current?.setToolMode("select");
@@ -406,29 +591,6 @@ export function AdvancedChart({
 
   return (
     <div>
-      {/* Price + Status */}
-      <div className="mb-3 flex items-center justify-between">
-        <div className="flex items-baseline gap-2">
-          <span className="font-display text-2xl font-bold tabular-nums">
-            {loading && !last ? "\u2014" : formatPrice(last)}
-          </span>
-          {!!first && (
-            <span
-              className={`font-mono text-xs font-medium tabular-nums ${
-                trendUp ? "text-success" : "text-error"
-              }`}
-            >
-              {formatPct(changePct)}
-            </span>
-          )}
-          {toolMode !== "select" && (
-            <span className="ml-1 rounded border border-white/10 bg-white/[0.04] px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-wider text-text-muted">
-              {TOOL_LABELS[toolMode]}
-            </span>
-          )}
-        </div>
-      </div>
-
       {/* Instrument toolbar */}
       <ChartToolbar
         symbol={symbol}
@@ -443,18 +605,49 @@ export function AdvancedChart({
         symbols={symbols}
         onSymbolChange={onSymbolChange}
         showOrderBook={showOrderBook}
-        showTradingPanel={showTradingPanel}
         onToggleOrderBook={() => setShowOrderBook((v) => !v)}
-        onToggleTradingPanel={() => setShowTradingPanel((v) => !v)}
       />
 
-      {/* Chart + Order Book */}
+      {/* Drawing toolbar + Chart + Order Book */}
       <div className="flex gap-2">
+        <DrawingToolbar
+          toolMode={toolMode}
+          onToolChange={handleToolChange}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          canUndo={undoState.canUndo}
+          canRedo={undoState.canRedo}
+          onDelete={handleDelete}
+          hasSelection={selectedId !== null}
+        />
+
         <div style={{ position: "relative", flex: 1, minHeight: height }}>
           <div
             ref={containerRef}
             style={{ width: "100%", minHeight: height, borderRadius: 12, overflow: "hidden" }}
           />
+
+          {/* Legend overlay */}
+          <div className="pointer-events-none absolute left-3 top-2 z-[1] flex items-baseline gap-2">
+            <span className="font-display text-xl font-bold tabular-nums text-text-primary drop-shadow-sm">
+              {loading && !last ? "—" : formatPrice(last)}
+            </span>
+            {!!first && (
+              <span
+                className={`font-mono text-xs font-medium tabular-nums ${
+                  trendUp ? "text-success" : "text-error"
+                }`}
+              >
+                {formatPct(changePct)}
+              </span>
+            )}
+            {toolMode !== "select" && (
+              <span className="rounded border border-white/10 bg-bg-elevated/80 px-1.5 py-[1px] font-mono text-[10px] uppercase tracking-wider text-text-muted backdrop-blur-sm">
+                {TOOL_LABELS[toolMode]}
+              </span>
+            )}
+          </div>
+
           {error && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-bg-elevated">
               <p className="text-sm text-text-muted">Failed to load chart &middot; {error}</p>
@@ -466,20 +659,6 @@ export function AdvancedChart({
         </div>
         {showOrderBook && <OrderBook symbol={symbol} height={height} />}
       </div>
-
-      {/* Trading panel */}
-      {showTradingPanel && (
-        <div className="mt-2">
-          <TradingPanel
-            priceAlerts={priceAlerts}
-            symbol={symbol}
-            chartRef={chartRef}
-            onAddAlert={addAlert}
-            onRemoveAlert={removeAlert}
-            onClearTriggered={clearTriggered}
-          />
-        </div>
-      )}
     </div>
   );
 }

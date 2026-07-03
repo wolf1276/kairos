@@ -11,6 +11,9 @@ export interface IndicatorConfig {
   ema8: boolean;
   ema21: boolean;
   currentPrice: boolean;
+  bb: boolean;
+  rsi: boolean;
+  macd: boolean;
 }
 
 export interface ChartConfig {
@@ -27,7 +30,7 @@ const BINANCE_INTERVAL_MAP: Record<Interval, string> = {
 const DEFAULT_CONFIG: ChartConfig = {
   interval: "1h",
   chartType: "candlestick",
-  indicators: { vwap: true, ema8: true, ema21: true, currentPrice: true },
+  indicators: { vwap: true, ema8: true, ema21: true, currentPrice: true, bb: false, rsi: false, macd: false },
 };
 
 const STORAGE_KEY = "kairos:chart-config";
