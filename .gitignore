@@ -16,3 +16,4 @@ secrets/
 .env
 .env.*
 !.env.example
+.vercel
