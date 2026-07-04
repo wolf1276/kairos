@@ -161,7 +161,7 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
     const txHash =
       row.mode === 'paper'
         ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal)
-        : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal);
+        : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal, price);
 
     recordCompletedTrade({
       row,
@@ -255,6 +255,8 @@ function hasTrustline(account: Awaited<ReturnType<Horizon.Server['loadAccount']>
   );
 }
 
+const QUANT_TRADE_SLIPPAGE = 0.02;
+
 /** Submits a real classic Stellar path payment for a quant buy/sell signal, signed by the
  *  agent's own keypair (the agent trades from its own funded Stellar account — see
  *  agentService.createAgent — not via the Kairos SDK delegation `execute()`). Currently only
@@ -262,8 +264,16 @@ function hasTrustline(account: Awaited<ReturnType<Horizon.Server['loadAccount']>
  *  acquire USDC. Mirrors apps/web/app/lib/stellar.ts's executeSwap, reimplemented server-side.
  *  A freshly-created agent account only holds native XLM (friendbot funding) — it has no USDC
  *  trustline yet, so a missing trustline is established here in the same transaction as the
- *  trade, rather than requiring a separate manual setup step per agent. */
-export async function executeQuantTrade(row: AgentRow, strategy: { pair: string; amountPerTrade: string }, side: 'buy' | 'sell'): Promise<string> {
+ *  trade, rather than requiring a separate manual setup step per agent.
+ *  `price` (USDC per XLM, same convention as executeLimitOrder) floors the receive amount at a
+ *  2% slippage buffer — previously this used a near-zero `destMin`, which accepted a fill at
+ *  any price and gave a thin or manipulated order book no floor to respect. */
+export async function executeQuantTrade(
+  row: AgentRow,
+  strategy: { pair: string; amountPerTrade: string },
+  side: 'buy' | 'sell',
+  price: number
+): Promise<string> {
   if (strategy.pair !== 'XLM/USDC') {
     throw new Error(`Unsupported pair for trading: ${strategy.pair}`);
   }
@@ -286,6 +296,11 @@ export async function executeQuantTrade(row: AgentRow, strategy: { pair: string;
   const destAsset = side === 'buy' ? xlmAsset : usdcAsset;
   const amount = strategy.amountPerTrade;
 
+  // USDC -> XLM divides by price; XLM -> USDC multiplies (same convention as executeLimitOrder).
+  const sendAmountNum = parseFloat(amount);
+  const expectedDest = side === 'buy' ? sendAmountNum / price : sendAmountNum * price;
+  const destMin = (expectedDest * (1 - QUANT_TRADE_SLIPPAGE)).toFixed(7);
+
   const needsUsdcTrustline = !hasTrustline(account, usdcAsset);
 
   const op = Operation.pathPaymentStrictSend({
@@ -293,7 +308,7 @@ export async function executeQuantTrade(row: AgentRow, strategy: { pair: string;
     sendAmount: amount,
     destination: signer.publicKey(),
     destAsset,
-    destMin: '0.0000001',
+    destMin,
   });
 
   const builder = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase });

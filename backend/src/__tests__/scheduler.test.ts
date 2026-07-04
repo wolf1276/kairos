@@ -54,6 +54,84 @@ describe('scheduler cycle overlap guard', () => {
   });
 });
 
+describe('cross-process agent lock', () => {
+  it('a second claim for the same agent fails while the first is still held', async () => {
+    const { getDb } = await import('../db.js');
+    const { insertAgent } = await import('./fixtures.js');
+    const { claimAgentLock } = await import('../agentService.js');
+
+    const db = getDb();
+    const agent = insertAgent(db, { owner: 'GOWNER', status: 'running' });
+
+    const first = claimAgentLock(agent.id);
+    const second = claimAgentLock(agent.id);
+
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+  });
+
+  it('releasing the lock lets a subsequent claim succeed — simulates two backend processes sharing one DB', async () => {
+    const { getDb } = await import('../db.js');
+    const { insertAgent } = await import('./fixtures.js');
+    const { claimAgentLock, releaseAgentLock } = await import('../agentService.js');
+
+    const db = getDb();
+    const agent = insertAgent(db, { owner: 'GOWNER', status: 'running' });
+
+    const processA = claimAgentLock(agent.id);
+    expect(processA).not.toBeNull();
+    expect(claimAgentLock(agent.id)).toBeNull(); // processB can't claim while A holds it
+
+    releaseAgentLock(agent.id, processA!);
+
+    const processB = claimAgentLock(agent.id);
+    expect(processB).not.toBeNull();
+    expect(processB).not.toBe(processA);
+  });
+
+  it('releasing with a stale token (already reclaimed by someone else) is a no-op', async () => {
+    const { getDb } = await import('../db.js');
+    const { insertAgent } = await import('./fixtures.js');
+    const { claimAgentLock, releaseAgentLock } = await import('../agentService.js');
+
+    const db = getDb();
+    const agent = insertAgent(db, { owner: 'GOWNER', status: 'running' });
+
+    const staleToken = claimAgentLock(agent.id)!;
+    // Simulate the lock expiring and a new holder claiming it.
+    db.prepare('UPDATE agents SET lock_expires_at = ? WHERE id = ?').run(Date.now() - 1, agent.id);
+    const newHolder = claimAgentLock(agent.id)!;
+    expect(newHolder).not.toBeNull();
+
+    // The original (crashed) holder finally finishes and releases its stale token — must not
+    // clobber the new holder's still-active lock.
+    releaseAgentLock(agent.id, staleToken);
+
+    const row = db.prepare('SELECT lock_token FROM agents WHERE id = ?').get(agent.id) as { lock_token: string };
+    expect(row.lock_token).toBe(newHolder);
+  });
+
+  it('the scheduler skips an agent whose lock is already held by another process', async () => {
+    const { getDb } = await import('../db.js');
+    const { insertAgent } = await import('./fixtures.js');
+    const { runAgentTick } = await import('../tick.js');
+    const { claimAgentLock } = await import('../agentService.js');
+    const { startScheduler, stopScheduler } = await import('../runner.js');
+
+    const db = getDb();
+    const agent = insertAgent(db, { owner: 'GOWNER', status: 'running' });
+
+    // Simulate another process already ticking this agent.
+    claimAgentLock(agent.id);
+
+    startScheduler();
+    await new Promise((r) => setTimeout(r, 60));
+    stopScheduler();
+
+    expect(runAgentTick).not.toHaveBeenCalled();
+  });
+});
+
 describe('role-agent transient-failure self-heal', () => {
   it('recordTick with keepRunning keeps status running so the next cycle still picks the agent up', async () => {
     const { getDb } = await import('../db.js');

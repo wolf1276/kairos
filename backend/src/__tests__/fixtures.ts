@@ -29,6 +29,8 @@ export function insertAgent(
     capital: overrides.capital ?? '1000',
     risk_level: overrides.risk_level ?? null,
     started_at: overrides.started_at ?? Date.now(),
+    lock_token: overrides.lock_token ?? null,
+    lock_expires_at: overrides.lock_expires_at ?? null,
   };
   db.prepare(
     `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, delegator, strategy, strategy_config_json, last_tick_at, last_result, last_error, created_at, mode, capital, risk_level, started_at)

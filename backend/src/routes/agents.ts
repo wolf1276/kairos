@@ -12,12 +12,12 @@ import {
   startAgent,
   stopAgent,
 } from '../agentService.js';
-import { getTrade, insertTrade, isTradeReversed, listTradesForAgent } from '../tradeService.js';
-import { computeAvgCostAndRealize, computePnlSummary } from '../pnl.js';
+import { getTrade, isTradeReversed, listTradesForAgent } from '../tradeService.js';
+import { computePnlSummary } from '../pnl.js';
 import { getLatestPrice } from '../priceHistory.js';
 import { executeQuantTrade } from '../tick.js';
 import { executePaperQuantTrade } from '../paperExecutor.js';
-import { upsertPosition } from '../positionService.js';
+import { recordCompletedTrade } from '../executionEngine.js';
 import { getWalletDelegation } from '../db.js';
 import type { QuantStrategyConfig } from '../types.js';
 
@@ -212,26 +212,31 @@ agentsRouter.post('/:id/trades/:tradeId/reverse', async (req, res) => {
 
   try {
     const oppositeSide: 'buy' | 'sell' = original.side === 'buy' ? 'sell' : 'buy';
+    // Price fetched once, before execution, so the same value both floors the on-chain
+    // slippage check and books the trade — avoids a stale post-execution read racing a
+    // concurrent tick's own price-dependent accounting for this agent.
+    const price = (await getLatestPrice(original.pair)) ?? parseFloat(original.price);
     const txHash =
       row.mode === 'paper'
         ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: original.amount }, oppositeSide)
-        : await executeQuantTrade(row, { ...strategy, amountPerTrade: original.amount }, oppositeSide);
-    const price = (await getLatestPrice(original.pair)) ?? parseFloat(original.price);
-    const { realizedPnl } = computeAvgCostAndRealize(req.params.id, original.pair, oppositeSide, original.amount, String(price));
-    const reversal = insertTrade({
-      agentId: req.params.id,
+        : await executeQuantTrade(row, { ...strategy, amountPerTrade: original.amount }, oppositeSide, price);
+    // recordCompletedTrade wraps the trade insert + position upsert in one DB transaction, so a
+    // crash or a concurrent scheduler tick for this agent can't observe a trade recorded without
+    // its matching position update (or vice versa).
+    const { tradeId } = recordCompletedTrade({
+      row,
       strategyId: original.strategy_id,
       side: oppositeSide,
       pair: original.pair,
       amount: original.amount,
       price: String(price),
       txHash,
-      status: 'success',
-      realizedPnl,
-      reversedTradeId: original.id,
       mode: row.mode,
+      eventType: 'trade_closed',
+      message: `Reversal of trade ${original.id}: ${oppositeSide} ${original.amount} ${original.pair} @ ${price}. Tx: ${txHash}`,
+      reversedTradeId: original.id,
     });
-    upsertPosition(req.params.id, original.pair);
+    const reversal = getTrade(tradeId);
     res.json({ success: true, trade: reversal });
   } catch (error) {
     handleError(res, error);

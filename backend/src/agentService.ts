@@ -2,6 +2,7 @@ import { Keypair } from '@stellar/stellar-sdk';
 import type { Signer } from '@wolf1276/kairos-sdk';
 import { TurnkeySigner } from '@wolf1276/kairos-turnkey-signer';
 import { randomUUID } from 'crypto';
+import os from 'os';
 import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow, type AgentMode, type AgentRole } from './db.js';
 import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
@@ -79,6 +80,8 @@ export async function createAgent(owner: string, options?: { mode?: AgentMode; c
     capital: options?.capital ?? null,
     risk_level: options?.riskLevel ?? null,
     started_at: null,
+    lock_token: null,
+    lock_expires_at: null,
   };
   getDb()
     .prepare(
@@ -247,4 +250,39 @@ export function recordTick(id: string, result: { ok: boolean; message: string },
 
 export function listRunningAgents(): AgentRow[] {
   return getDb().prepare("SELECT * FROM agents WHERE status = 'running'").all() as AgentRow[];
+}
+
+/** Unique per-process identity embedded in every lock token, so a lock this process reads back
+ *  can be told apart from one taken concurrently by another process/host after our TTL expired. */
+const LOCK_HOLDER = `${os.hostname()}:${process.pid}:${randomUUID()}`;
+const AGENT_LOCK_TTL_MS = 5 * 60_000;
+
+/**
+ * Atomically claims the right to tick this agent via a conditional UPDATE — SQLite serializes
+ * all writers (even across processes sharing one DB file), so exactly one caller's UPDATE can
+ * match `changes === 1` for a given row at a time. This is the guard that's missing when the
+ * scheduler runs in more than one process: without it, two processes racing `listRunningAgents`
+ * could both pass the in-memory `cycleInProgress`/`last_tick_at` checks and tick + trade the
+ * same agent twice. `lock_expires_at` is a crash safety net — if a holder dies mid-tick without
+ * releasing, the lock self-expires instead of blocking the agent forever.
+ * Returns a token to hand back to `releaseAgentLock`, or null if someone else holds it.
+ */
+export function claimAgentLock(agentId: string): string | null {
+  const token = `${LOCK_HOLDER}:${randomUUID()}`;
+  const now = Date.now();
+  const result = getDb()
+    .prepare(
+      `UPDATE agents SET lock_token = ?, lock_expires_at = ?
+       WHERE id = ? AND (lock_token IS NULL OR lock_expires_at < ?)`
+    )
+    .run(token, now + AGENT_LOCK_TTL_MS, agentId, now);
+  return result.changes === 1 ? token : null;
+}
+
+/** Releases a lock only if `token` still matches — prevents releasing a lock that expired and
+ *  was subsequently claimed by another holder while our tick was still finishing up. */
+export function releaseAgentLock(agentId: string, token: string): void {
+  getDb()
+    .prepare('UPDATE agents SET lock_token = NULL, lock_expires_at = NULL WHERE id = ? AND lock_token = ?')
+    .run(agentId, token);
 }

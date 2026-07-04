@@ -25,6 +25,7 @@ export interface RecordTradeInput {
   mode: 'paper' | 'live';
   eventType?: AuditEventType;
   message?: string;
+  reversedTradeId?: string;
 }
 
 export function recordCompletedTrade(input: RecordTradeInput): CompletedTrade {
@@ -44,6 +45,7 @@ export function recordCompletedTrade(input: RecordTradeInput): CompletedTrade {
       status: 'success',
       realizedPnl,
       mode: input.mode,
+      reversedTradeId: input.reversedTradeId,
     });
     const p = upsertPosition(input.row.id, input.pair);
     return { trade: t, position: p };

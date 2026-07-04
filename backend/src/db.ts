@@ -54,6 +54,8 @@ export interface AgentRow {
   capital: string | null;
   risk_level: string | null;
   started_at: number | null;
+  lock_token: string | null;
+  lock_expires_at: number | null;
 }
 
 export interface UserRow {
@@ -436,6 +438,22 @@ function addForeignKeys(db: Database.Database): void {
   `);
 }
 
+/**
+ * SQLite scaling ceiling — read this before assuming this file can carry production traffic
+ * indefinitely. better-sqlite3 is a single-file, single-writer database: every write (agent
+ * ticks, trades, audit_log, decisions) across every user and process funnels through one file
+ * lock. WAL mode lets readers proceed concurrently with a writer, but writers still serialize.
+ * `claimAgentLock`/`releaseAgentLock` (agentService.ts) make concurrent *processes* correctness-
+ * safe (no double-ticking), but they don't remove the throughput ceiling — they just make
+ * contention safe to wait out via `busy_timeout` below instead of racing.
+ * Rule of thumb for when this stops being enough: sustained write concurrency approaching
+ * roughly 50-100 writes/sec (rough SQLite/WAL ceiling on typical disks) — with audit_log +
+ * decisions + trades all writing per tick, that's on the order of a few hundred concurrently
+ * ticking agents at a several-second tick interval. Past that, writers start queuing behind
+ * `busy_timeout` and tick latency grows. At that point this needs a real migration to a
+ * multi-writer database (e.g. Postgres) with connection pooling — a larger, separate effort
+ * (every query here is synchronous; a pg client is async, so it's not a drop-in swap).
+ */
 export function getDb(): Database.Database {
   if (db) return db;
   const dbPath = getDbPath();
@@ -443,6 +461,14 @@ export function getDb(): Database.Database {
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // Under write contention (multiple processes/ticks hitting the same file), a writer that
+  // can't immediately acquire the lock throws SQLITE_BUSY by default. busy_timeout makes it
+  // block and retry for up to 5s instead, so a scheduler tick waits out brief contention
+  // instead of hard-failing an agent's trade with a transient lock error.
+  db.pragma('busy_timeout = 5000');
+  // NORMAL is safe (not just fast) under WAL: the WAL file itself still fsyncs on checkpoint,
+  // so a power loss can lose only the last few committed transactions, never corrupt the DB.
+  db.pragma('synchronous = NORMAL');
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -631,6 +657,15 @@ export function getDb(): Database.Database {
   }
   if (!columns.some((c) => c.name === 'started_at')) {
     db.exec('ALTER TABLE agents ADD COLUMN started_at INTEGER');
+  }
+  // Distributed tick lock: lets the scheduler claim an agent atomically via a conditional
+  // UPDATE, so running >1 backend process against the same DB file can't double-tick the
+  // same agent. See claimAgentLock/releaseAgentLock.
+  if (!columns.some((c) => c.name === 'lock_token')) {
+    db.exec('ALTER TABLE agents ADD COLUMN lock_token TEXT');
+  }
+  if (!columns.some((c) => c.name === 'lock_expires_at')) {
+    db.exec('ALTER TABLE agents ADD COLUMN lock_expires_at INTEGER');
   }
   db.exec('CREATE INDEX IF NOT EXISTS idx_agents_delegator ON agents(delegator)');
 

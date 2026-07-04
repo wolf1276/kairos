@@ -79,7 +79,7 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     const delegationBlocks = !delegation.ok && row.mode === 'live';
     logEvent({ agentId: row.id, owner: row.owner, eventType: 'delegation_check', mode: row.mode, mpcAccount: row.public_key, pair: config.pair, delegationValidation: delegation, message: `Delegation ${delegation.ok ? 'active' : `${row.mode === 'live' ? 'MISSING' : 'advisory'}: ${delegation.reason}`}` });
 
-    const risk = riskChecks(config, decision, ctx);
+    const risk = riskChecks(config, decision, ctx, { capital: row.capital, realizedPnl: pnlBefore.realizedPnl, unrealizedPnl: pnlBefore.unrealizedPnl });
     logEvent({ agentId: row.id, owner: row.owner, eventType: 'risk_check', mode: row.mode, mpcAccount: row.public_key, pair: config.pair, message: `Risk ${risk.ok ? 'passed' : `blocked: ${risk.reason}`}` });
 
     const willExecute = side !== null && policy.ok && !delegationBlocks && risk.ok;
@@ -98,7 +98,7 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
 
       const txHash = await (row.mode === 'paper'
         ? executePaperQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side)
-        : executeQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side));
+        : executeQuantTrade(row, { pair: config.pair, amountPerTrade: amount }, side, ctx.price));
       markBroadcast(journal.id, txHash);
 
       try {
