@@ -33,6 +33,7 @@ export default function DashboardOverview() {
   const {
     xlmBalance: capitalXlmBalance,
     usdcBalance: capitalUsdcBalance,
+    loading: capitalBalanceLoading,
     refresh: refreshCapitalBalance,
   } = useSmartWalletBalances(smartWalletAddress, wallet?.networkPassphrase ?? null, wallet?.sorobanRpcUrl);
 
@@ -146,9 +147,11 @@ export default function DashboardOverview() {
               <p className="mt-1 text-xs text-text-muted">{shortAddress(smartWalletAddress)}</p>
             )}
             <p className="mt-3 text-2xl font-semibold text-text-primary">
-              {capitalXlmBalance.toFixed(4)} XLM
+              {capitalBalanceLoading ? "Loading…" : `${capitalXlmBalance.toFixed(4)} XLM`}
             </p>
-            <p className="mt-1 text-xs text-text-muted">{capitalUsdcBalance.toFixed(2)} USDC</p>
+            <p className="mt-1 text-xs text-text-muted">
+              {capitalBalanceLoading ? " " : `${capitalUsdcBalance.toFixed(2)} USDC`}
+            </p>
 
             <div className="mt-5 flex items-center gap-2">
               <input

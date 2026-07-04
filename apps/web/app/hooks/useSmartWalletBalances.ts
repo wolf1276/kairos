@@ -33,6 +33,7 @@ export function useSmartWalletBalances(
 
   const refresh = useCallback(async () => {
     if (!address || !networkPassphrase) return;
+    setLoading(true);
     setError(null);
     try {
       const nativeSacId = Asset.native().contractId(networkPassphrase);

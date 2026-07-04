@@ -202,8 +202,11 @@ export function useSmartWallet(): SmartWalletState {
         }
       }
       setWallet(result.wallet);
-      setSmartWalletAddress(null);
-      setSmartWalletBalance(null);
+      // Don't clear smartWalletAddress/smartWalletBalance here — the real (usually identical)
+      // address is resolved a few lines below, and blanking it first forces every balance
+      // display keyed off it (useSmartWalletBalances) to flash to a confident "0" for the
+      // duration of the merge/fetch below, which on a slow RPC round-trip reads as "balance
+      // became 0 on relogin" even though it's just a stale render, not a real balance.
 
       const localList = loadWalletList(result.wallet.address);
       // Merge in any wallets registered server-side (e.g. deployed from another browser/device) —
@@ -225,8 +228,8 @@ export function useSmartWallet(): SmartWalletState {
       saveWalletList(result.wallet.address, merged);
 
       const selected = loadSelected(result.wallet.address) ?? merged[0]?.address ?? null;
+      setSmartWalletAddress(selected);
       if (selected) {
-        setSmartWalletAddress(selected);
         try {
           const balance = await fetchSmartWalletBalance(
             selected,
@@ -235,9 +238,11 @@ export function useSmartWallet(): SmartWalletState {
           );
           setSmartWalletBalance(balance);
         } catch {}
+      } else {
+        // No capital wallet found for this owner — leave it undeployed until the user
+        // explicitly clicks "Create Capital Wallet".
+        setSmartWalletBalance(null);
       }
-      // No capital wallet found — leave it undeployed until the user explicitly
-      // clicks "Create Capital Wallet".
     }
     setConnecting(false);
     return result;
