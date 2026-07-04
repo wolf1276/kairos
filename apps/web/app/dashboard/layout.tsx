@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 import {
   Home,
   ArrowRightLeft,
-  Users,
   Bot,
   Cpu,
   History,
@@ -41,7 +40,6 @@ type NavItem = {
 const NAV_ITEMS: NavItem[] = [
   { href: "/dashboard", label: "Overview", exact: true, icon: Home },
   { href: "/dashboard/trade", label: "Trade", exact: false, icon: ArrowRightLeft },
-  { href: "/dashboard/delegations", label: "Delegations", exact: false, icon: Users },
   { href: "/dashboard/autonomous", label: "Autonomous", exact: false, icon: Cpu },
   { href: "/dashboard/agents", label: "Agents", exact: false, icon: Bot },
   { href: "/dashboard/history", label: "History", exact: false, icon: History },

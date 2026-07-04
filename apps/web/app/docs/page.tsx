@@ -71,10 +71,10 @@ export default function DocsPage() {
 
         <div className="mt-10 flex flex-wrap gap-3">
           <Link
-            href="/dashboard/delegations"
+            href="/dashboard/agents"
             className="inline-flex h-10 items-center rounded-full bg-white px-6 text-[10px] font-semibold text-black transition duration-500 hover:bg-white/90"
           >
-            Start with Delegations
+            Start with Agents
           </Link>
           <Link
             href="/dashboard"
