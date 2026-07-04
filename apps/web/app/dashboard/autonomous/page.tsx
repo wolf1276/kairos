@@ -11,7 +11,7 @@ import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
-import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
+import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
 import {
   provisionSingleRoleAgent,
   attachAgentDelegation,
@@ -459,6 +459,7 @@ function AddAgentFlow({
   const [periodDays, setPeriodDays] = useState("1");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { createDelegation } = useCreateDelegation(networkPassphrase, walletOwner);
 
   const handleSubmit = async () => {
     if (!role) return;
@@ -470,38 +471,18 @@ function AddAgentFlow({
     try {
       const agent = await provisionSingleRoleAgent({ role, mode, capital: amount });
 
-      if (mode === "live") {
-        const prepareRes = await fetch("/api/delegate-sdk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            action: "PREPARE_DELEGATION",
-            delegate: agent.publicKey,
-            delegator: smartWalletAddress,
-            policies: [
-              {
-                type: "spend-limit",
-                token: Asset.native().contractId(networkPassphrase),
-                spendLimit: BigInt(Math.round(amt * 10_000_000)).toString(),
-                period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
-              },
-            ],
-          }),
-        });
-        const prepared = await prepareRes.json();
-        if (!prepareRes.ok) throw new Error(prepared.error);
+      if (mode === "live" && smartWalletAddress) {
+        const result = await createDelegation(agent.publicKey, smartWalletAddress, [
+          {
+            type: "spend-limit",
+            token: Asset.native().contractId(networkPassphrase),
+            spendLimit: BigInt(Math.round(amt * 10_000_000)).toString(),
+            period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
+          },
+        ]);
+        if (!result) throw new Error("Failed to create delegation");
 
-        const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
-
-        const submitRes = await fetch("/api/delegate-sdk", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "SUBMIT_DELEGATION", unsignedDelegation: prepared.unsignedDelegation, signatureHex }),
-        });
-        const submitted = await submitRes.json();
-        if (!submitRes.ok) throw new Error(submitted.error);
-
-        await attachAgentDelegation(agent.id, submitted.delegation);
+        await attachAgentDelegation(agent.id, result.delegation);
         await startAgentWallet(agent.id);
       }
 

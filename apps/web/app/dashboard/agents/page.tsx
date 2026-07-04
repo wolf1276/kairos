@@ -6,10 +6,11 @@ import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
-import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
+import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
 import {
   getAgentsSummary,
   attachAgentDelegation,
+  revokeAgentDelegation,
   setAgentStrategy,
   startAgentWallet,
   stopAgentWallet,
@@ -175,6 +176,11 @@ function AgentCard({
   // ── Step 1: grant this agent spend access from the capital wallet ──
   const [spendLimit, setSpendLimit] = useState("100");
   const [periodDays, setPeriodDays] = useState("1");
+  // Reveals the delegation form for an agent that already has a strategy configured — lets the
+  // user attach a delegation post-hoc (e.g. a paper-mode role agent going live) or replace an
+  // existing one with new caps, instead of only being able to set a delegation once up front.
+  const [editingDelegation, setEditingDelegation] = useState(false);
+  const { createDelegation } = useCreateDelegation(networkPassphrase, walletOwner);
 
   const handleCreateDelegation = async () => {
     const amt = parseFloat(spendLimit) || 0;
@@ -183,37 +189,31 @@ function AgentCard({
     setBusy(true);
     setError(null);
     try {
-      const prepareRes = await fetch("/api/delegate-sdk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "PREPARE_DELEGATION",
-          delegate: agent.publicKey,
-          delegator: smartWalletAddress,
-          policies: [
-            {
-              type: "spend-limit",
-              token: Asset.native().contractId(networkPassphrase),
-              spendLimit: (BigInt(Math.round(amt * 10_000_000))).toString(),
-              period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
-            },
-          ],
-        }),
-      });
-      const prepared = await prepareRes.json();
-      if (!prepareRes.ok) throw new Error(prepared.error);
+      const result = await createDelegation(agent.publicKey, smartWalletAddress, [
+        {
+          type: "spend-limit",
+          token: Asset.native().contractId(networkPassphrase),
+          spendLimit: (BigInt(Math.round(amt * 10_000_000))).toString(),
+          period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
+        },
+      ]);
+      if (!result) throw new Error("Failed to create delegation");
 
-      const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
+      await attachAgentDelegation(agent.id, result.delegation, Boolean(agent.delegationHash));
+      setEditingDelegation(false);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
 
-      const submitRes = await fetch("/api/delegate-sdk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "SUBMIT_DELEGATION", unsignedDelegation: prepared.unsignedDelegation, signatureHex }),
-      });
-      const submitted = await submitRes.json();
-      if (!submitRes.ok) throw new Error(submitted.error);
-
-      await attachAgentDelegation(agent.id, submitted.delegation);
+  const handleRevokeDelegation = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await revokeAgentDelegation(agent.id);
       onChanged();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -312,10 +312,10 @@ function AgentCard({
           </div>
         )}
 
-        {!agent.delegationHash ? (
+        {(!agent.delegationHash && !agent.strategy) || editingDelegation ? (
           <div className="space-y-2.5 rounded-xl bg-bg-elevated p-3.5">
             <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
-              Step 1 — Grant this agent spend access from your capital wallet
+              {agent.delegationHash ? "Change this agent's spend delegation" : "Step 1 — Grant this agent spend access from your capital wallet"}
             </p>
             <div>
               <label className="mb-1 block text-[10px] text-text-muted">Capital wallet</label>
@@ -339,13 +339,24 @@ function AgentCard({
               This agent will only ever be able to spend from your capital wallet, up to the limit
               you set — and anything it spends stays within that same wallet.
             </p>
-            <button
-              onClick={handleCreateDelegation}
-              disabled={busy}
-              className="w-full rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {busy ? "Signing delegation…" : "Create Delegation for Agent"}
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={handleCreateDelegation}
+                disabled={busy}
+                className="flex-1 rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {busy ? "Signing delegation…" : agent.delegationHash ? "Sign & Replace Delegation" : "Create Delegation for Agent"}
+              </button>
+              {agent.delegationHash && (
+                <button
+                  onClick={() => setEditingDelegation(false)}
+                  disabled={busy}
+                  className="rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-secondary transition-colors hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Cancel
+                </button>
+              )}
+            </div>
           </div>
         ) : !agent.strategy ? (
           <div className="space-y-2.5 rounded-xl bg-bg-elevated p-3.5">
@@ -395,6 +406,32 @@ function AgentCard({
             <div className="flex items-center justify-between">
               <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Wallet (profits return here)</span>
               <span className="font-mono text-xs text-text-secondary">{shortKey(agent.strategy.destination)}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Delegation</span>
+              <div className="flex items-center gap-2">
+                <span className={`font-mono text-xs ${agent.delegationHash ? "text-success/80" : "text-text-muted"}`}>
+                  {agent.delegationHash ? "Active" : "None (paper only)"}
+                </span>
+                <button
+                  onClick={() => setEditingDelegation(true)}
+                  disabled={busy || agent.status === "running"}
+                  title={agent.status === "running" ? "Stop the agent first" : undefined}
+                  className="text-[10px] text-accent/70 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {agent.delegationHash ? "Change" : "Attach"}
+                </button>
+                {agent.delegationHash && (
+                  <button
+                    onClick={handleRevokeDelegation}
+                    disabled={busy || agent.status === "running"}
+                    title={agent.status === "running" ? "Stop the agent first" : undefined}
+                    className="text-[10px] text-error/70 hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Revoke
+                  </button>
+                )}
+              </div>
             </div>
             {agent.lastTickAt && (
               <div className="border-t border-white/5 pt-2 text-[11px] text-text-muted">

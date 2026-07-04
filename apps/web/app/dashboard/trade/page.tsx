@@ -6,6 +6,7 @@ import { AdvancedChart } from "@/app/components/charts/AdvancedChart";
 import { Card, CardBody } from "@/app/components/ui/Card";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { usePrices } from "@/app/hooks/usePrices";
+import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
@@ -17,7 +18,6 @@ import {
   fetchOrderBookQuote,
   executeSwap,
   addTrustline,
-  signDelegationHashWithFreighter,
   signAuthEntryWithFreighter,
   delegateXLM,
   TESTNET_USDC_ISSUER,
@@ -204,7 +204,7 @@ function TradeInner() {
 
   // ── Shared delegation creation ──
   const walletOwner = wallet?.address ?? null;
-  const [delegating, setDelegating] = useState<string | null>(null);
+  const { createDelegation, status: delegating } = useCreateDelegation(networkPassphrase, walletOwner);
 
   // Converts a USD amount into stroops of the given token, for building spend-limit caveats
   // from USD-denominated inputs. Uses the live price feed for the conversion; falls back to
@@ -231,43 +231,13 @@ function TradeInner() {
       flash("err", "Connect wallet and deploy a smart wallet first.");
       return null;
     }
-    try {
-      setDelegating("preparing");
-      const prepareRes = await fetch("/api/delegate-sdk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "PREPARE_DELEGATION", delegate, delegator: smartWalletAddress, policies }),
-      });
-      if (!prepareRes.ok) {
-        const text = await prepareRes.text();
-        throw new Error(`PREPARE_DELEGATION failed (${prepareRes.status}): ${text.slice(0, 200)}`);
-      }
-      const prepared = await prepareRes.json();
-
-      setDelegating("signing");
-      const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
-
-      setDelegating("submitting");
-      const submitRes = await fetch("/api/delegate-sdk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "SUBMIT_DELEGATION", unsignedDelegation: prepared.unsignedDelegation, signatureHex }),
-      });
-      if (!submitRes.ok) {
-        const text = await submitRes.text();
-        throw new Error(`SUBMIT_DELEGATION failed (${submitRes.status}): ${text.slice(0, 200)}`);
-      }
-      const data = await submitRes.json();
-
-      return { hash: data.hash as string, delegation: data.delegation as Record<string, unknown> };
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      flash("err", msg);
+    const result = await createDelegation(delegate, smartWalletAddress, policies);
+    if (!result) {
+      flash("err", "Failed to create delegation");
       return null;
-    } finally {
-      setDelegating(null);
     }
-  }, [wallet, smartWalletAddress, walletOwner, networkPassphrase, flash]);
+    return result;
+  }, [wallet, smartWalletAddress, walletOwner, createDelegation, flash]);
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {

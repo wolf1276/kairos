@@ -211,10 +211,17 @@ export async function getAgentWallet(id: string): Promise<AgentSummary> {
   return data.agent;
 }
 
-export async function attachAgentDelegation(id: string, delegation: unknown): Promise<AgentSummary> {
+export async function attachAgentDelegation(id: string, delegation: unknown, force?: boolean): Promise<AgentSummary> {
   const data = await request<{ agent: AgentSummary }>(`/api/agents/${id}/delegation`, {
     method: "POST",
-    body: JSON.stringify({ delegation }),
+    body: JSON.stringify({ delegation, force }),
+  });
+  return data.agent;
+}
+
+export async function revokeAgentDelegation(id: string): Promise<AgentSummary> {
+  const data = await request<{ agent: AgentSummary }>(`/api/agents/${id}/delegation/revoke`, {
+    method: "POST",
   });
   return data.agent;
 }
