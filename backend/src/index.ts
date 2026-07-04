@@ -8,6 +8,7 @@ import { auditRouter, agentAuditRouter } from './routes/audit.js';
 import { statsRouter, agentStatsRouter } from './routes/stats.js';
 import { autonomousRouter, autonomousAgentRouter } from './routes/autonomous.js';
 import { tradesRouter } from './routes/trades.js';
+import { capitalWalletsRouter } from './routes/capitalWallets.js';
 import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { getPriceFeedService } from './priceFeed.js';
@@ -41,6 +42,7 @@ app.use('/api/agents', requireAuth, agentsRouter);
 app.use('/api/trades', requireAuth, tradesRouter);
 app.use('/api/positions', requireAuth, positionsRouter);
 app.use('/api/audit', requireAuth, auditRouter);
+app.use('/api/capital-wallets', requireAuth, capitalWalletsRouter);
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const message = error instanceof Error ? error.message : String(error);

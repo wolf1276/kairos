@@ -3,11 +3,11 @@
 // duplicates, so a page refresh or re-login always converges on exactly three. Each agent gets
 // a RoleStrategyConfig operating envelope and (in paper mode) is started immediately.
 //
-// Delegation note: wallet_delegations is keyed per (delegator, delegate) pair, so each role
-// agent holds its own independent delegation from the wallet and can each be live at once.
-// Paper mode (the default) runs without an attached delegation and the delegation check is
-// advisory (see roleTick). Live mode requires a per-agent delegation attached explicitly
-// before starting that agent (see the Autonomous page's "Add Agent" flow).
+// Funding note: role agents trade from their own Turnkey-MPC Stellar account (see tick.ts),
+// never through a delegation redemption — that path is dca-only (agentService.ts's setStrategy/
+// startAgent gate on a delegation only for strategy.type === 'dca'). Paper mode needs no funds
+// since nothing moves. Live mode is funded by a direct transfer from the capital wallet to the
+// agent's own account, done by the Autonomous page's "Add Agent" flow before it starts the agent.
 import { getDb, type AgentMode, type AgentRole, type AgentRow } from './db.js';
 import { createAgent, getAgent, getAgentRow, setStrategy, startAgent } from './agentService.js';
 import { getRoleIntervalSeconds } from './config.js';
@@ -39,7 +39,7 @@ export interface ProvisionOptions {
 /** Idempotently provisions a single role agent — returns the existing one if already created
  *  for this owner, otherwise creates + configures it (and starts it immediately in paper mode,
  *  same rule as provisionRoleAgents). Used by the Autonomous page's per-role "Add Agent" flow,
- *  which lets the user pick one role and set its delegation before it goes live, rather than
+ *  which lets the user pick one role and fund it directly before it goes live, rather than
  *  minting all three roles at once with a single shared capital figure. */
 export async function provisionSingleRoleAgent(owner: string, role: AgentRole, opts?: ProvisionOptions): Promise<AgentSummary> {
   const mode = opts?.mode ?? 'paper';

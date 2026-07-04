@@ -6,15 +6,15 @@
 // decision timeline, and the live audit feed. All state is backend-sourced, so it survives
 // refresh/login.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Asset } from "@stellar/stellar-sdk";
 import { Card, CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
-import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
+import { withdrawFromSmartWallet } from "@/app/lib/stellar";
+import type { CapitalWalletInfo } from "@/app/hooks/useSmartWallet";
+import { WalletPicker } from "@/app/components/WalletPicker";
 import {
   provisionSingleRoleAgent,
-  attachAgentDelegation,
   startAgentWallet,
   getAgentsSummary,
   getPortfolioOverview,
@@ -51,7 +51,7 @@ function timeAgo(ts: number | null): string {
 }
 
 export default function AutonomousPage() {
-  const { wallet, connected, connecting, connect, walletOwner, smartWalletAddress, ensureAgentAuth, deploying } = useWalletContext();
+  const { wallet, connected, connecting, connect, walletOwner, smartWalletAddress, capitalWallets, ensureAgentAuth, deploying } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
   const [dashboards, setDashboards] = useState<AgentDashboard[]>([]);
@@ -186,8 +186,9 @@ export default function AutonomousPage() {
           availableRoles={availableRoles}
           initialRole={pickedRole}
           smartWalletAddress={smartWalletAddress}
-          walletOwner={walletOwner!}
+          capitalWallets={capitalWallets}
           networkPassphrase={networkPassphrase}
+          sorobanRpcUrl={wallet?.sorobanRpcUrl}
           onClose={() => setAddAgentOpen(false)}
           onDone={async () => { setAddAgentOpen(false); await refresh(); }}
         />
@@ -432,57 +433,49 @@ function DecisionReplayModal({ decision, onClose }: { decision: DecisionRecord; 
 }
 
 /** "+ Add Agent" flow: pick which role (skipped if the caller already picked one, e.g. clicking
- *  an empty role slot directly), then a delegation form for how much capital to grant that
- *  agent's MPC wallet. Live mode actually signs + submits an on-chain spend-limit delegation
- *  from the capital wallet to the agent's own key (same mechanism as the Agents page); paper
+ *  an empty role slot directly), then a form for how much capital to fund that agent's MPC
+ *  wallet with. Live mode sends a direct transfer from the capital wallet to the agent's own
+ *  Turnkey account (same mechanism as the Agents page) — role agents trade from their own
+ *  account (tick.ts) and never redeem a delegation, so there's no delegation step here; paper
  *  mode just records the capital figure since no funds move. */
 function AddAgentFlow({
   availableRoles,
   initialRole,
   smartWalletAddress,
-  walletOwner,
+  capitalWallets,
   networkPassphrase,
+  sorobanRpcUrl,
   onClose,
   onDone,
 }: {
   availableRoles: AgentRole[];
   initialRole: AgentRole | null;
   smartWalletAddress: string | null;
-  walletOwner: string;
+  capitalWallets: CapitalWalletInfo[];
   networkPassphrase: string;
+  sorobanRpcUrl?: string;
   onClose: () => void;
   onDone: () => void;
 }) {
   const [role, setRole] = useState<AgentRole | null>(initialRole);
   const [mode, setMode] = useState<AgentMode>("live");
   const [amount, setAmount] = useState("100");
-  const [periodDays, setPeriodDays] = useState("1");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { createDelegation } = useCreateDelegation(networkPassphrase, walletOwner);
+  const [delegatorWallet, setDelegatorWallet] = useState<string | null>(smartWalletAddress);
 
   const handleSubmit = async () => {
     if (!role) return;
     const amt = parseFloat(amount) || 0;
     if (amt <= 0) { setError("Enter a valid amount"); return; }
-    if (mode === "live" && !smartWalletAddress) { setError("Capital wallet not ready yet"); return; }
+    if (mode === "live" && !delegatorWallet) { setError("Capital wallet not ready yet"); return; }
     setBusy(true);
     setError(null);
     try {
       const agent = await provisionSingleRoleAgent({ role, mode, capital: amount });
 
-      if (mode === "live" && smartWalletAddress) {
-        const result = await createDelegation(agent.publicKey, smartWalletAddress, [
-          {
-            type: "spend-limit",
-            token: Asset.native().contractId(networkPassphrase),
-            spendLimit: BigInt(Math.round(amt * 10_000_000)).toString(),
-            period: String(Math.round((parseFloat(periodDays) || 1) * 86400)),
-          },
-        ]);
-        if (!result) throw new Error("Failed to create delegation");
-
-        await attachAgentDelegation(agent.id, result.delegation);
+      if (mode === "live" && delegatorWallet) {
+        await withdrawFromSmartWallet(delegatorWallet, amount, networkPassphrase, sorobanRpcUrl, agent.publicKey);
         await startAgentWallet(agent.id);
       }
 
@@ -541,9 +534,13 @@ function AddAgentFlow({
                 </button>
               </div>
 
+              {mode === "live" && (
+                <WalletPicker wallets={capitalWallets} value={delegatorWallet} onChange={setDelegatorWallet} />
+              )}
+
               <div>
                 <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-muted">
-                  {mode === "live" ? "Spend limit (XLM) to this agent's MPC wallet" : "Simulated capital (USD)"}
+                  {mode === "live" ? "Fund this agent's MPC wallet (XLM)" : "Simulated capital (USD)"}
                 </label>
                 <input
                   type="number"
@@ -554,20 +551,6 @@ function AddAgentFlow({
                   className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-primary focus:outline-none"
                 />
               </div>
-
-              {mode === "live" && (
-                <div>
-                  <label className="mb-1 block text-[10px] uppercase tracking-widest text-text-muted">Renews every (days)</label>
-                  <input
-                    type="number"
-                    min="1"
-                    step="1"
-                    value={periodDays}
-                    onChange={(e) => setPeriodDays(e.target.value)}
-                    className="w-full rounded-xl border border-white/5 bg-white/[0.02] px-3 py-2 text-xs text-text-primary focus:outline-none"
-                  />
-                </div>
-              )}
 
               {error && <p className="text-xs text-error/90">{error}</p>}
 
@@ -586,7 +569,7 @@ function AddAgentFlow({
                   disabled={busy}
                   className="flex-1 rounded-xl bg-accent/80 px-4 py-2 text-xs font-semibold text-white hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {busy ? "Setting up…" : mode === "live" ? "Sign & Delegate" : "Create Agent"}
+                  {busy ? "Setting up…" : mode === "live" ? "Fund & Launch" : "Create Agent"}
                 </button>
               </div>
             </div>

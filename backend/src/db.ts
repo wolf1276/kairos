@@ -130,6 +130,13 @@ export interface AuditLogRow {
 /** One delegation per (delegator wallet, delegate agent) pair — each agent tied to a wallet
  *  holds its own independent spend delegation, so multiple agents (e.g. the 3 autonomous role
  *  agents) can each have live spend authority from the same capital wallet simultaneously. */
+export interface CapitalWalletRow {
+  owner: string;
+  address: string;
+  label: string | null;
+  created_at: number;
+}
+
 export interface WalletDelegationRow {
   delegator: string;
   delegate: string;
@@ -495,6 +502,14 @@ export function getDb(): Database.Database {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (delegator, delegate)
     );
+    CREATE TABLE IF NOT EXISTS capital_wallets (
+      owner TEXT NOT NULL,
+      address TEXT NOT NULL,
+      label TEXT,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (owner, address)
+    );
+    CREATE INDEX IF NOT EXISTS idx_capital_wallets_owner ON capital_wallets(owner);
     CREATE TABLE IF NOT EXISTS trades (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -707,6 +722,21 @@ export function getAuthChallenge(publicKey: string): AuthChallengeRow | undefine
 
 export function deleteAuthChallenge(publicKey: string): void {
   getDb().prepare('DELETE FROM auth_challenges WHERE public_key = ?').run(publicKey);
+}
+
+export function listCapitalWallets(owner: string): CapitalWalletRow[] {
+  return getDb().prepare('SELECT * FROM capital_wallets WHERE owner = ? ORDER BY created_at ASC').all(owner) as CapitalWalletRow[];
+}
+
+/** Idempotent — re-registering an address already on file for this owner just updates its label. */
+export function upsertCapitalWallet(owner: string, address: string, label: string | null): void {
+  getDb()
+    .prepare(
+      `INSERT INTO capital_wallets (owner, address, label, created_at)
+       VALUES (@owner, @address, @label, @now)
+       ON CONFLICT(owner, address) DO UPDATE SET label = @label`
+    )
+    .run({ owner, address, label, now: Date.now() });
 }
 
 export function getWalletDelegation(delegator: string, delegate: string): WalletDelegationRow | undefined {

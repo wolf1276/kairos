@@ -7,6 +7,9 @@ import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
+import { withdrawFromSmartWallet } from "@/app/lib/stellar";
+import type { CapitalWalletInfo } from "@/app/hooks/useSmartWallet";
+import { WalletPicker } from "@/app/components/WalletPicker";
 import {
   getAgentsSummary,
   attachAgentDelegation,
@@ -40,6 +43,7 @@ export default function AgentsPage() {
     ensureAgentAuth,
     walletOwner,
     smartWalletAddress,
+    capitalWallets,
     deploying,
     deployError,
   } = useWalletContext();
@@ -143,8 +147,10 @@ export default function AgentsPage() {
                   key={agent.id}
                   agent={agent}
                   smartWalletAddress={smartWalletAddress}
+                  capitalWallets={capitalWallets}
                   walletOwner={walletOwner!}
                   networkPassphrase={networkPassphrase}
+                  sorobanRpcUrl={wallet?.sorobanRpcUrl}
                   onChanged={refresh}
                 />
               ))}
@@ -159,14 +165,18 @@ export default function AgentsPage() {
 function AgentCard({
   agent,
   smartWalletAddress,
+  capitalWallets,
   walletOwner,
   networkPassphrase,
+  sorobanRpcUrl,
   onChanged,
 }: {
   agent: AgentSummary;
   smartWalletAddress: string | null;
+  capitalWallets: CapitalWalletInfo[];
   walletOwner: string;
   networkPassphrase: string;
+  sorobanRpcUrl?: string;
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -176,6 +186,8 @@ function AgentCard({
   // ── Step 1: grant this agent spend access from the capital wallet ──
   const [spendLimit, setSpendLimit] = useState("100");
   const [periodDays, setPeriodDays] = useState("1");
+  const [delegatorWallet, setDelegatorWallet] = useState<string | null>(smartWalletAddress);
+  useEffect(() => { setDelegatorWallet(smartWalletAddress); }, [smartWalletAddress]);
   // Reveals the delegation form for an agent that already has a strategy configured — lets the
   // user attach a delegation post-hoc (e.g. a paper-mode role agent going live) or replace an
   // existing one with new caps, instead of only being able to set a delegation once up front.
@@ -185,11 +197,11 @@ function AgentCard({
   const handleCreateDelegation = async () => {
     const amt = parseFloat(spendLimit) || 0;
     if (amt <= 0) { setError("Enter a valid spend limit"); return; }
-    if (!smartWalletAddress) { setError("Capital wallet not ready yet"); return; }
+    if (!delegatorWallet) { setError("Capital wallet not ready yet"); return; }
     setBusy(true);
     setError(null);
     try {
-      const result = await createDelegation(agent.publicKey, smartWalletAddress, [
+      const result = await createDelegation(agent.publicKey, delegatorWallet, [
         {
           type: "spend-limit",
           token: Asset.native().contractId(networkPassphrase),
@@ -219,6 +231,28 @@ function AgentCard({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(false);
+    }
+  };
+
+  // ── Fund non-DCA agents directly — quant/limit/role strategies trade from their own Turnkey
+  // account (tick.ts) and never redeem a delegation, so a plain transfer is what actually gets
+  // them capital; delegation stays reserved for the DCA redemption path above. ──
+  const [fundAmount, setFundAmount] = useState("100");
+  const [funding, setFunding] = useState(false);
+
+  const handleFundAgent = async () => {
+    const amt = parseFloat(fundAmount) || 0;
+    if (amt <= 0) { setError("Enter a valid amount"); return; }
+    if (!delegatorWallet) { setError("Capital wallet not ready yet"); return; }
+    setFunding(true);
+    setError(null);
+    try {
+      await withdrawFromSmartWallet(delegatorWallet, fundAmount, networkPassphrase, sorobanRpcUrl, agent.publicKey);
+      onChanged();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setFunding(false);
     }
   };
 
@@ -317,14 +351,18 @@ function AgentCard({
             <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
               {agent.delegationHash ? "Change this agent's spend delegation" : "Step 1 — Grant this agent spend access from your capital wallet"}
             </p>
-            <div>
-              <label className="mb-1 block text-[10px] text-text-muted">Capital wallet</label>
-              <input
-                value={smartWalletAddress ? shortKey(smartWalletAddress) : "—"}
-                disabled
-                className={INPUT_CLS}
-              />
-            </div>
+            {capitalWallets.length > 1 ? (
+              <WalletPicker wallets={capitalWallets} value={delegatorWallet} onChange={setDelegatorWallet} />
+            ) : (
+              <div>
+                <label className="mb-1 block text-[10px] text-text-muted">Capital wallet</label>
+                <input
+                  value={delegatorWallet ? shortKey(delegatorWallet) : "—"}
+                  disabled
+                  className={INPUT_CLS}
+                />
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="mb-1 block text-[10px] text-text-muted">Spend limit (XLM)</label>
@@ -407,32 +445,54 @@ function AgentCard({
               <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Wallet (profits return here)</span>
               <span className="font-mono text-xs text-text-secondary">{shortKey(agent.strategy.destination)}</span>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Delegation</span>
-              <div className="flex items-center gap-2">
-                <span className={`font-mono text-xs ${agent.delegationHash ? "text-success/80" : "text-text-muted"}`}>
-                  {agent.delegationHash ? "Active" : "None (paper only)"}
-                </span>
-                <button
-                  onClick={() => setEditingDelegation(true)}
-                  disabled={busy || agent.status === "running"}
-                  title={agent.status === "running" ? "Stop the agent first" : undefined}
-                  className="text-[10px] text-accent/70 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {agent.delegationHash ? "Change" : "Attach"}
-                </button>
-                {agent.delegationHash && (
+            {agent.strategy.type === "dca" ? (
+              <div className="flex items-center justify-between">
+                <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Delegation</span>
+                <div className="flex items-center gap-2">
+                  <span className={`font-mono text-xs ${agent.delegationHash ? "text-success/80" : "text-text-muted"}`}>
+                    {agent.delegationHash ? "Active" : "None (paper only)"}
+                  </span>
                   <button
-                    onClick={handleRevokeDelegation}
+                    onClick={() => setEditingDelegation(true)}
                     disabled={busy || agent.status === "running"}
                     title={agent.status === "running" ? "Stop the agent first" : undefined}
-                    className="text-[10px] text-error/70 hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
+                    className="text-[10px] text-accent/70 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    Revoke
+                    {agent.delegationHash ? "Change" : "Attach"}
                   </button>
-                )}
+                  {agent.delegationHash && (
+                    <button
+                      onClick={handleRevokeDelegation}
+                      disabled={busy || agent.status === "running"}
+                      title={agent.status === "running" ? "Stop the agent first" : undefined}
+                      className="text-[10px] text-error/70 hover:text-error disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      Revoke
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            ) : (
+              // quant/limit/role agents trade from their own Turnkey account directly — no
+              // delegation to redeem, so topping them up is a plain funding transfer instead.
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Fund (XLM)</span>
+                <input
+                  value={fundAmount}
+                  onChange={(e) => setFundAmount(e.target.value)}
+                  type="number"
+                  min="0"
+                  className={`${INPUT_CLS} flex-1`}
+                />
+                <button
+                  onClick={handleFundAgent}
+                  disabled={funding}
+                  className="whitespace-nowrap rounded-lg bg-accent/70 px-3 py-1.5 text-[10px] font-semibold text-white transition-colors hover:bg-accent disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {funding ? "Sending…" : "Send"}
+                </button>
+              </div>
+            )}
             {agent.lastTickAt && (
               <div className="border-t border-white/5 pt-2 text-[11px] text-text-muted">
                 Last tick: {new Date(agent.lastTickAt).toLocaleString()}

@@ -7,6 +7,7 @@ import { Card, CardBody } from "@/app/components/ui/Card";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { usePrices } from "@/app/hooks/usePrices";
 import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
+import { WalletPicker } from "@/app/components/WalletPicker";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
@@ -20,6 +21,7 @@ import {
   addTrustline,
   signAuthEntryWithFreighter,
   delegateXLM,
+  withdrawFromSmartWallet,
   TESTNET_USDC_ISSUER,
   type SwapAsset,
   type OrderBookQuote,
@@ -30,7 +32,6 @@ import { LiveTradeCard } from "./components/LiveTradeCard";
 import { PortfolioCard } from "./components/PortfolioCard";
 import {
   createAgentWallet,
-  attachAgentDelegation,
   setAgentStrategy,
   startAgentWallet,
   listStrategies,
@@ -57,7 +58,7 @@ function TradeInner() {
   const { tickers } = usePrices(TICKER_SYMBOLS, 10000);
   const ticker = tickers[chartSymbol];
 
-  const { wallet, connected, connecting, connect, ensureAgentAuth, disconnect, smartWalletAddress, deploying, deployError } = useWalletContext();
+  const { wallet, connected, connecting, connect, ensureAgentAuth, disconnect, smartWalletAddress, capitalWallets, deploying, deployError } = useWalletContext();
   const { xlmBalance, allBalances, loading: balancesLoading, refresh: refreshBalances } = useStellarBalances(
     wallet?.address ?? null,
     wallet?.networkPassphrase ?? null,
@@ -205,6 +206,10 @@ function TradeInner() {
   // ── Shared delegation creation ──
   const walletOwner = wallet?.address ?? null;
   const { createDelegation, status: delegating } = useCreateDelegation(networkPassphrase, walletOwner);
+  // Which capital wallet new agents delegate from — defaults to the context's selected wallet,
+  // but can be overridden per-launch via the WalletPicker when the owner has more than one.
+  const [delegatorWallet, setDelegatorWallet] = useState<string | null>(smartWalletAddress);
+  useEffect(() => { setDelegatorWallet(smartWalletAddress); }, [smartWalletAddress]);
 
   // Converts a USD amount into stroops of the given token, for building spend-limit caveats
   // from USD-denominated inputs. Uses the live price feed for the conversion; falls back to
@@ -218,26 +223,20 @@ function TradeInner() {
     return BigInt(Math.max(0, Math.round((usd / price) * 10_000_000)));
   }, [ticker, tickers]);
 
-  // The token the agent will spend on this limit order, based on the Stellar DEX pair (XLM/USDC):
-  // buying XLM or selling USDC → agent spends USDC; selling XLM or buying USDC → agent spends XLM.
-  const delegationTokenForOrder = useCallback((side: "buy" | "sell", asset: string): "XLM" | "USDC" => {
-    return side === "sell" ? (asset as "XLM" | "USDC") : (asset === "XLM" ? "USDC" : "XLM");
-  }, []);
-
   const createTradeDelegation = useCallback(async (
     delegate: string, policies: Record<string, unknown>[]
   ): Promise<{ hash: string; delegation: Record<string, unknown> } | null> => {
-    if (!wallet || !smartWalletAddress || !walletOwner) {
+    if (!wallet || !delegatorWallet || !walletOwner) {
       flash("err", "Connect wallet and deploy a smart wallet first.");
       return null;
     }
-    const result = await createDelegation(delegate, smartWalletAddress, policies);
+    const result = await createDelegation(delegate, delegatorWallet, policies);
     if (!result) {
       flash("err", "Failed to create delegation");
       return null;
     }
     return result;
-  }, [wallet, smartWalletAddress, walletOwner, createDelegation, flash]);
+  }, [wallet, delegatorWallet, walletOwner, createDelegation, flash]);
 
   const copyToClipboard = useCallback(async (text: string) => {
     try {
@@ -249,8 +248,11 @@ function TradeInner() {
   }, [flash]);
 
   // ── Strategy trade — launches a real custodial agent (see /backend) that trades a chosen
-  // quant strategy's buy/sell signal live on the Stellar testnet DEX from its own account,
-  // funded via a spend-limit delegation from this smart wallet. ──
+  // quant strategy's buy/sell signal live on the Stellar testnet DEX from its own Turnkey-MPC
+  // account, funded by a direct transfer from the capital wallet (withdrawFromSmartWallet with
+  // an explicit destination) rather than a delegation — quant/limit strategies never redeem a
+  // delegation (see agentService.ts's setStrategy/startAgent, which only gate on one for 'dca'),
+  // so creating one here bought nothing but an extra signature. ──
   const [strategies, setStrategies] = useState<StrategyMeta[]>([]);
   const [loadingStrategies, setLoadingStrategies] = useState(true);
   const [strategiesError, setStrategiesError] = useState<string | null>(null);
@@ -331,31 +333,19 @@ function TradeInner() {
     const amt = parseFloat(quantAmount) || 0;
     if (amt <= 0) { flash("err", "Enter a valid amount per trade"); return; }
     if (!walletOwner) { flash("err", "Connect your wallet first"); return; }
-    if (!smartWalletAddress) { flash("err", "Deploy a smart wallet first"); return; }
+    if (!delegatorWallet) { flash("err", "Deploy a smart wallet first"); return; }
 
     setLaunching(true);
     setLaunchError(null);
     try {
       const agent = await createAgentWallet(walletOwner, { mode: tradeMode });
 
-      // Cap the delegation well above amountPerTrade so the agent can run for a while
-      // before needing a fresh delegation — 100 ticks' worth of spend per day.
-      const result = await createTradeDelegation(agent.publicKey, [
-        {
-          type: "spend-limit",
-          token: Asset.native().contractId(networkPassphrase),
-          spendLimit: (BigInt(Math.round(amt * 10_000_000 * 100))).toString(),
-          period: "86400",
-        },
-        {
-          type: "time-restriction",
-          start: Math.floor(Date.now() / 1000),
-          expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
-        },
-      ]);
-      if (!result) throw new Error("Failed to create delegation");
-
-      await attachAgentDelegation(agent.id, result.delegation);
+      if (tradeMode === "live" && wallet) {
+        // Fund the agent's own account well above amountPerTrade so it can run for a while
+        // before needing a top-up — 100 ticks' worth of spend.
+        const fundAmount = (amt * 100).toFixed(7);
+        await withdrawFromSmartWallet(delegatorWallet, fundAmount, wallet.networkPassphrase, wallet.sorobanRpcUrl, agent.publicKey);
+      }
       await setAgentStrategy(agent.id, {
         type: "quant",
         strategyId: selectedStrategy.id,
@@ -489,36 +479,21 @@ function TradeInner() {
   // rather than something this page polls client-side.
   const handleConfirmOrderIntent = async (order: { side: "buy" | "sell"; asset: string; quantity: number; triggerComparator: "lte" | "gte" | null; triggerPrice: number | null }) => {
     if (!walletOwner) { flash("err", "Connect your wallet first"); return; }
-    if (!smartWalletAddress) { flash("err", "Deploy a smart wallet first"); return; }
+    if (!delegatorWallet) { flash("err", "Deploy a smart wallet first"); return; }
     if (order.asset !== "XLM" && order.asset !== "USDC") { flash("err", `Only XLM and USDC orders are supported right now (got ${order.asset})`); return; }
 
     setConfirmingIntent(true);
     try {
       const agent = await createAgentWallet(walletOwner, { mode: tradeMode });
 
-      // Cap the delegation well above the order size so it can also cover the recurring
-      // price-check ticks (a 'limit' strategy stops itself after the one fill).
-      const spendToken = delegationTokenForOrder(order.side, order.asset);
-      const tokenContractId = spendToken === "USDC"
-        ? new Asset("USDC", TESTNET_USDC_ISSUER).contractId(networkPassphrase)
-        : Asset.native().contractId(networkPassphrase);
+      // Fund with enough XLM to also cover the recurring price-check ticks (a 'limit' strategy
+      // stops itself after the one fill) — the agent swaps into whichever asset the order needs
+      // via the DEX itself, same as quant strategies, so it doesn't need pre-funding in kind.
       const usdValue = Math.max(order.quantity * (order.triggerPrice ?? ticker?.price ?? 0.1) * 3, 100);
-      const result = await createTradeDelegation(agent.publicKey, [
-        {
-          type: "spend-limit",
-          token: tokenContractId,
-          spendLimit: usdToTokenStroops(usdValue, spendToken).toString(),
-          period: "86400",
-        },
-        {
-          type: "time-restriction",
-          start: Math.floor(Date.now() / 1000),
-          expiry: Math.floor(Date.now() / 1000) + 30 * 86400,
-        },
-      ]);
-      if (!result) throw new Error("Failed to create delegation");
-
-      await attachAgentDelegation(agent.id, result.delegation);
+      if (tradeMode === "live" && wallet) {
+        const fundAmountXlm = (Number(usdToTokenStroops(usdValue, "XLM")) / 1e7).toFixed(7);
+        await withdrawFromSmartWallet(delegatorWallet, fundAmountXlm, wallet.networkPassphrase, wallet.sorobanRpcUrl, agent.publicKey);
+      }
 
       const currentPrice = ticker?.price ?? 0.1;
       // No price condition stated ("buy 5 XLM" with no trigger) — fire on the very next tick by
@@ -677,7 +652,7 @@ function TradeInner() {
       return;
     }
     if (!walletOwner) { flash("err", "Connect your wallet first"); return; }
-    if (!smartWalletAddress) { flash("err", "Deploy a smart wallet first"); return; }
+    if (!delegatorWallet) { flash("err", "Deploy a smart wallet first"); return; }
     if (!agentPubkey.trim()) { flash("err", "Enter the agent's public key"); return; }
 
     const durationDays = riskLevel <= 3 ? 7 : riskLevel <= 7 ? 30 : 90;
@@ -1148,6 +1123,8 @@ function TradeInner() {
                           className="w-full rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-xs text-text-primary outline-none transition-all duration-200 focus:border-accent/30 focus:ring-2 focus:ring-accent/15"
                         />
                       </div>
+
+                      <WalletPicker wallets={capitalWallets} value={delegatorWallet} onChange={setDelegatorWallet} />
 
                       <p className="text-[10px] text-text-muted">
                         Creates a dedicated agent wallet, delegates a spend limit from your smart wallet, and

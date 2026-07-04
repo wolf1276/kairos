@@ -5,6 +5,7 @@ import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { fetchAccountBalances, delegateXLM, withdrawFromSmartWallet } from "@/app/lib/stellar";
 import { useEffect } from "react";
+import { WalletPicker } from "@/app/components/WalletPicker";
 
 function shortAddress(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
@@ -19,6 +20,8 @@ export default function DashboardOverview() {
     checked,
     walletOwner,
     smartWalletAddress,
+    capitalWallets,
+    selectWallet,
     deploySmartWallet,
     deploying,
     deployError,
@@ -123,10 +126,25 @@ export default function DashboardOverview() {
       </div>
 
       <div className="rounded-2xl border border-white/[0.06] bg-bg-card p-5">
-        <h3 className="font-display text-sm font-medium text-text-primary">Capital Wallet</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="font-display text-sm font-medium text-text-primary">Capital Wallet{capitalWallets.length > 1 ? "s" : ""}</h3>
+          {smartWalletAddress && (
+            <button
+              onClick={() => deploySmartWallet()}
+              disabled={deploying}
+              className="text-[10px] text-accent/70 hover:text-accent disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              {deploying ? "Creating…" : "+ New wallet"}
+            </button>
+          )}
+        </div>
         {smartWalletAddress ? (
           <>
-            <p className="mt-1 text-xs text-text-muted">{shortAddress(smartWalletAddress)}</p>
+            {capitalWallets.length > 1 ? (
+              <WalletPicker wallets={capitalWallets} value={smartWalletAddress} onChange={selectWallet} className="mt-2" />
+            ) : (
+              <p className="mt-1 text-xs text-text-muted">{shortAddress(smartWalletAddress)}</p>
+            )}
             <p className="mt-3 text-2xl font-semibold text-text-primary">
               {capitalXlmBalance.toFixed(4)} XLM
             </p>

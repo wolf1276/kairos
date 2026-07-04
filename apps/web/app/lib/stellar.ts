@@ -471,10 +471,13 @@ async function transferXLMToContract(
 }
 
 /**
- * Withdraws native XLM from a smart wallet (custom account contract) back to its owner's
- * classic G-address, by invoking the wallet's own `execute` entrypoint against the native
- * SAC's `transfer` function. The owner signs as the transaction's source account, which
- * satisfies the contract's `owner.require_auth()` via source-account credentials — no
+ * Withdraws native XLM from a smart wallet (custom account contract) to `destination` — the
+ * owner's own G-address by default, or any other G-address (e.g. an agent's own Turnkey
+ * Stellar account, for funding non-DCA strategy agents directly instead of via a delegation
+ * that's never redeemed for those strategy types — see agentService.ts's setStrategy/startAgent
+ * delegation gating, which is dca-only). Invokes the wallet's own `execute` entrypoint against
+ * the native SAC's `transfer` function; the owner signs as the transaction's source account,
+ * which satisfies the contract's `owner.require_auth()` via source-account credentials — no
  * separate signed auth entry (unlike deploy/delegation flows, where the funder pays fees
  * on the owner's behalf) is needed here since the owner pays their own fee directly.
  */
@@ -482,9 +485,11 @@ export async function withdrawFromSmartWallet(
   smartWalletAddress: string,
   amount: string,
   networkPassphrase: string,
-  sorobanRpcUrl?: string
+  sorobanRpcUrl?: string,
+  destination?: string
 ): Promise<DelegationResult> {
   const ownerAddress = await getAddressFromFreighter();
+  const recipient = destination ?? ownerAddress;
   const rpcUrl =
     sorobanRpcUrl ||
     SOROBAN_RPC_URLS[networkPassphrase] ||
@@ -510,7 +515,7 @@ export async function withdrawFromSmartWallet(
       xdr.ScVal.scvSymbol("transfer"),
       xdr.ScVal.scvVec([
         Address.fromString(smartWalletAddress).toScVal(),
-        Address.fromString(ownerAddress).toScVal(),
+        Address.fromString(recipient).toScVal(),
         nativeToScVal(amountToStroops(amount), { type: "i128" }),
       ]),
     ],
@@ -544,7 +549,7 @@ export async function withdrawFromSmartWallet(
     throw new Error(result.error || `Smart wallet withdrawal ${result.status.toLowerCase()}`);
   }
 
-  return { hash: sendResponse.hash, amount, destination: ownerAddress };
+  return { hash: sendResponse.hash, amount, destination: recipient };
 }
 
 export async function delegateXLM(

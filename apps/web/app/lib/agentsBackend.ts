@@ -226,6 +226,26 @@ export async function revokeAgentDelegation(id: string): Promise<AgentSummary> {
   return data.agent;
 }
 
+export interface CapitalWallet {
+  owner: string;
+  address: string;
+  label: string | null;
+  created_at: number;
+}
+
+export async function listCapitalWallets(): Promise<CapitalWallet[]> {
+  const data = await request<{ wallets: CapitalWallet[] }>("/api/capital-wallets");
+  return data.wallets;
+}
+
+export async function registerCapitalWallet(address: string, label?: string): Promise<CapitalWallet[]> {
+  const data = await request<{ wallets: CapitalWallet[] }>("/api/capital-wallets", {
+    method: "POST",
+    body: JSON.stringify({ address, label }),
+  });
+  return data.wallets;
+}
+
 // Distributes over the union properly (unlike Omit<StrategyConfig, "destination">, which would
 // collapse the discriminated union into a single flattened object) — `destination` is always
 // forced server-side, so callers never need to supply it.

@@ -9,33 +9,50 @@ import {
   type WalletState,
 } from "@/app/lib/stellar";
 import { challengeAndVerify, getStoredSessionToken } from "@/app/lib/agentsAuth";
-import { setAuthToken } from "@/app/lib/agentsBackend";
+import { setAuthToken, listCapitalWallets, registerCapitalWallet } from "@/app/lib/agentsBackend";
 
-const KEY_PREFIX = "kairos:smart-wallet:";
-const LEGACY_LIST_KEY_PREFIX = "kairos:smart-wallets:"; // pre-single-capital-wallet array format
+export interface CapitalWalletInfo {
+  address: string;
+  label: string | null;
+}
 
-function loadWallet(owner: string): string | null {
+const SELECTED_KEY_PREFIX = "kairos:smart-wallet:"; // pointer to the currently-selected wallet
+const LIST_KEY_PREFIX = "kairos:smart-wallets:"; // this owner's full set of capital wallets
+
+function loadWalletList(owner: string): CapitalWalletInfo[] {
   try {
-    const raw = localStorage.getItem(KEY_PREFIX + owner);
-    if (raw) return raw;
-    // Migrate from the old multi-wallet array format — keep only the first (primary) one.
-    const legacy = localStorage.getItem(LEGACY_LIST_KEY_PREFIX + owner);
-    if (legacy) {
-      const parsed = JSON.parse(legacy);
-      if (Array.isArray(parsed) && parsed[0]) {
-        saveWallet(owner, parsed[0]);
-        return parsed[0];
-      }
+    const raw = localStorage.getItem(LIST_KEY_PREFIX + owner);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed;
     }
+    // Pre-multi-wallet installs only ever stored a single scalar address under the selected key —
+    // fold that into a one-item list instead of losing it.
+    const legacyScalar = localStorage.getItem(SELECTED_KEY_PREFIX + owner);
+    if (legacyScalar) return [{ address: legacyScalar, label: null }];
   } catch {
     // fall through
   }
-  return null;
+  return [];
 }
 
-function saveWallet(owner: string, address: string) {
+function saveWalletList(owner: string, wallets: CapitalWalletInfo[]) {
   try {
-    localStorage.setItem(KEY_PREFIX + owner, address);
+    localStorage.setItem(LIST_KEY_PREFIX + owner, JSON.stringify(wallets));
+  } catch {}
+}
+
+function loadSelected(owner: string): string | null {
+  try {
+    return localStorage.getItem(SELECTED_KEY_PREFIX + owner);
+  } catch {
+    return null;
+  }
+}
+
+function saveSelected(owner: string, address: string) {
+  try {
+    localStorage.setItem(SELECTED_KEY_PREFIX + owner, address);
   } catch {}
 }
 
@@ -45,9 +62,14 @@ export interface SmartWalletState {
   connected: boolean;
   connecting: boolean;
   checked: boolean;
-  /** The single capital wallet (smart account) agents delegate from. */
+  /** The currently-selected capital wallet (smart account) agents delegate from by default. */
   smartWalletAddress: string | null;
   smartWalletBalance: string | null;
+  /** Every capital wallet this owner has deployed — lets callers offer a picker instead of
+   *  always using the single selected one. */
+  capitalWallets: CapitalWalletInfo[];
+  /** Switches which capital wallet is "selected" (the default for new agent launches). */
+  selectWallet: (address: string) => void;
   deploying: boolean;
   deployError: string | null;
   connect: (interactive?: boolean) => Promise<{ success: boolean; wallet?: WalletState }>;
@@ -55,8 +77,8 @@ export interface SmartWalletState {
    *  pages that actually need agents-backend calls (Trade/Agents/History), not on cold app load. */
   ensureAgentAuth: () => Promise<void>;
   disconnect: () => void;
-  /** Deploys the capital wallet only if this owner doesn't already have one. */
-  deploySmartWallet: () => Promise<void>;
+  /** Deploys a new capital wallet (in addition to any existing ones) and selects it. */
+  deploySmartWallet: (label?: string) => Promise<void>;
   checkBalance: (address: string) => Promise<void>;
 }
 
@@ -64,6 +86,7 @@ export function useSmartWallet(): SmartWalletState {
   const [wallet, setWallet] = useState<WalletState | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [checked, setChecked] = useState(false);
+  const [capitalWallets, setCapitalWallets] = useState<CapitalWalletInfo[]>([]);
   const [smartWalletAddress, setSmartWalletAddress] = useState<string | null>(null);
   const [smartWalletBalance, setSmartWalletBalance] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
@@ -78,6 +101,13 @@ export function useSmartWallet(): SmartWalletState {
       setSmartWalletBalance(balance);
     } catch {}
   }, [wallet]);
+
+  const selectWallet = useCallback((address: string) => {
+    if (!walletOwner) return;
+    setSmartWalletAddress(address);
+    saveSelected(walletOwner, address);
+    checkBalance(address);
+  }, [walletOwner, checkBalance]);
 
   const deployWallet = useCallback(async (owner: string, w: WalletState): Promise<string> => {
     const prepareRes = await fetch("/api/delegate-sdk", {
@@ -116,7 +146,7 @@ export function useSmartWallet(): SmartWalletState {
     return data.smartWalletAddress as string;
   }, []);
 
-  const deploySmartWallet = useCallback(async () => {
+  const deploySmartWallet = useCallback(async (label?: string) => {
     if (!walletOwner || !wallet) {
       setDeployError("Connect Freighter wallet first");
       return;
@@ -125,15 +155,19 @@ export function useSmartWallet(): SmartWalletState {
     setDeployError(null);
     try {
       const address = await deployWallet(walletOwner, wallet);
-      setSmartWalletAddress(address);
-      saveWallet(walletOwner, address);
-      await checkBalance(address);
+      const next = [...capitalWallets, { address, label: label ?? null }];
+      setCapitalWallets(next);
+      saveWalletList(walletOwner, next);
+      selectWallet(address);
+      // Best-effort — the wallet is already usable locally even if this registration fails
+      // (e.g. auth token not ready yet); it'll just be missing from other devices until retried.
+      registerCapitalWallet(address, label).catch(() => {});
     } catch (e) {
       setDeployError(e instanceof Error ? e.message : String(e));
     } finally {
       setDeploying(false);
     }
-  }, [walletOwner, wallet, deployWallet, checkBalance]);
+  }, [walletOwner, wallet, deployWallet, capitalWallets, selectWallet]);
 
   const connect = useCallback(async (interactive = true) => {
     setConnecting(true);
@@ -149,13 +183,16 @@ export function useSmartWallet(): SmartWalletState {
       // user with a signature request they didn't ask for this tab session — it reuses a
       // cached token if one exists, and otherwise just leaves agent-backend calls unauthenticated
       // until the user actually clicks Connect (or an agent-feature page prompts for it).
+      let authed = false;
       const cached = getStoredSessionToken(result.wallet.address);
       if (cached) {
         setAuthToken(cached);
+        authed = true;
       } else if (interactive) {
         try {
           const token = await challengeAndVerify(result.wallet.address, result.wallet.networkPassphrase);
           setAuthToken(token);
+          authed = true;
         } catch (e) {
           // Agent-backend login is best-effort at connect time — strategy/agent features will
           // surface their own 401 if a call is attempted without a valid session.
@@ -165,12 +202,32 @@ export function useSmartWallet(): SmartWalletState {
       setWallet(result.wallet);
       setSmartWalletAddress(null);
       setSmartWalletBalance(null);
-      const saved = loadWallet(result.wallet.address);
-      if (saved) {
-        setSmartWalletAddress(saved);
+
+      const localList = loadWalletList(result.wallet.address);
+      // Merge in any wallets registered server-side (e.g. deployed from another browser/device) —
+      // best-effort, skipped entirely if we have no session token to call the backend with yet.
+      let merged = localList;
+      if (authed) {
+        try {
+          const remote = await listCapitalWallets();
+          const byAddress = new Map(localList.map((w) => [w.address, w]));
+          for (const r of remote) {
+            if (!byAddress.has(r.address)) byAddress.set(r.address, { address: r.address, label: r.label });
+          }
+          merged = Array.from(byAddress.values());
+        } catch {
+          // fall back to the local list only
+        }
+      }
+      setCapitalWallets(merged);
+      saveWalletList(result.wallet.address, merged);
+
+      const selected = loadSelected(result.wallet.address) ?? merged[0]?.address ?? null;
+      if (selected) {
+        setSmartWalletAddress(selected);
         try {
           const balance = await fetchSmartWalletBalance(
-            saved,
+            selected,
             result.wallet.networkPassphrase,
             result.wallet.sorobanRpcUrl,
           );
@@ -203,6 +260,7 @@ export function useSmartWallet(): SmartWalletState {
     setWallet(null);
     setSmartWalletAddress(null);
     setSmartWalletBalance(null);
+    setCapitalWallets([]);
     setDeployError(null);
     setAuthToken(null);
   }, []);
@@ -227,6 +285,8 @@ export function useSmartWallet(): SmartWalletState {
     checked,
     smartWalletAddress,
     smartWalletBalance,
+    capitalWallets,
+    selectWallet,
     deploying,
     deployError,
     connect,
