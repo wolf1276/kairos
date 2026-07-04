@@ -74,8 +74,10 @@ export interface SmartWalletState {
   deployError: string | null;
   connect: (interactive?: boolean) => Promise<{ success: boolean; wallet?: WalletState }>;
   /** Runs the wallet-sig auth handshake if this address has no cached session yet — call from
-   *  pages that actually need agents-backend calls (Trade/Agents/History), not on cold app load. */
-  ensureAgentAuth: () => Promise<void>;
+   *  pages that actually need agents-backend calls (Trade/Agents/History), not on cold app load.
+   *  Pass `interactive: false` for background polling so a cleared token doesn't repeatedly
+   *  pop a Freighter signature prompt unattended. */
+  ensureAgentAuth: (interactive?: boolean) => Promise<void>;
   disconnect: () => void;
   /** Deploys a new capital wallet (in addition to any existing ones) and selects it. */
   deploySmartWallet: (label?: string) => Promise<void>;
@@ -241,13 +243,18 @@ export function useSmartWallet(): SmartWalletState {
     return result;
   }, []);
 
-  const ensureAgentAuth = useCallback(async () => {
+  // `interactive` (default true) gates the Freighter signature prompt — pass false for
+  // background polling. Without this, a poller whose cached token got cleared by a 401
+  // (agentsBackend.ts's request() wipes it on any 401) would re-prompt Freighter every single
+  // tick forever, including while the tab is backgrounded or the user already dismissed it once.
+  const ensureAgentAuth = useCallback(async (interactive = true) => {
     if (!wallet) return;
     const cached = getStoredSessionToken(wallet.address);
     if (cached) {
       setAuthToken(cached);
       return;
     }
+    if (!interactive) return;
     try {
       const token = await challengeAndVerify(wallet.address, wallet.networkPassphrase);
       setAuthToken(token);

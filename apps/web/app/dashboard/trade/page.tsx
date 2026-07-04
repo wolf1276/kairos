@@ -315,11 +315,12 @@ function TradeInner() {
   // a manual refresh.
   useEffect(() => {
     if (mode !== "strategy" && mode !== "intent") return;
-    // Re-run the auth handshake each poll, not just on mount — ensureAgentAuth() is a cheap
-    // no-op when a cached token is still valid, but if a prior request's 401 cleared it (see
-    // agentsBackend.ts's request()), this is what re-establishes a session instead of every
-    // subsequent poll failing the same way indefinitely.
-    const interval = window.setInterval(() => { ensureAgentAuth().then(refreshActiveAgents); }, 10_000);
+    // Re-check the cached token each poll — cheap no-op if it's still valid. `interactive:
+    // false` is required here: a prior request's 401 clears the cache (see agentsBackend.ts's
+    // request()), and without that flag this would pop an unattended Freighter signature prompt
+    // every 10s until the user responds, instead of just quietly waiting for the next real
+    // user-initiated auth (e.g. reconnecting).
+    const interval = window.setInterval(() => { ensureAgentAuth(false).then(refreshActiveAgents); }, 10_000);
     return () => window.clearInterval(interval);
   }, [mode, refreshActiveAgents, ensureAgentAuth]);
 
