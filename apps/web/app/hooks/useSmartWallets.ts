@@ -3,6 +3,7 @@
 import { useCallback, useState } from "react";
 import { fetchSmartWalletBalance, signAuthEntryWithWallet, type WalletState } from "@/app/lib/stellar";
 import { listSmartWallets, registerSmartWallet } from "@/app/lib/agentsBackend";
+import { checkOnboarding } from "@/app/lib/connectApi";
 
 export interface SmartWalletInfo {
   address: string;
@@ -67,8 +68,11 @@ export interface UseSmartWalletsResult {
   deploySmartWallet: (label?: string) => Promise<void>;
   /** Reconciles this owner's local (per-browser) smart-wallet list with the backend's copy —
    *  pure read, doesn't touch selection/balance state. The composer decides what an empty
-   *  result means (a new-user onboarding trigger) before calling `applySmartWallets`. */
-  mergeSmartWallets: (owner: string, authed: boolean) => Promise<SmartWalletInfo[]>;
+   *  result means (a new-user onboarding trigger) before calling `applySmartWallets`. Pass the
+   *  session token (not just an `authed` flag) so this can also fall back to the on-chain
+   *  registry via /api/connect/check if the DB has no row (e.g. lost on a backend redeploy —
+   *  see apps/web/app/api/connect/check/route.ts). */
+  mergeSmartWallets: (owner: string, token: string | null) => Promise<SmartWalletInfo[]>;
   /** Commits a resolved smart-wallet list for `wallet`, selects whichever address ends up
    *  selected (persisted selection, or the first in the list), and loads its balance. */
   applySmartWallets: (wallet: WalletState, wallets: SmartWalletInfo[]) => Promise<void>;
@@ -111,16 +115,29 @@ export function useSmartWallets(wallet: WalletState | null): UseSmartWalletsResu
     [walletOwner, checkBalance]
   );
 
-  const mergeSmartWallets = useCallback(async (owner: string, authed: boolean): Promise<SmartWalletInfo[]> => {
+  const mergeSmartWallets = useCallback(async (owner: string, token: string | null): Promise<SmartWalletInfo[]> => {
     const localList = loadWalletList(owner);
     // Merge in any wallets registered server-side (e.g. deployed from another browser/device) —
     // best-effort, skipped entirely if we have no session token to call the backend with yet.
-    if (!authed) return localList;
+    if (!token) return localList;
     try {
       const remote = await listSmartWallets();
       const byAddress = new Map(localList.map((w) => [w.address, w]));
       for (const r of remote) {
         if (!byAddress.has(r.address)) byAddress.set(r.address, { address: r.address, label: r.label });
+      }
+      if (byAddress.size === 0) {
+        // DB has nothing for this owner (e.g. the row was lost on a backend redeploy — Render's
+        // free-tier SQLite disk isn't persistent). Fall back to the on-chain registry before
+        // reporting "new user" and walking them through deploying a second wallet.
+        try {
+          const onChain = await checkOnboarding(token);
+          if (onChain.status === "existing" && onChain.smartWallet) {
+            byAddress.set(onChain.smartWallet, { address: onChain.smartWallet, label: null });
+          }
+        } catch {
+          // best-effort — fall through to whatever we already have
+        }
       }
       return Array.from(byAddress.values());
     } catch {

@@ -117,7 +117,7 @@ export function useSmartWallet(): SmartWalletState {
       // duration of the merge/fetch below, which on a slow RPC round-trip reads as "balance
       // became 0 on relogin" even though it's just a stale render, not a real balance.
 
-      let merged = await smartWallets.mergeSmartWallets(w.address, authed);
+      let merged = await smartWallets.mergeSmartWallets(w.address, token);
 
       // First-time onboarding: this owner authenticated successfully but has no smart wallet
       // anywhere (local or remote) — deploy one automatically instead of leaving them stuck with
