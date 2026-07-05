@@ -24,13 +24,13 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 | :--- | :--- |
 | **Intent-Based Investing** | Declare natural language investment goals, automatically parsed into structured on-chain parameters. |
 | **Smart Wallets** | Dedicated custom smart accounts that house delegated capital and isolate execution risks. |
-| **AI Managed Automation** | Hugging Face LLM (Mixtral-8x7B-Instruct) decision engine that evaluates market dynamics via the Hugging Face Inference API and suggests actions based on your risk profile. Falls back to deterministic RSI/MACD logic when the API is unavailable. |
-| **Strategy Managed Automation** | Quantitative, rule-based algorithmic strategies executing preset technical models (EMA Crossover, Mean Reversion, Momentum). |
-| **Autonomous AI Sessions** | Time-bound, policy-restricted execution windows where AI engines optimize portfolio assets autonomously. |
-| **Live Oracle** | Real-time, fast-updating asset prices streamed directly from Binance (configurable timeframe, rate-limited). |
-| **Paper Trading** | Zero-risk simulation sandbox to test trading profiles and strategies with live market data. Supports fees (0.1%) and slippage (0.05%). |
+| **Role Agents (AI Managed)** | Backend-resident Strategic / Yield / Balancer agents (`backend/src/decisionEngine.ts`) that call a Hugging Face LLM (`meta-llama/Llama-3.1-8B-Instruct`) each tick to pick a quant strategy, a yield venue, or a rebalance action. Falls back to a deterministic regime/indicator heuristic when the API is unavailable. |
+| **Quant Strategy Agents** | `quant`-mode Strategy Mode agents run one of ~25 deterministic technical-indicator strategies (EMA/SMA/MACD cross, RSI, Bollinger Bands, ADX, Ichimoku, and more — see `backend/src/strategies/index.ts`) evaluated on every tick. |
+| **DCA / Limit Agents** | `dca` agents redeem a fixed spend on an interval; `limit` agents fire a one-shot conditional order once a trigger price is hit. Both run server-side in the Strategy Mode backend. |
+| **Live Market Data** | Trading decisions are driven by Stellar Horizon trade-aggregation candles and Horizon's SSE trade stream (`backend/src/priceHistory.ts`, `priceFeed.ts`). A separate Binance-fed oracle (`apps/web/oracle/`) powers the app's GraphQL price API but does not feed agent decisions. |
+| **Paper Trading** | Every Strategy Mode agent is created in `paper` or `live` mode. Paper agents get a synthetic fill (`paper-<uuid>`) instead of signing/submitting a real transaction, but flow through the exact same PnL/position/audit pipeline as live trades. |
 | **Policy Engine** | Composable on-chain checks verifying period spend limits (spend-limit), asset whitelists (target-whitelist), and time restrictions. |
-| **Non-Custodial Architecture** | Absolute safety of funds — assets never leave your delegated control. All trade proposals are hard-gated by a deterministic policy engine before any execution. The LLM **never** determines position size or authorizes fund-moving actions. |
+| **Non-Custodial Architecture** | Absolute safety of funds — assets never leave your delegated control. Every proposal passes a deterministic validation pipeline (`backend/src/validation.ts`: policy → delegation → risk) before execution, and every live trade is still checked on-chain against your delegation's caveats regardless of what the backend decided. The LLM **never** determines position size or authorizes fund-moving actions. |
 | **Strategy Mode (Agent Backend)** | Persistent, backend-driven algorithmic trading terminal (`/backend`) — Turnkey MPC-backed agent wallets execute `dca`/`quant`/`limit` strategies in paper or real (testnet) mode, every trade/position/lifecycle event persisted to SQLite and gated behind Freighter wallet-signature auth. See [`backend/README.md`](./backend/README.md). |
 | **Soroban Native** | Purpose-built for Stellar's Soroban smart contract system, utilizing WASM execution and gas-efficient architectures. |
 
@@ -49,40 +49,33 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
          └───────┬───────┘
                  │
                  ▼
-   ┌───────────────────────────┐
-   │   Create Smart Wallet     │  (CustomAccount smart contract)
-   └─────────────┬─────────────┘
+      ┌─────────────────────┐
+      │ Create Smart Wallet │  (CustomAccount smart contract, auto on first connect)
+      └──────────┬──────────┘
+                 │
+                 ▼
+        ┌─────────────────┐
+        │ Configure Agent │  (Strategy Mode: dca / quant / limit, paper or live)
+        └────────┬────────┘
+                 │
+                 ▼
+       ┌───────────────────┐
+       │ Attach Delegation │  (spend-limit / target-whitelist / time-restriction caveats)
+       └─────────┬─────────┘
                  │
                  ▼
          ┌───────────────┐
-         │  Set Intent   │  (Natural language → TradingProfile via HF or regex)
+         │Agent Executes │  (Backend scheduler + price feed; on-chain caveats enforced at redemption)
          └───────┬───────┘
                  │
                  ▼
          ┌───────────────┐
-         │  Choose Mode  │  (AI Managed / Strategy / Autonomous)
-         └───────┬───────┘
-                 │
-                 ▼
-         ┌───────────────┐
-         │   Analyze     │  (Oracle → Indicators → Decision Engine)
-         └───────┬───────┘
-                 │
-                 ▼
-         ┌───────────────┐
-         │ Policy Gate   │  (Hard enforcement: allowed assets, position caps, daily limits)
-         └───────┬───────┘
-                 │
-                 ▼
-         ┌───────────────┐
-         │ Execute       │  (On-chain via delegated redemption)
-         └───────┬───────┘
-                 │
-                 ▼
-         ┌───────────────┐
-         │  Portfolio    │  (Track performance, trades, balance)
+         │   Portfolio   │  (Trades, positions, audit trail persisted server-side)
          └───────────────┘
 ```
+
+See [Strategy Mode (Agent Backend)](#strategy-mode-agent-backend) below for how the last two
+steps actually work — trades are executed by the persistent backend, not the browser.
 
 ---
 
@@ -224,71 +217,102 @@ never re-deploy if a prior attempt already got the wallet live on-chain.
 
 ## Automation Modes
 
-### AI Managed
-Leverages the Hugging Face Inference API (Mixtral-8x7B-Instruct) to convert qualitative investment goals (e.g., *"Grow my portfolio with moderate risk, prioritizing Stellar ecosystem assets, and limit daily drawdowns to 2%"*) into structured `TradingProfile` objects.
+Every automated trade is executed by a Strategy Mode agent (`backend/`, see
+[`backend/README.md`](./backend/README.md)) created with one of four strategy types:
 
-* **Intent Parsing:** HF chat completion with JSON mode extracts risk tolerance, investment horizon, allowed assets, and position limits. Falls back to regex parsing when the API is unavailable.
-* **Prompt Injection Hardening:** User text is treated as DATA, not instructions. The system prompt explicitly ignores embedded instructions.
-* **Policy Gating:** All proposals are hard-gated by `applyPolicyGate()`, which enforces allowed assets, caps position size, and applies daily limits. The LLM never determines trade amounts.
-* **Deterministic Fallback:** RSI + MACD analysis when the HF API is unavailable or all retries are exhausted (3 retries, exponential backoff).
+### `role` — Role Agents (Strategic / Yield / Balancer)
+Three LLM-advised agents (`backend/src/decisionEngine.ts`), each ticking through the same
+validation pipeline (`backend/src/roleTick.ts`): Live Oracle → Analysis → LLM Decision → Policy
+→ Delegation → Risk Checks → Execute → Positions → Audit.
 
-### Strategy Managed
-Executes quantitative algorithms governed by rigid technical indicators. The strategy engine calculates standard mathematical indicators (RSI, MACD, EMA) to identify market opportunities.
-* **EMA Crossover:** Buy when EMA20 crosses above EMA50, sell on cross below.
-* **Mean Reversion:** Buy when RSI < 30 (oversold), sell when RSI > 70 (overbought).
-* **Momentum:** Buy on positive MACD histogram, sell on negative.
+* **Strategic Agent:** Picks the best-fitting quant strategy for the current market regime
+  (trending/ranging/volatile) from the full strategy catalogue, then proposes buy/sell/hold —
+  grounded against that strategy's own deterministic signal.
+* **Yield Agent:** Decides whether to reallocate idle capital into a simulated yield venue based
+  on live-adjusted APYs.
+* **Portfolio Balancer Agent:** Proposes a rebalance when the current allocation drifts too far
+  from target.
+* **Model:** Hugging Face `meta-llama/Llama-3.1-8B-Instruct`, JSON-only responses, 2 retries with
+  backoff. Falls back to a deterministic regime/indicator heuristic when the API is unavailable
+  or fails to return valid JSON — the LLM proposes, it never sizes or authorizes a trade.
+* **Validation pipeline (`backend/src/validation.ts`):** policy (confidence floor, non-zero trade
+  size) → delegation (must be active for live agents) → risk (hard-blocks above 12% regime
+  volatility, and circuit-breaks the agent once cumulative loss exceeds 20% of allocated capital).
 
-### Autonomous AI
-Initiates time-bound autonomous sessions where the Kairos Agent acts on your behalf.
+### `quant` — Quant Strategy Agents
+Evaluates one deterministic technical-indicator strategy, chosen at agent creation, from the
+catalogue in `backend/src/strategies/index.ts` (EMA/SMA/DEMA/TEMA/HMA crossovers, RSI, MACD,
+Bollinger Bands, Stochastic, ADX, Williams %R, CCI, ROC, ATR, Donchian, Parabolic SAR, VWAP,
+Ichimoku, Keltner, TRIX, Awesome Oscillator, MFI, OBV, SuperTrend, Chaikin Money Flow, Aroon — ~25
+in total). Re-evaluated on every scheduler tick and on every Horizon trade-stream update.
 
-* **Policy Enforcement:** Every transaction is verified on-chain against the delegation contract policies before submission.
-* **Delegation Limits:** Absolute maximum spend limits, whitelist restrictions, daily loss caps, and trade counters prevent the AI from draining funds or deviating from your guidelines.
+### `dca` — Dollar-Cost Averaging Agents
+Redeems a fixed spend against the agent's delegation on a fixed interval — no market analysis,
+just scheduled delegated spend.
+
+### `limit` — One-Shot Conditional Orders
+Fires a single conditional order once its trigger price is hit, then completes.
+
+**Shared guarantees across all four types:** delegation caveats (spend-limit, target-whitelist,
+time-restriction) are enforced on-chain at redemption regardless of what the backend decided;
+`paper`-mode agents never sign or submit a real transaction; every decision, validation result,
+and execution is written to the audit log.
 
 ---
 
 ## Architecture
 
+This is the pipeline for a `role` agent (`backend/src/roleTick.ts`) — the richest of the four
+strategy types; `quant` runs the same shape with a chosen indicator strategy instead of an LLM
+call, and `dca`/`limit` skip straight to Execute on their own trigger (interval / limit price):
+
 ```
                  ┌─────────────────────────────────┐
-                 │     BinanceOracle (1h/1m/15m)   │
+                 │  Horizon trade aggregations /    │
+                 │  SSE trade stream (priceHistory, │
+                 │  priceFeed.ts)                   │
                  └────────────────┬────────────────┘
-                                  │ Price, Volume, Change
+                                  │ Candles
                                   ▼
                  ┌─────────────────────────────────┐
-                 │  IndicatorEngine                 │
-                 │  (RSI, MACD, EMA20/50, ATR, SMA) │
+                 │  computeIndicators/computeRegime │
+                 │  (RSI, MACD, EMA, ATR, SMA, ADX)  │
                  └────────────────┬────────────────┘
-                                  │ MarketSnapshot
+                                  │ MarketContext
                                   ▼
                  ┌─────────────────────────────────┐
-                 │         DecisionEngine           │
+                 │  decisionEngine.ts                │
                  │  ┌─────────────────────────┐     │
-                 │  │ HfAdvisor (HF Inference) │     │
-                 │  │ StrategyDecisionProvider │     │
-                 │  │ AutonomousAIProvider     │     │
+                 │  │ decideStrategic          │     │
+                 │  │ decideYield              │     │
+                 │  │ decideBalancer           │     │
                  │  └─────────────────────────┘     │
+                 │  HF Llama-3.1-8B-Instruct, JSON;  │
+                 │  deterministic fallback if HF     │
+                 │  is unavailable                   │
                  └────────────────┬────────────────┘
-                                  │ Raw Proposal (amount=0)
+                                  │ AgentDecision (advisory, no size)
                                   ▼
                  ┌─────────────────────────────────┐
-                 │         applyPolicyGate          │
-                 │  (allowed assets, position cap,  │
-                 │   daily limit, loss cap)         │
+                 │  validation.ts                    │
+                 │  validatePolicy → validateDelegation │
+                 │  → riskChecks (12% vol ceiling,   │
+                 │    20% drawdown circuit breaker)  │
                  └────────────────┬────────────────┘
-                                  │ Gated Proposal (amount set)
+                                  │ Validated (blocks here on failure)
                                   ▼
                  ┌─────────────────────────────────┐
-                 │     PaperTradingEngine          │
-                 │  (per-wallet localStorage,      │
-                 │   0.1% fee, 0.05% slippage)     │
+                 │  executeQuantTrade (live, Turnkey │
+                 │  signer) / executePaperQuantTrade │
+                 │  (paper, synthetic fill)          │
                  └────────────────┬────────────────┘
-                                  │
+                                  │ Live only
                                   ▼
                  ┌─────────────────────────────────┐
-                 │  delegate-sdk API → Kairos SDK   │
-                 │  → DelegationManager Contract    │
+                 │  Kairos SDK → redeem_delegations  │
+                 │  → DelegationManager Contract     │
                  └────────────────┬────────────────┘
-                                  │ Enforces Policies & Validates Nonce
+                                  │ Enforces Caveats & Validates Nonce
                                   ▼
                  ┌─────────────────────────────────┐
                  │     CustomAccount (Smart Wallet) │
@@ -296,11 +320,10 @@ Initiates time-bound autonomous sessions where the Kairos Agent acts on your beh
 ```
 
 ### Architectural Layers
-* **Oracle:** Periodically fetches raw candle and ticker data from Binance. Configurable timeframe, rate-limited to 1 request/second.
-* **Indicator Engine:** Synthesizes raw data with technical indicators (RSI, MACD, EMA, ATR, SMA).
-* **Decision Engine:** Routes to the appropriate provider (HF AI, deterministic strategy, or autonomous AI) based on the user's automation mode.
-* **Policy Gate:** The only component that determines position size. Enforces asset whitelists, position caps, daily limits, and loss caps. Cannot be bypassed by any provider.
-* **Paper Trading:** Virtual execution environment with per-wallet state persistence, fees, and slippage.
+* **Market Data:** `backend/src/priceHistory.ts` pulls OHLC candles from Stellar Horizon's `trade_aggregations`; `priceFeed.ts` subscribes to Horizon's SSE trade stream for near-instant `quant`/`limit` trigger checks. (A separate Binance-fed oracle, `apps/web/oracle/`, powers the app's GraphQL price API only — it does not feed agent decisions.)
+* **Decision Engine (`backend/src/decisionEngine.ts`):** Computes indicators/regime, then either calls the HF LLM (role agents) or a chosen deterministic strategy (`quant` agents) for a proposed action. Never sizes the trade.
+* **Validation Pipeline (`backend/src/validation.ts`):** The only component that decides whether a proposed action is allowed to proceed this tick — checks policy (confidence floor, non-zero size), delegation (must be active for live agents), and risk (volatility/drawdown circuit breakers). Cannot be bypassed by any strategy type.
+* **Paper Trading:** `paperExecutor.ts` returns a synthetic `paper-<uuid>` fill instead of signing/submitting — everything downstream (PnL, positions, audit) is identical to a live trade.
 * **Kairos SDK:** TypeScript client for interacting with deployed Soroban contracts.
 * **CustomAccount:** On-chain smart wallet that validates all executions against delegation policies before authorizing transfers.
 
@@ -338,11 +361,11 @@ Initiates time-bound autonomous sessions where the Kairos Agent acts on your beh
 ```
 
 **Key security properties:**
-1. **LLM is advisory only** — It proposes actions but never sets amounts. `applyPolicyGate()` determines position size.
-2. **Policy gate cannot be bypassed** — Every proposal passes through it, regardless of provider.
-3. **On-chain caveats are final** — Even if the policy gate were compromised, on-chain spend limits and asset whitelists would block unauthorized transfers.
+1. **LLM is advisory only** — It proposes actions but never sets amounts. The backend's `validatePolicy`/`riskChecks` (`backend/src/validation.ts`) decide whether a proposal is allowed to execute, not the model.
+2. **Validation pipeline cannot be bypassed** — Every proposal from every strategy type passes through policy → delegation → risk checks before execution.
+3. **On-chain caveats are final** — Even if backend validation were compromised, on-chain spend limits and asset whitelists (enforced at `redeem_delegations`) would block unauthorized transfers.
 4. **Replay protection** — Monotonic nonces per delegator prevent replay attacks.
-5. **Non-custodial** — The AI/strategy provider never has access to the user's private keys. All execution is via delegated redemption.
+5. **Non-custodial** — The AI/strategy provider never has access to the user's private keys (agent keys are Turnkey MPC-backed). All live execution is via delegated redemption.
 
 ---
 
@@ -352,10 +375,11 @@ Initiates time-bound autonomous sessions where the Kairos Agent acts on your beh
 * **TypeScript:** End-to-end type safety across the monorepo.
 * **Stellar & Soroban:** High-performance, low-cost decentralized ledger and smart contract platform.
 * **Freighter:** The official Stellar browser wallet extension for secure signature management.
-* **Hugging Face Inference API:** AI intent parsing and advisory decisions via Mixtral-8x7B-Instruct.
-* **Technical Indicators:** Mathematical indicator computation library for technical market analysis.
-* **Binance Oracle:** Data feed integration for real-time cryptocurrency asset prices.
-* **Paper Trading Engine:** Per-wallet simulated execution with fees, slippage, and localStorage persistence.
+* **Hugging Face Inference API:** Intent parsing and role-agent advisory decisions via `meta-llama/Llama-3.1-8B-Instruct`.
+* **Technical Indicators:** Mathematical indicator computation library backing the ~25-strategy quant catalogue and regime/indicator computations.
+* **Turnkey:** MPC-backed Ed25519 key custody for Strategy Mode agent wallets.
+* **SQLite (`better-sqlite3`):** Server-side persistence for agents, trades, positions, delegations, and the audit log.
+* **Binance Oracle:** Data feed powering the app's GraphQL price API (separate from the agent decision pipeline, which uses Stellar Horizon).
 
 ---
 

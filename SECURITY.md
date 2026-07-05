@@ -43,10 +43,10 @@ User Intent
 
 ### 2.1 The LLM is Advisory Only
 
-The Hugging Face model (Mixtral-8x7B-Instruct) is used for two purposes:
+The Hugging Face model `meta-llama/Llama-3.1-8B-Instruct` is used for two purposes:
 
-1. **Intent Parsing**: Converting natural language to a structured `TradingProfile`. The output is schema-validated by `validateProfile()` before use.
-2. **Trade Advisory**: Analyzing market data and proposing BUY/SELL/HOLD actions with reasoning.
+1. **Intent Parsing** (`apps/web/lib/decision/hfIntentParser.ts`, via `/api/intent/parse`): Converting natural language to a structured `TradingProfile`. The output is schema-validated before use. Note: this route currently has no entry point in the dashboard UI — it's only exercised by the e2e test suite.
+2. **Role-Agent Advisory** (`backend/src/decisionEngine.ts`): Analyzing market data and proposing buy/sell/hold/reallocate/rebalance actions with reasoning, for the Strategy Mode backend's `role` agents (Strategic / Yield / Balancer).
 
 **The LLM never:**
 - Determines position size or trade amounts
@@ -54,15 +54,15 @@ The Hugging Face model (Mixtral-8x7B-Instruct) is used for two purposes:
 - Has access to private keys
 - Executes transactions directly
 
-### 2.2 Policy Gate
+### 2.2 Validation Pipeline
 
-The `applyPolicyGate()` function is the sole authority for position sizing. It runs after every decision provider (HF AI, Strategy, Autonomous AI) and enforces:
+`backend/src/validation.ts`'s `validatePolicy` → `validateDelegation` → `riskChecks` is the sole authority for whether a `role` agent's proposed action executes this tick:
 
-- **Allowed Assets**: Only assets in the user's `TradingProfile.allowedAssets` list can be traded. Violating proposals are converted to HOLD.
-- **Position Size Cap**: Amount is capped at `min(funds * 0.1, maxPositionSize, dailyTradeLimit)`.
-- **Daily Loss Cap**: (Autonomous AI mode) Separate from position size — prevents cumulative daily losses from exceeding the configured limit.
+- **Policy**: The decision must clear the agent's configured minimum confidence and name a non-zero trade size. HOLD always passes.
+- **Delegation**: A live, non-disabled on-chain delegation must back the agent for `live`-mode trades (advisory-only check in `paper` mode).
+- **Risk**: Hard-blocks execution above a 12% market-volatility ceiling, and circuit-breaks the agent entirely once cumulative loss exceeds 20% of its allocated capital.
 
-The policy gate cannot be bypassed by any provider. Every proposal passes through it before reaching the SDK or UI.
+`dca`/`quant`/`limit` agents apply their own per-strategy amount/interval/trigger configuration instead. Across every strategy type, on-chain delegation caveats (spend-limit, target-whitelist, time-restriction) are the final, unconditional backstop enforced at `redeem_delegations` — no backend-side check can substitute for them.
 
 ### 2.3 Prompt Injection Hardening
 
@@ -80,13 +80,12 @@ Additionally:
 When the Hugging Face API is unavailable (missing API key, network error, rate limit), the system degrades gracefully:
 
 - **Intent Parsing**: Falls back to regex-based `parseIntent()`, which extracts risk tolerance, investment horizon, and allowed assets using pattern matching.
-- **Trade Advisory**: Falls back to deterministic RSI + MACD analysis with hardcoded thresholds.
+- **Role-Agent Advisory**: Falls back to a deterministic regime/indicator heuristic (`strategicFallback`/`yieldFallback`/`balancerFallback` in `backend/src/decisionEngine.ts`) — e.g. a fixed regime→strategy mapping for the Strategic agent.
 
 ### 2.5 Retry and Backoff
 
-Both the intent parser and advisor use exponential backoff:
-- Intent parser: 3 retries, 1s/2s/4s backoff, 15s timeout
-- Advisor: 2 retries, 2s/4s backoff, 20s timeout
+- Intent parser (`hfIntentParser.ts`): 3 retries, exponential backoff starting at 1s.
+- Role-agent advisor (`decisionEngine.ts`): 2 retries, 1.5s backoff between attempts.
 
 ---
 

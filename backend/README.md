@@ -9,9 +9,10 @@ centralized service that:
    `src/turnkey.ts`, `@wolf1276/kairos-turnkey-signer`). Agents created before this
    integration keep working via their legacy AES-256-GCM-encrypted secret (`AGENT_MASTER_KEY`).
 2. Lets a user attach a signed Kairos delegation to an agent (delegate = that agent's public key).
-3. Runs `dca` (delegated spend), `quant` (technical-indicator signal trading), and `limit`
-   (one-shot conditional order) strategies, each in **paper** (simulated fill, no signing/
-   submission) or **live** (real Stellar transaction) mode, set per agent at creation.
+3. Runs `dca` (delegated spend), `quant` (technical-indicator signal trading), `limit`
+   (one-shot conditional order), and `role` (LLM-advised Strategic/Yield/Balancer agents)
+   strategies, each in **paper** (simulated fill, no signing/submission) or **live** (real
+   Stellar transaction) mode, set per agent at creation.
 4. Persists every agent, trade, position, and lifecycle/execution event to SQLite, scoped to
    the authenticated wallet — nothing lives only in frontend state.
 
@@ -74,6 +75,14 @@ for how the two fit together.
   `mode` is set once at agent creation and is immutable — a paper agent never signs or submits
   a real transaction; its trades get a synthetic `tx_hash = paper-<uuid>` but flow through the
   exact same PnL/position/audit pipeline as a live trade.
+- **Role agents** (`src/roleTick.ts`, `src/decisionEngine.ts`): three LLM-advised agents —
+  Strategic (picks a quant strategy for the current regime and proposes buy/sell/hold, grounded
+  against that strategy's own signal), Yield (reallocates idle capital into a simulated yield
+  venue), and Portfolio Balancer (proposes a rebalance on allocation drift). Each tick runs
+  Live Oracle → Analysis → LLM Decision (`meta-llama/Llama-3.1-8B-Instruct`, deterministic
+  fallback if HF is unavailable) → `validation.ts` (policy → delegation → risk) → Execute →
+  Positions → Audit. `validation.ts` hard-blocks trades above a 12% volatility ceiling and
+  circuit-breaks the agent once cumulative loss exceeds 20% of its allocated capital.
 
 ## Persistence
 
@@ -106,7 +115,7 @@ migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `t
 - `POST /api/agents/:id/delegation { delegation }` → attach a signed `JsonSafeDelegation`
   (delegate must equal this agent's public key)
 - `POST /api/agents/:id/delegation/revoke`
-- `POST /api/agents/:id/strategy { type: 'dca' | 'quant' | 'limit', ... }`
+- `POST /api/agents/:id/strategy { type: 'dca' | 'quant' | 'limit' | 'role', ... }`
 - `POST /api/agents/:id/start` — requires a delegation (dca only) and strategy already attached
 - `POST /api/agents/:id/stop`
 - `DELETE /api/agents/:id` — must be stopped first. Only removes the local record; does **not**
