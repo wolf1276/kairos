@@ -12,7 +12,9 @@ export function getContractConfig() {
     policyEngine: readContractId("POLICY_CONTRACT_ID"),
     customAccount: readContractId("CUSTOM_ACCOUNT_CONTRACT_ID"),
     customAccountWasmHash: readContractId("CUSTOM_ACCOUNT_WASM_HASH"),
-    registry: readContractId("REGISTRY_CONTRACT_ID"),
+    // Optional: the registry contract is a best-effort fallback/write, not deployed in every
+    // environment yet. Missing it must never break the core wallet-deploy path.
+    registry: process.env.REGISTRY_CONTRACT_ID || undefined,
   };
 }
 
