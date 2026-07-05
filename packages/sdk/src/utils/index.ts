@@ -199,7 +199,7 @@ export function encodeTimeRestrictionTerms(start: bigint, end: bigint): Uint8Arr
   buf.writeUInt8(3, 0);
   buf.writeBigUInt64BE(start, 1);
   buf.writeBigUInt64BE(end, 9);
-  return buf;
+  return new Uint8Array(buf);
 }
 
 /**
@@ -212,5 +212,5 @@ export function encodeTargetWhitelistTerms(targetAddress: string): Uint8Array {
   const buf = Buffer.alloc(1 + targetXdr.length);
   buf.writeUInt8(1, 0);
   buf.set(targetXdr, 1);
-  return buf;
+  return new Uint8Array(buf);
 }
