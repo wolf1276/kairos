@@ -12,10 +12,11 @@ function challengeMessage(publicKey: string, nonce: string): string {
   return `Kairos login\naddress: ${publicKey}\nnonce: ${nonce}`;
 }
 
-/** Freighter's signMessage doesn't sign the raw message bytes — it signs the SEP-53-wrapped
- *  digest (SHA-256("Stellar Signed Message:\n" + message)), same wrapping used for smart-wallet
- *  delegation signatures elsewhere (see stellar.ts signDelegationHashWithFreighter). Verification
- *  must hash the same way or every real signature fails. */
+/** SEP-43 wallets don't sign the raw message bytes — they sign the SEP-53-wrapped digest
+ *  (SHA-256("Stellar Signed Message:\n" + message)), same wrapping used for smart-wallet
+ *  delegation signatures elsewhere (see stellar.ts signDelegationHashWithWallet). Verification
+ *  must hash the same way or every real signature fails. Non-SEP-43-compliant wallets (e.g.
+ *  Albedo's signMessage) will fail this check — that's expected, not a bug. */
 function sep53Digest(message: string): Buffer {
   return createHash('sha256').update(`Stellar Signed Message:\n${message}`, 'utf8').digest();
 }

@@ -102,9 +102,9 @@ export class PolicyModule {
 
         const termsBuf = Buffer.alloc(1 + 32 + 16 + 8);
         termsBuf.writeUInt8(2, 0); // policy_type = 2
-        tokenXdr.copy(termsBuf, 1);
-        limitBuf.copy(termsBuf, 33);
-        periodBuf.copy(termsBuf, 49);
+        termsBuf.set(tokenXdr, 1);
+        termsBuf.set(limitBuf, 33);
+        termsBuf.set(periodBuf, 49);
 
         terms = new Uint8Array(termsBuf);
         break;
