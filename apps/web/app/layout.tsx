@@ -13,9 +13,12 @@ const spaceGrotesk = Space_Grotesk({subsets:['latin'],variable:'--font-display'}
 const jetbrainsMono = JetBrains_Mono({subsets:['latin'],variable:'--font-mono'});
 
 export const metadata: Metadata = {
-  title: "PaperTrade Agent — Stellar",
+  title: "Kairos",
   description:
-    "Connect your Freighter wallet, delegate testnet funds, and let the AI agent trade for you on Stellar.",
+    "Autonomous portfolio management on Stellar.",
+  icons: {
+    icon: "/logo.png",
+  },
 };
 
 export default function RootLayout({

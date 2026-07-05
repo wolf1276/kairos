@@ -6,18 +6,12 @@ This report presents a comprehensive architectural analysis and security audit o
 
 ## 1. Folder Structure
 
-The repository is structured as a standard Rust Cargo workspace containing a set of smart contracts and configuration metadata:
+The repository is structured as a standard Rust Cargo workspace containing a set of smart contracts, with related design/audit documentation kept in the monorepo's top-level `docs/`:
 
 ```
 contracts/soroban/
 ├── Cargo.toml                      # Workspace configuration defining members and shared dependencies
 ├── Cargo.lock                      # Locked dependency versions
-├── ARCHITECTURE.md                 # Design patterns and storage mapping documentation
-├── AUDIT.md                        # Security audit records and historical vulnerabilities
-├── IMPLEMENTATION_PROGRESS.md       # Implementation tracking matrix
-├── TASKS.md                        # Task checklist for development
-├── SECURITY.md                     # Security policies and disclosure details
-├── CHANGELOG.md                    # Log of releases and modifications
 └── contracts/                      # Sub-workspace containing Soroban contracts
     ├── custom-account/             # Smart Custom Account (SCA) contract
     │   ├── Cargo.toml
@@ -34,6 +28,18 @@ contracts/soroban/
         └── src/
             └── lib.rs              # Whitelists, spend limit tracking, and time boundaries
 ```
+
+Design, audit, and process documentation for this framework lives outside `contracts/soroban/`:
+
+| Doc | Location |
+| :--- | :--- |
+| Design patterns and storage mapping | `docs/architecture/ARCHITECTURE.md` |
+| This report | `docs/architecture/ARCHITECTURE_REPORT.md` |
+| Implementation tracking matrix | `docs/architecture/IMPLEMENTATION_PROGRESS.md` |
+| Task checklist | `docs/TASKS.md` |
+| Contract-level security considerations | `docs/security/SECURITY.md` |
+| Security audit records | `docs/security/AUDIT.md` |
+| Contract changelog | `docs/CHANGELOG.md` |
 
 ---
 

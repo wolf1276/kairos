@@ -1,6 +1,6 @@
-# Delegation Wallet — End-to-End Workflow
+# Delegation — End-to-End Workflow
 
-This document describes how a user creates and manages a Kairos delegation wallet, and how
+This document describes how a user creates and manages a delegation on their Kairos Smart Wallet, and how
 agents (and any other client) communicate with it. It reflects the code as it exists in
 `packages/sdk`, `apps/web/app/api/delegate-sdk`, `apps/web/app/dashboard/delegations`,
 `backend/`, and `packages/mcp-agent` — see `docs/security/DELEGATION_AUDIT.md` for known gaps.
@@ -16,7 +16,7 @@ agents (and any other client) communicate with it. It reflects the code as it ex
 | **Delegate** | The keypair authorized to redeem — an agent's session key (backend `agentService` or `mcp-agent`), or any other holder the owner signs a delegation for. |
 | **Funder** | A server-held Stellar account (`FUNDER_SECRET_KEY`) that pays fees for every "sponsored" on-chain call, so the owner never needs XLM in their EOA. |
 
-## Part 1 — User workflow: creating a delegation wallet
+## Part 1 — User workflow: creating a delegation on a Smart Wallet
 
 All steps below are driven by `apps/web/app/dashboard/delegations/hooks/useDelegations.ts` and
 `useWallet.ts` calling the single API route `apps/web/app/api/delegate-sdk/route.ts`, which wraps
@@ -77,7 +77,7 @@ Key points:
   → `SUBMIT_SET_POLICY` → `set_policy()` rewrites the terms for that `(delegator, policy_id)`.
   The delegation's hash/signature never change.
 
-## Part 2 — How agents and other clients communicate with the delegation wallet
+## Part 2 — How agents and other clients communicate with a delegated Smart Wallet
 
 There are two agent runtimes in this repo today, plus a general SDK path for any other client.
 

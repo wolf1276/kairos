@@ -1,7 +1,7 @@
 # @wolf1276/kairos-mcp-agent
 
-An MCP server that lets an AI agent (e.g. Claude via MCP) spend from a Kairos delegation
-wallet, using its own MPC-backed key — never the user's real wallet key, and never a raw
+An MCP server that lets an AI agent (e.g. Claude via MCP) spend from a delegation on a Kairos
+Smart Wallet, using its own MPC-backed key — never the user's real wallet key, and never a raw
 secret sitting in this process either.
 
 ## How it works
@@ -111,8 +111,8 @@ so each agent gets its own key within it and must be delegated to separately:
 - `get_agent_pubkey` — returns this agent's id and public key as `{ agentId, publicKey }`
   (same identity the keygen CLI prints for this `KAIROS_AGENT_ID`).
 - `list_my_delegations` — lists delegations granted to this agent and their decoded caveats.
-- `spend_funds({ token, to, amount })` — SEP-41 transfer from the delegation wallet, gated by
-  a spend-limit caveat for `token`.
+- `spend_funds({ token, to, amount })` — SEP-41 transfer from the delegated Smart Wallet, gated
+  by a spend-limit caveat for `token`.
 - `execute_action({ target, function, args })` — generic contract call, gated by a
   target-whitelist caveat for `target`.
 

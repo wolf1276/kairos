@@ -15,7 +15,7 @@ const tx = new TransactionBuilder(...)
 
 #### After (SDK):
 ```ts
-import { KairosClient } from '@kairos/sdk';
+import { KairosClient } from '@wolf1276/kairos-sdk';
 
 const client = new KairosClient(config);
 const delegation = await client.delegation.create({

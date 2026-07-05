@@ -14,7 +14,7 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 * **Complex Automation:** Setting up complex condition-based strategies is highly technical and error-prone.
 * **Lack of Guardrails:** Bots often lack sophisticated risk mitigation rules, risking entire user balances.
 
-**Kairos resolves this by enabling intent-based execution.** Users delegate capital to dedicated smart contracts (Delegation Wallets) governed by highly customizable, on-chain execution policies. Automated providers or AI agents can make trade decisions on behalf of users, but those decisions must strictly conform to policies validated on-chain.
+**Kairos resolves this by enabling intent-based execution.** Users delegate capital to dedicated smart contracts (Smart Wallets) governed by highly customizable, on-chain execution policies. Automated providers or AI agents can make trade decisions on behalf of users, but those decisions must strictly conform to policies validated on-chain.
 
 ---
 
@@ -23,7 +23,7 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 | Feature | Description |
 | :--- | :--- |
 | **Intent-Based Investing** | Declare natural language investment goals, automatically parsed into structured on-chain parameters. |
-| **Delegation Wallets** | Dedicated custom smart accounts that house delegated capital and isolate execution risks. |
+| **Smart Wallets** | Dedicated custom smart accounts that house delegated capital and isolate execution risks. |
 | **AI Managed Automation** | Hugging Face LLM (Mixtral-8x7B-Instruct) decision engine that evaluates market dynamics via the Hugging Face Inference API and suggests actions based on your risk profile. Falls back to deterministic RSI/MACD logic when the API is unavailable. |
 | **Strategy Managed Automation** | Quantitative, rule-based algorithmic strategies executing preset technical models (EMA Crossover, Mean Reversion, Momentum). |
 | **Autonomous AI Sessions** | Time-bound, policy-restricted execution windows where AI engines optimize portfolio assets autonomously. |
@@ -50,7 +50,7 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
                  │
                  ▼
    ┌───────────────────────────┐
-   │ Create Delegation Wallet  │  (CustomAccount smart contract)
+   │   Create Smart Wallet     │  (CustomAccount smart contract)
    └─────────────┬─────────────┘
                  │
                  ▼
@@ -393,14 +393,17 @@ survives refresh/login. Full design in [`backend/README.md`](./backend/README.md
 ```
 .
 ├── apps/
-│   ├── web/                  # Next.js web application (Dashboard & API)
-│   │   ├── app/              # Next.js App Router pages and globals
-│   │   ├── components/       # Reusable UI component library (Shadcn-based)
-│   │   ├── lib/              # Core logic (Decision, Strategy, Paper Trading)
-│   │   └── oracle/           # Price oracle and indicator calculator engines
-│   └── comming-soon/         # Pre-launch landing page
+│   └── web/                  # Next.js web application (Dashboard & API)
+│       ├── app/              # Next.js App Router pages and globals
+│       ├── components/       # Reusable UI component library (Shadcn-based)
+│       ├── lib/              # Core logic (Decision, Strategy, Paper Trading)
+│       └── oracle/           # Price oracle and indicator calculator engines
+├── backend/                  # Strategy Mode agent backend (see backend/README.md)
 ├── packages/
-│   └── sdk/                  # TypeScript SDK for interacting with Kairos contracts
+│   ├── sdk/                  # TypeScript SDK for interacting with Kairos contracts
+│   ├── mcp-agent/            # MCP agent package
+│   ├── turnkey-signer/       # Turnkey MPC signer integration
+│   └── types/                # Shared TypeScript types
 ├── contracts/
 │   └── soroban/              # Soroban Rust contracts (Delegation Manager, Policies, CustomAccount)
 ├── scripts/
@@ -412,7 +415,6 @@ survives refresh/login. Full design in [`backend/README.md`](./backend/README.md
 ├── docs/
 │   ├── architecture/         # Architecture documentation and reports
 │   ├── api/                  # SDK API reference
-│   ├── deployment/           # Deployment guide
 │   └── security/             # Security audit and contract-level security
 ├── .env.example              # Environment variable documentation
 ├── README.md                 # This file
@@ -453,8 +455,15 @@ Required variables:
 | `STELLAR_NETWORK` | `testnet` or `mainnet` |
 | `STELLAR_RPC_URL` | Soroban RPC endpoint |
 | `STELLAR_NETWORK_PASSPHRASE` | Network passphrase |
+| `DELEGATION_MANAGER_CONTRACT_ID` | Deployed DelegationManager contract ID |
+| `POLICY_CONTRACT_ID` | Deployed PolicyEngine contract ID |
+| `CUSTOM_ACCOUNT_CONTRACT_ID` | Deployed CustomAccount contract ID |
+| `CUSTOM_ACCOUNT_WASM_HASH` | WASM hash of the CustomAccount contract |
 | `FUNDER_SECRET_KEY` | Funded testnet keypair secret for on-chain operations |
 | `HUGGINGFACE_API_KEY` | Hugging Face Inference API token (optional — falls back to regex + deterministic logic) |
+| `DATABASE_URL` | Persistence layer URL for Strategy Mode (Turso / libSQL / Postgres / SQLite) |
+| `TURNKEY_ORGANIZATION_ID` | Turnkey org ID — MPC key custody for agent wallets (see `backend/README.md`) |
+| `TURNKEY_CREDENTIALS_FILE` | Path to Turnkey API credentials JSON (default `./secrets/kairos-api-turnkey.json`) |
 
 ### Running the Dashboard
 
@@ -508,9 +517,9 @@ pnpm exec playwright test
 
 | Contract | Address |
 | :--- | :--- |
-| DelegationManager | `CDYBWYJSAB2IPLCFTHIFCBSJRQS4E7D3L7KLTHG5QB2TRCMCSPYFNQN7` |
-| PolicyEngine | `CB4KTGVNJUFMNH4MFF67MGYQ7IJ6ISD3KEBXYRWPDW25STSULCAZIY6R` |
-| CustomAccount | `CDJPMMUAZRZGDA572NUV4CX4KQG2DOWG2SMTBSBGOD7WTRNRJ7WZDBVP` |
+| DelegationManager | `CDZ3P5DWT3ZCOYWROHAA7PQPF53MBIZTFFYKCRQJIAD74TAECMFNCYEN` |
+| PolicyEngine | `CBD3N3R6GFZAFCBAALQCX32BUTUIWVJRKZCQS7HVXHMQZL32VTXD5NHS` |
+| CustomAccount | `CALOHOUNJEUFMF5R7GIMVWQIN32I7OCNFRVYKFVFAV3F35GRZEXCGI57` |
 
 ---
 
@@ -545,7 +554,7 @@ pnpm exec playwright test
 
 Kairos is architected with security as its primary primitive. See [SECURITY.md](./SECURITY.md) for the full security model.
 
-* **Assets Isolation:** User funds remain inside the user's personal smart Delegation Wallet contract.
+* **Assets Isolation:** User funds remain inside the user's personal Smart Wallet contract.
 * **Zero Ownership:** Automated agents never take custody of keys or assets.
 * **AI is Advisory:** The LLM (Hugging Face) proposes actions but never determines position size. The policy gate is the sole authority for amounts.
 * **Immutable Policies:** Every trade execution is checked on-chain against policies (time, asset whitelist, daily volume cap) before a transfer is authorized.

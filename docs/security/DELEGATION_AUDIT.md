@@ -1,4 +1,4 @@
-# Delegation Wallet — Security & Correctness Audit
+# Delegation — Security & Correctness Audit
 
 _Scope: the delegation stack across `contracts/soroban/contracts/delegation-manager`, `contracts/soroban/contracts/{custom-account,policies}`, `packages/sdk` (`delegation`, `execution`, `policy`, `events`), `apps/web/app/api/delegate-sdk`, `apps/web/app/dashboard/delegations`, `backend/`, and `packages/mcp-agent`._
 

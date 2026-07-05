@@ -3,24 +3,29 @@
 ```
 kairos/
 ├── apps/
-│   ├── web/                          # Next.js 16 web application (Dashboard & API)
-│   │   ├── app/                      # Next.js App Router pages, API routes, components
-│   │   ├── components/               # Shadcn UI primitives (button, etc.)
-│   │   ├── e2e/                      # Playwright end-to-end tests
-│   │   ├── lib/                      # Core business logic
-│   │   │   ├── decision/             # AI/strategy decision engine + policy gate
-│   │   │   ├── paper-trading/        # Paper trading simulation engine
-│   │   │   └── strategy/             # Quantitative strategy engine (EMA crossover)
-│   │   ├── oracle/                   # Binance price oracle + indicator engine
-│   │   ├── public/                   # Static assets (images, SVGs)
-│   │   └── scripts/                  # Build-time scripts (patch-tw-animate-css)
-│   └── comming-soon/                 # Standalone pre-launch landing page
+│   └── web/                          # Next.js 16 web application (Dashboard & API)
+│       ├── app/                      # Next.js App Router pages, API routes, components
+│       ├── components/               # Shadcn UI primitives (button, etc.)
+│       ├── e2e/                      # Playwright end-to-end tests
+│       ├── lib/                      # Core business logic
+│       │   ├── decision/             # AI/strategy decision engine + policy gate
+│       │   ├── paper-trading/        # Paper trading simulation engine
+│       │   └── strategy/             # Quantitative strategy engine (EMA crossover)
+│       ├── oracle/                   # Binance price oracle + indicator engine
+│       ├── public/                   # Static assets (images, SVGs)
+│       └── scripts/                  # Build-time scripts (patch-tw-animate-css)
+│
+├── backend/                          # @wolf1276/kairos-agent-backend — Strategy Mode agent
+│                                      # backend (see backend/README.md)
 │
 ├── packages/
-│   └── sdk/                          # @wolf1276/kairos-sdk — TypeScript SDK
-│       ├── src/                      # Source (client, wallet, delegation, policy, etc.)
-│       ├── tests/                    # Vitest unit tests
-│       └── examples/                 # Usage examples
+│   ├── sdk/                          # @wolf1276/kairos-sdk — TypeScript SDK
+│   │   ├── src/                      # Source (client, wallet, delegation, policy, etc.)
+│   │   ├── tests/                    # Vitest unit tests
+│   │   └── examples/                 # Usage examples
+│   ├── mcp-agent/                    # MCP server exposing a Turnkey-backed agent identity
+│   ├── turnkey-signer/               # Turnkey MPC signer used by backend/ and mcp-agent
+│   └── types/                        # Shared TypeScript types
 │
 ├── contracts/
 │   └── soroban/                      # Soroban Rust smart contracts (Cargo workspace)
@@ -41,7 +46,6 @@ kairos/
 ├── docs/
 │   ├── architecture/                 # Architecture design docs, reports, progress
 │   ├── api/                          # SDK API reference
-│   ├── deployment/                   # Deployment guide (placeholder)
 │   └── security/                     # Security audit & contract-level security model
 │   ├── CHANGELOG.md                  # Contract changelog
 │   ├── MIGRATION.md                  # SDK migration guide
@@ -63,10 +67,17 @@ kairos/
 ## Directory Explanations
 
 ### `apps/` — Application Packages
-Each subdirectory is a deployable application (Next.js, etc.). The main dashboard lives in `apps/web/`. The pre-launch landing page lives in `apps/comming-soon/`.
+Each subdirectory is a deployable application (Next.js, etc.). The main dashboard lives in `apps/web/`.
+
+### `backend/` — Strategy Mode Agent Backend
+`@wolf1276/kairos-agent-backend` — the persistent, server-authoritative trading terminal
+(Turnkey MPC-backed agent wallets, SQLite-persisted trades/positions/audit log). See
+[`backend/README.md`](./backend/README.md).
 
 ### `packages/` — Shared Packages
-Internal libraries published as workspace packages. Currently only `@wolf1276/kairos-sdk`.
+Internal libraries published as workspace packages: `@wolf1276/kairos-sdk` (contract client),
+`mcp-agent` (MCP server for a Turnkey-backed agent identity), `turnkey-signer` (shared Turnkey
+MPC signer), and `types` (shared TypeScript types).
 
 ### `contracts/` — Smart Contracts
 Soroban Rust smart contracts organized as a Cargo workspace. Each contract in its own subdirectory.
