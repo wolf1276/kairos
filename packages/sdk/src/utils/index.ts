@@ -211,6 +211,6 @@ export function encodeTargetWhitelistTerms(targetAddress: string): Uint8Array {
   const targetXdr = getAddressScValXdrBytes(targetAddress);
   const buf = Buffer.alloc(1 + targetXdr.length);
   buf.writeUInt8(1, 0);
-  targetXdr.copy(buf, 1);
+  buf.set(targetXdr, 1);
   return buf;
 }
