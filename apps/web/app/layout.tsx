@@ -3,6 +3,9 @@ import "./globals.css";
 import { Geist, Inter, Space_Grotesk, JetBrains_Mono } from "next/font/google";
 import Script from "next/script";
 import { cn } from "@/lib/utils";
+import { Navbar } from "@/components/Navbar";
+import { ShaderBackground } from "@/components/ShaderBackground";
+import { WalletProvider } from "@/app/contexts/WalletContext";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 const inter = Inter({subsets:['latin'],variable:'--font-body'});
@@ -46,7 +49,11 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full bg-bg-primary text-text-primary antialiased">
-        {children}
+        <ShaderBackground />
+        <WalletProvider>
+          <Navbar />
+          {children}
+        </WalletProvider>
       </body>
     </html>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { signDelegationHashWithFreighter } from "@/app/lib/stellar";
+import { signDelegationHashWithWallet } from "@/app/lib/stellar";
 
 export type DelegationStatus = "preparing" | "signing" | "submitting" | null;
 
@@ -42,7 +42,7 @@ export function useCreateDelegation(networkPassphrase: string, walletOwner: stri
       const prepared = await prepareRes.json();
 
       setStatus("signing");
-      const signatureHex = await signDelegationHashWithFreighter(prepared.hashHex, networkPassphrase, walletOwner);
+      const signatureHex = await signDelegationHashWithWallet(prepared.hashHex, networkPassphrase, walletOwner);
 
       setStatus("submitting");
       const submitRes = await fetch("/api/delegate-sdk", {

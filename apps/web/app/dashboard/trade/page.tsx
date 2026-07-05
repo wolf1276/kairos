@@ -19,7 +19,7 @@ import {
   fetchOrderBookQuote,
   executeSwap,
   addTrustline,
-  signAuthEntryWithFreighter,
+  signAuthEntryWithWallet,
   delegateXLM,
   withdrawFromSmartWallet,
   TESTNET_USDC_ISSUER,
@@ -619,7 +619,7 @@ function TradeInner() {
       }
       const prepared = await prepareRes.json();
 
-      const signedEntryXdr = await signAuthEntryWithFreighter(
+      const signedEntryXdr = await signAuthEntryWithWallet(
         prepared.unsignedEntryXdr,
         prepared.validUntilLedgerSeq,
         networkPassphrase,

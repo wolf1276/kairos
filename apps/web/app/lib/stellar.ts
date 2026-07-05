@@ -14,14 +14,13 @@ import {
   authorizeEntry,
 } from "@stellar/stellar-sdk";
 import {
-  requestAccess,
-  getAddress,
-  getNetworkDetails,
-  isConnected,
-  signTransaction,
-  signAuthEntry,
-  signMessage,
-} from "@stellar/freighter-api";
+  kitGetAddress,
+  kitGetNetwork,
+  kitSignTransaction,
+  kitSignAuthEntry,
+  kitSignMessage,
+  kitDisconnect,
+} from "@/app/lib/walletKit";
 
 // ── Constants ──
 
@@ -55,83 +54,40 @@ export interface DelegationResult {
   destination: string;
 }
 
-// ── Browser guard (Freighter only runs in the browser) ──
+// ── Browser guard (wallet extensions only run in the browser) ──
 
 function isBrowser(): boolean {
   return typeof window !== "undefined";
 }
 
-// ── Freighter helpers ──
+// ── Wallet-kit helpers ──
+// Any wallet the Stellar Wallets Kit supports (Freighter, Albedo, xBull, HOT Wallet, Rabet,
+// Lobstr, Hana, Klever) can drive these — the kit routes each call to whichever wallet the user
+// picked in the connect modal.
 
-/** Safely read the address from a freighter-api response. */
-function unwrapAddress(
-  res: { address?: string; error?: string }
-): string {
-  if (res.error) throw new Error(res.error);
-  if (!res.address) throw new Error("Freighter returned an empty address");
-  return res.address;
-}
-
-/** Prompt the user for access (popup) and return their public key. */
-async function requestAccessFromFreighter(): Promise<string> {
-  const res = await requestAccess();
-  return unwrapAddress(res);
-}
-
-/** Get the address without prompting (fails if not already authorized). */
-async function getAddressFromFreighter(): Promise<string> {
-  const res = await getAddress();
-  return unwrapAddress(res);
-}
-
-/** Get network details. */
-async function getFreighterNetwork(): Promise<{
-  network: string;
-  networkPassphrase: string;
-  sorobanRpcUrl: string;
-}> {
-  const res = await getNetworkDetails();
-  if (res.error) {
-    throw new Error(`Freighter network error: ${res.error}`);
-  }
-  return {
-    network: res.network ?? "",
-    networkPassphrase: res.networkPassphrase ?? "",
-    sorobanRpcUrl: res.sorobanRpcUrl ?? "",
-  };
-}
-
-/** Check if Freighter has already authorized this app. */
+/** Check whether the kit already has a previously-selected wallet in memory (persisted across
+ *  reloads in its own localStorage) — lets the app silently restore a session without a popup. */
 export async function tryCheckConnection(): Promise<boolean> {
   if (!isBrowser()) return false;
   try {
-    const res = await isConnected();
-    // `isConnected` returns `{ isConnected: boolean | object, error?: string }`
-    // When the extension is installed, `isConnected` may be the extension object (truthy).
-    if (res.error) return false;
-    return !!res.isConnected;
+    await kitGetAddress();
+    return true;
   } catch {
     return false;
   }
 }
 
-/** Sign a transaction XDR with Freighter's popup. */
-async function signWithFreighter(
+/** Sign a transaction XDR with the connected wallet's popup/extension. */
+async function signWithWallet(
   xdr: string,
-  networkPassphrase: string
+  networkPassphrase: string,
+  address: string
 ): Promise<string> {
-  const res = await signTransaction(xdr, { networkPassphrase });
-  if (res.error) {
-    throw new Error(`Freighter signing error: ${res.error}`);
-  }
-  if (!res.signedTxXdr) {
-    throw new Error("Freighter returned an empty signed transaction");
-  }
-  return res.signedTxXdr;
+  return kitSignTransaction(xdr, { networkPassphrase, address });
 }
 
 /**
- * Sign a single Soroban authorization entry with Freighter — used for sponsored
+ * Sign a single Soroban authorization entry with the connected wallet — used for sponsored
  * contract calls where a server-side funder pays transaction fees but the connected
  * wallet must still separately authorize its own address's participation (e.g. the
  * `CreateContract` call when deploying a smart wallet on behalf of this address).
@@ -141,9 +97,10 @@ async function signWithFreighter(
  * passing the whole entry causes Freighter to fail with "Invalid Authorization
  * Entry ... XDR could not be parsed". `authorizeEntry` (from stellar-sdk) drives
  * that exact preimage/signature handshake and splices the result back into a
- * fully-signed entry.
+ * fully-signed entry. Other kit wallets may not implement `signAuthEntry` at all —
+ * this will surface as a natural error from those wallets rather than a supported flow.
  */
-export async function signAuthEntryWithFreighter(
+export async function signAuthEntryWithWallet(
   unsignedEntryXdr: string,
   validUntilLedgerSeq: number,
   networkPassphrase: string,
@@ -155,26 +112,19 @@ export async function signAuthEntryWithFreighter(
     const signedEntry = await authorizeEntry(
       entry,
       async (preimage) => {
-        const res = await signAuthEntry(preimage.toXDR("base64"), {
+        const signedAuthEntry = await kitSignAuthEntry(preimage.toXDR("base64"), {
           networkPassphrase,
           address,
         });
-        if (res.error) {
-          throw new Error(`Freighter auth-entry signing error: ${res.error}`);
-        }
-        if (!res.signedAuthEntry) {
-          throw new Error("Freighter returned an empty signed auth entry");
-        }
-        return Buffer.from(res.signedAuthEntry, "base64");
+        return Buffer.from(signedAuthEntry, "base64");
       },
       validUntilLedgerSeq,
       networkPassphrase
     );
     return signedEntry.toXDR("base64");
   } catch (e) {
-    // Fallback for older/newer Freighter builds whose `signAuthEntry` signs the
-    // whole entry XDR itself (rather than just the preimage) and hands back a
-    // fully-formed signed entry instead of a raw signature.
+    // Fallback for wallets whose `signAuthEntry` signs the whole entry XDR itself (rather than
+    // just the preimage) and hands back a fully-formed signed entry instead of a raw signature.
     const msg = e instanceof Error ? e.message : String(e);
     const looksLikePreimageMismatch =
       /pars|invalid|xdr/i.test(msg) && !/rejected|denied|declined/i.test(msg);
@@ -182,56 +132,36 @@ export async function signAuthEntryWithFreighter(
 
     const cloned = xdr.SorobanAuthorizationEntry.fromXDR(unsignedEntryXdr, "base64");
     cloned.credentials().address().signatureExpirationLedger(validUntilLedgerSeq);
-    const res = await signAuthEntry(cloned.toXDR("base64"), {
-      networkPassphrase,
-      address,
-    });
-    if (res.error) {
-      throw new Error(`Freighter auth-entry signing error: ${res.error}`);
-    }
-    if (!res.signedAuthEntry) {
-      throw new Error("Freighter returned an empty signed auth entry");
-    }
-    // Some Freighter versions return the fully-signed entry XDR directly here.
-    return res.signedAuthEntry;
+    return kitSignAuthEntry(cloned.toXDR("base64"), { networkPassphrase, address });
   }
 }
 
 /**
- * Signs a Kairos delegation hash with Freighter's SEP-53 `signMessage`, for delegations
+ * Signs a Kairos delegation hash with the connected wallet's SEP-53 `signMessage`, for delegations
  * whose `delegator` is a CustomAccount smart wallet. Wallets deliberately refuse to sign
  * arbitrary raw bytes (that's indistinguishable from signing a malicious transaction), so
  * the smart wallet's `is_valid_signature` instead verifies the SEP-53-wrapped payload:
  * `SHA-256("Stellar Signed Message:\n" + hex(hash))` — see
  * `contracts/soroban/contracts/custom-account/src/lib.rs`. This function passes the hash's
- * hex string as the SEP-53 message so Freighter produces a signature over exactly that.
- *
- * Freighter's `signMessage` response shape has changed across versions — `signedMessage` is
- * either a `Buffer` of the raw 64-byte signature (older/"V3") or a string (newer/"V4",
- * base64-encoded). Both are normalized to a hex string here.
+ * hex string as the SEP-53 message so the wallet produces a signature over exactly that.
+ * Not every kit wallet implements SEP-43/53 message signing correctly (e.g. Albedo's is
+ * explicitly non-compliant) — this will surface as a natural error from those wallets.
  */
-export async function signDelegationHashWithFreighter(
+export async function signDelegationHashWithWallet(
   hashHex: string,
   networkPassphrase: string,
   address: string
 ): Promise<string> {
-  const res = await signMessage(hashHex, { networkPassphrase, address });
-  if (res.error) {
-    throw new Error(`Freighter message-signing error: ${res.error}`);
-  }
-  const { signedMessage } = res;
+  const signedMessage = await kitSignMessage(hashHex, { networkPassphrase, address });
   if (!signedMessage) {
-    throw new Error("Freighter returned an empty signed message");
+    throw new Error("Wallet returned an empty signed message");
   }
 
-  const sigBuffer =
-    typeof signedMessage === "string"
-      ? Buffer.from(signedMessage, "base64")
-      : Buffer.from(signedMessage);
+  const sigBuffer = Buffer.from(signedMessage, "base64");
 
   if (sigBuffer.length !== 64) {
     throw new Error(
-      `Expected a 64-byte ed25519 signature from Freighter, got ${sigBuffer.length} bytes`
+      `Expected a 64-byte ed25519 signature from the wallet, got ${sigBuffer.length} bytes`
     );
   }
   return sigBuffer.toString("hex");
@@ -276,10 +206,11 @@ export interface ConnectResult {
 }
 
 /**
- * Attempt to connect Freighter, prompt the user via popup, and fetch
- * the account balance from Horizon.
+ * Given an address already authorized by a kit wallet (our own connect-wallet picker calls
+ * `kitConnectWallet(id)` to get one — see components/ConnectWalletModal.tsx), resolves the rest
+ * of the wallet state: network details and account balance from Horizon.
  */
-export async function connectWallet(): Promise<ConnectResult> {
+export async function connectWallet(address: string): Promise<ConnectResult> {
   // 1. Browser check
   if (!isBrowser()) {
     return {
@@ -288,48 +219,10 @@ export async function connectWallet(): Promise<ConnectResult> {
     };
   }
 
-  // 2. Detect whether the extension is even installed. `isConnected()` talks to the
-  // content script directly; if that channel errors out there's no extension to relay
-  // through (as opposed to a real network/API error surfaced later).
-  const connectivity = await isConnected();
-  if (connectivity.error) {
-    return {
-      success: false,
-      error: {
-        kind: "no-extension",
-        message: "Freighter extension not found. Install it from freighter.app",
-      },
-    };
-  }
-
-  // 3. Request access (pops up Freighter)
-  let address: string;
+  // 2. Network details
+  let net: Awaited<ReturnType<typeof kitGetNetwork>>;
   try {
-    address = await requestAccessFromFreighter();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    // User closed the popup or denied access
-    if (
-      msg.includes("cancel") ||
-      msg.includes("deny") ||
-      msg.includes("reject") ||
-      msg.includes("User declined")
-    ) {
-      return {
-        success: false,
-        error: { kind: "user-rejected", message: "Access denied by user" },
-      };
-    }
-    return {
-      success: false,
-      error: { kind: "unknown", message: msg || "Failed to request access" },
-    };
-  }
-
-  // 4. Network details
-  let net: Awaited<ReturnType<typeof getFreighterNetwork>>;
-  try {
-    net = await getFreighterNetwork();
+    net = await kitGetNetwork();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return {
@@ -348,7 +241,7 @@ export async function connectWallet(): Promise<ConnectResult> {
     )?.[0] ?? "TESTNET";
   const isTestnet = networkKey === "TESTNET" || networkKey === "FUTURENET";
 
-  // 5. Fetch balance
+  // 3. Fetch balance
   const balance = await fetchBalance(address, networkPassphrase);
 
   return {
@@ -357,12 +250,21 @@ export async function connectWallet(): Promise<ConnectResult> {
       address,
       network: networkKey,
       networkPassphrase,
-      sorobanRpcUrl:
-        net.sorobanRpcUrl || SOROBAN_RPC_URLS[networkPassphrase] || SOROBAN_RPC_URLS[Networks.TESTNET],
+      sorobanRpcUrl: SOROBAN_RPC_URLS[networkPassphrase] || SOROBAN_RPC_URLS[Networks.TESTNET],
       balance,
       isTestnet,
     },
   };
+}
+
+/** Fully disconnects the active kit wallet (clears its persisted selection too). */
+export async function disconnectWallet(): Promise<void> {
+  if (!isBrowser()) return;
+  try {
+    await kitDisconnect();
+  } catch {
+    // best-effort — local app state is cleared by the caller regardless
+  }
 }
 
 // ── Delegate (send XLM — Horizon for classic accounts, Soroban SAC for contracts) ──
@@ -449,9 +351,10 @@ async function transferXLMToContract(
   }
   const assembled = rpc.assembleTransaction(builtTx, simulated).build();
 
-  const signedXDR = await signWithFreighter(
+  const signedXDR = await signWithWallet(
     assembled.toXDR(),
-    networkPassphrase
+    networkPassphrase,
+    sourceAddress
   );
   const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
 
@@ -488,7 +391,7 @@ export async function withdrawFromSmartWallet(
   sorobanRpcUrl?: string,
   destination?: string
 ): Promise<DelegationResult> {
-  const ownerAddress = await getAddressFromFreighter();
+  const ownerAddress = await kitGetAddress();
   const recipient = destination ?? ownerAddress;
   const rpcUrl =
     sorobanRpcUrl ||
@@ -536,7 +439,7 @@ export async function withdrawFromSmartWallet(
   }
   const assembled = rpc.assembleTransaction(builtTx, simulated).build();
 
-  const signedXDR = await signWithFreighter(assembled.toXDR(), networkPassphrase);
+  const signedXDR = await signWithWallet(assembled.toXDR(), networkPassphrase, ownerAddress);
   const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
 
   const sendResponse = await server.sendTransaction(signedTx);
@@ -558,7 +461,7 @@ export async function delegateXLM(
   networkPassphrase: string,
   sorobanRpcUrl?: string
 ): Promise<DelegationResult> {
-  const sourceAddress = await getAddressFromFreighter();
+  const sourceAddress = await kitGetAddress();
 
   // Smart wallets are Soroban contracts (C-addresses) — classic payments can't reach them.
   if (StrKey.isValidContract(destination)) {
@@ -604,9 +507,10 @@ export async function delegateXLM(
     .setTimeout(30)
     .build();
 
-  const signedXDR = await signWithFreighter(
+  const signedXDR = await signWithWallet(
     transaction.toXDR(),
-    networkPassphrase
+    networkPassphrase,
+    sourceAddress
   );
 
   const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
@@ -641,7 +545,7 @@ export async function fetchSmartWalletTokenBalance(
     allowHttp: !rpcUrl.startsWith("https"),
   });
 
-  const sourceAddress = await getAddressFromFreighter();
+  const sourceAddress = await kitGetAddress();
   const account = await server.getAccount(sourceAddress);
 
   const balanceOp = Operation.invokeContractFunction({
@@ -817,7 +721,7 @@ function assertHasTrustline(
 ) {
   if (!hasTrustline(account, asset)) {
     throw new Error(
-      `No trustline for ${asset.code}. Add a trustline to this asset in Freighter before trading it.`
+      `No trustline for ${asset.code}. Add a trustline to this asset in your wallet before trading it.`
     );
   }
 }
@@ -854,7 +758,7 @@ async function submitSwap(
     .setTimeout(30)
     .build();
 
-  const signedXDR = await signWithFreighter(transaction.toXDR(), networkPassphrase);
+  const signedXDR = await signWithWallet(transaction.toXDR(), networkPassphrase, account.accountId());
   const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
 
   try {
@@ -872,7 +776,7 @@ async function submitSwap(
 
 /**
  * Executes a real on-chain swap via a Stellar path payment (strict send): the connected
- * Freighter wallet pays exactly `sendAmount` of `sendAsset`, routed through the DEX order book,
+ * connected wallet pays exactly `sendAmount` of `sendAsset`, routed through the DEX order book,
  * and receives whatever `destAsset` amount the book fills at (must be >= destMin or the
  * transaction fails on-chain — real slippage protection, not a UI-only check).
  * Use this when the user is fixing how much they're *sending* (e.g. "sell exactly N XLM").
@@ -909,7 +813,7 @@ export async function executeSwap(params: {
 
 /**
  * Executes a real on-chain swap via a Stellar path payment (strict receive): the connected
- * Freighter wallet receives exactly `destAmount` of `destAsset`, paying up to `sendMax` of
+ * connected wallet receives exactly `destAmount` of `destAsset`, paying up to `sendMax` of
  * `sendAsset` (fails on-chain if the book can't fill within that cap — real slippage
  * protection). Use this when the user is fixing how much they want to *receive* (e.g.
  * "buy exactly N XLM").

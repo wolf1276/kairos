@@ -1,5 +1,4 @@
 import Link from "next/link";
-import Image from "next/image";
 
 const STEPS = [
   {
@@ -22,21 +21,7 @@ const STEPS = [
 
 export default function DocsPage() {
   return (
-    <main className="min-h-screen bg-black text-white">
-      <nav className="flex items-center justify-between px-6 py-6 md:px-12 md:py-9 lg:px-20">
-        <Link href="/" className="flex items-center gap-5">
-          <Image src="/logo.png" alt="Kairos" width={36} height={36} className="opacity-80" />
-          <span className="text-base font-medium tracking-[0.35em] uppercase text-white/90">
-            KAIROS
-          </span>
-        </Link>
-        <Link
-          href="/dashboard"
-          className="inline-flex h-9 items-center rounded-full bg-white px-5 text-[10px] font-semibold text-black transition duration-500 hover:bg-white/90"
-        >
-          Launch App
-        </Link>
-      </nav>
+    <main className="relative z-10 min-h-screen bg-black text-white pt-20">
 
       <div className="mx-auto max-w-2xl px-6 pb-24 pt-8 md:px-0">
         <h1 className="text-4xl font-normal tracking-tight text-white sm:text-5xl">

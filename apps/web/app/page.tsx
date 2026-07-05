@@ -1,7 +1,6 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import Image from "next/image";
 
 const ShaderGradientCanvas = dynamic(
   () => import("shadergradient").then((mod) => mod.ShaderGradientCanvas),
@@ -71,6 +70,19 @@ export default function Home() {
  
       {/* ── Purple dynamic blend fading from left to right ── */}
       <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none select-none">
+        <div
+          className="absolute inset-0"
+          style={{
+            backgroundImage: `
+              linear-gradient(rgba(255,255,255,0.05) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px)
+            `,
+            backgroundSize: "48px 48px",
+            maskImage: "radial-gradient(circle at center, black 70%, transparent 100%)",
+            WebkitMaskImage:
+              "radial-gradient(circle at center, black 70%, transparent 100%)",
+          }}
+        />
         <div className="absolute inset-0">
           <ShaderGradientCanvas
             pixelDensity={1}
@@ -131,25 +143,7 @@ export default function Home() {
         }}
       />
 
-      <nav className="relative z-20 flex items-center justify-between px-6 py-6 md:px-12 md:py-9 lg:px-20">
-        <div className="flex items-center gap-5">
-          <Image
-            src="/logo.png"
-            alt="Kairos"
-            width={42}
-            height={42}
-            className="opacity-80"
-          />
-          <span className="text-base md:text-lg font-medium tracking-[0.35em] uppercase text-white/90">
-            KAIROS
-          </span>
-        </div>
-        <div className="flex items-center gap-9">
-          <a href="/docs" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">Docs</a>
-          <a href="https://github.com" target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">GitHub</a>
-          <a href="https://x.com/KairosProtocoll" target="_blank" rel="noopener noreferrer" className="text-sm md:text-base text-white/70 transition duration-500 hover:text-white">Twitter</a>
-        </div>
-      </nav>
+      <div className="pt-16" />
 
       {/* ── Editorial hero ── */}
       <div className="relative z-10 flex-1 grid grid-cols-12 items-center px-6 md:px-10 lg:px-16 overflow-visible">

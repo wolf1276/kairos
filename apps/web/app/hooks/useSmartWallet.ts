@@ -1,13 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   connectWallet,
-  tryCheckConnection,
+  disconnectWallet,
   fetchSmartWalletBalance,
-  signAuthEntryWithFreighter,
+  signAuthEntryWithWallet,
   type WalletState,
 } from "@/app/lib/stellar";
+import { kitConnectWallet, kitGetAddress } from "@/app/lib/walletKit";
 import { challengeAndVerify, getStoredSessionToken } from "@/app/lib/agentsAuth";
 import { setAuthToken, listCapitalWallets, registerCapitalWallet } from "@/app/lib/agentsBackend";
 
@@ -72,7 +73,14 @@ export interface SmartWalletState {
   selectWallet: (address: string) => void;
   deploying: boolean;
   deployError: string | null;
-  connect: (interactive?: boolean) => Promise<{ success: boolean; wallet?: WalletState }>;
+  /** Opens the connect-wallet picker modal (see components/ConnectWalletModal.tsx). */
+  connect: (interactive?: boolean) => void;
+  /** Whether the connect-wallet picker modal should be shown. */
+  walletModalOpen: boolean;
+  closeWalletModal: () => void;
+  /** Called by the picker modal once the user has picked and authorized a specific wallet id. */
+  pickWallet: (walletId: string) => Promise<void>;
+  walletPickError: string | null;
   /** Runs the wallet-sig auth handshake if this address has no cached session yet — call from
    *  pages that actually need agents-backend calls (Trade/Agents/History), not on cold app load.
    *  Pass `interactive: false` for background polling so a cleared token doesn't repeatedly
@@ -93,6 +101,11 @@ export function useSmartWallet(): SmartWalletState {
   const [smartWalletBalance, setSmartWalletBalance] = useState<string | null>(null);
   const [deploying, setDeploying] = useState(false);
   const [deployError, setDeployError] = useState<string | null>(null);
+  const [walletModalOpen, setWalletModalOpen] = useState(false);
+  const [walletPickError, setWalletPickError] = useState<string | null>(null);
+  // `connect(interactive)` just opens the modal; the actual pick happens later (async, after the
+  // user clicks a wallet row), so the interactive flag has to be stashed for `pickWallet` to read.
+  const interactiveRef = useRef(true);
 
   const walletOwner = wallet?.address ?? null;
 
@@ -123,7 +136,7 @@ export function useSmartWallet(): SmartWalletState {
     }
     const prepared = await prepareRes.json();
 
-    const signedEntryXdr = await signAuthEntryWithFreighter(
+    const signedEntryXdr = await signAuthEntryWithWallet(
       prepared.unsignedEntryXdr,
       prepared.validUntilLedgerSeq,
       w.networkPassphrase,
@@ -171,9 +184,20 @@ export function useSmartWallet(): SmartWalletState {
     }
   }, [walletOwner, wallet, deployWallet, capitalWallets, selectWallet]);
 
-  const connect = useCallback(async (interactive = true) => {
-    setConnecting(true);
-    const result = await connectWallet();
+  const connect = useCallback((interactive = true) => {
+    interactiveRef.current = interactive;
+    setWalletPickError(null);
+    setWalletModalOpen(true);
+  }, []);
+
+  const closeWalletModal = useCallback(() => {
+    setWalletModalOpen(false);
+  }, []);
+
+  // Applies a resolved wallet (fresh connect, or the same session on a different address after
+  // the user switched accounts in their extension) — auth handshake, capital-wallet list, and
+  // smart-wallet balance all key off whichever address lands here.
+  const applyResolvedWallet = useCallback(async (result: Awaited<ReturnType<typeof connectWallet>>, interactive: boolean) => {
     if (result.success && result.wallet) {
       // Must finish (or fail) the auth handshake *before* exposing the wallet via setWallet —
       // walletOwner flips truthy the instant that state update lands, and pages key their
@@ -245,8 +269,50 @@ export function useSmartWallet(): SmartWalletState {
       }
     }
     setConnecting(false);
-    return result;
   }, []);
+
+  const pickWallet = useCallback(async (walletId: string) => {
+    const interactive = interactiveRef.current;
+    setConnecting(true);
+    setWalletPickError(null);
+    let result: Awaited<ReturnType<typeof connectWallet>>;
+    try {
+      const address = await kitConnectWallet(walletId);
+      result = await connectWallet(address);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const rejected = /cancel|deny|reject|closed|declined/i.test(msg);
+      setWalletPickError(rejected ? "Access denied by wallet" : msg || "Failed to connect");
+      setConnecting(false);
+      return;
+    }
+    if (!result.success) {
+      setWalletPickError(result.error?.message ?? "Failed to connect");
+    } else {
+      setWalletModalOpen(false);
+    }
+    await applyResolvedWallet(result, interactive);
+  }, [applyResolvedWallet]);
+
+  // Wallet extensions don't push an event when the user switches accounts — poll the kit's
+  // in-memory address every few seconds and silently re-resolve the whole wallet state (no new
+  // signature popup; `ensureAgentAuth` on the next agents-backend call will re-auth as needed) so
+  // the Navbar and every balance display follow the account the extension is actually on.
+  useEffect(() => {
+    if (!wallet) return;
+    const interval = setInterval(async () => {
+      let currentAddress: string;
+      try {
+        currentAddress = await kitGetAddress();
+      } catch {
+        return;
+      }
+      if (currentAddress === wallet.address) return;
+      const result = await connectWallet(currentAddress).catch(() => null);
+      if (result) await applyResolvedWallet(result, false);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, [wallet, applyResolvedWallet]);
 
   // `interactive` (default true) gates the Freighter signature prompt — pass false for
   // background polling. Without this, a poller whose cached token got cleared by a 401
@@ -275,19 +341,12 @@ export function useSmartWallet(): SmartWalletState {
     setCapitalWallets([]);
     setDeployError(null);
     setAuthToken(null);
+    disconnectWallet().catch(() => {});
   }, []);
 
-  // Auto-check connection on mount
   useEffect(() => {
-    let cancelled = false;
-    tryCheckConnection().then(async (ok) => {
-      if (ok && !cancelled) await connect(false);
-      if (!cancelled) setChecked(true);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [connect]);
+    setChecked(true);
+  }, []);
 
   return {
     wallet,
@@ -302,6 +361,10 @@ export function useSmartWallet(): SmartWalletState {
     deploying,
     deployError,
     connect,
+    walletModalOpen,
+    closeWalletModal,
+    pickWallet,
+    walletPickError,
     ensureAgentAuth,
     disconnect,
     deploySmartWallet,
