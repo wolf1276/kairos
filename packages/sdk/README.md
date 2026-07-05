@@ -10,6 +10,7 @@ The official TypeScript SDK for interacting with the **Kairos Delegation Framewo
 - **On-chain Management**: Enable, disable, or revoke delegations directly on-chain.
 - **Zero-Boilerplate Execution**: Batch execute delegation context target calls with resource estimation.
 - **Real-time Events**: Decode, subscribe, and query historical protocol events.
+- **On-chain Wallet Registry**: Look up or funder-attest an owner's deployed smart wallet address on-chain, independent of any off-chain database.
 
 ## Requirements
 
@@ -66,7 +67,8 @@ KairosClient
 ├── delegation (DelegationModule) — off-chain sign/hash + on-chain register/disable/enable/revoke/renew
 ├── policy     (PolicyModule)     — encode/decode caveats (spend-limit, time-restriction, target-whitelist)
 ├── execution  (ExecutionModule)  — redeem_delegations: execute / simulate / estimateResources / history
-└── events     (EventsModule)     — decode + subscribe/query on-chain protocol events
+├── events     (EventsModule)     — decode + subscribe/query on-chain protocol events
+└── registry   (RegistryModule)   — on-chain owner -> smart wallet lookups and funder-attested registration
 ```
 
 Supporting building blocks (not modules, just plain exports):
@@ -77,6 +79,7 @@ Supporting building blocks (not modules, just plain exports):
 - `execution/` — `ExecutionModule`. Assembles `redeem_delegations` calls from one or more delegation chains and executions, and offers `execute` (submit), `simulate` (dry-run against the `PolicyEngine`'s `before_all`/`before_hook`/`after_hook`/`after_all`), and `estimateResources` (fee/footprint sizing from a simulation).
 - `wallet/` — `WalletModule`. Deploys/loads a `CustomAccount` smart wallet contract instance and reads its owner/balance, or executes a call directly as the owner (bypassing the delegation path).
 - `events/` — `EventsModule`. Decodes raw contract events into typed protocol events and supports both live subscription and historical `getEvents` querying with topic filters.
+- `registry/` — `RegistryModule`. Reads the on-chain Registry contract's `owner -> smart wallet` mapping (`getSmartWallet`), and writes new mappings via a funder-attested `register` call — the funder is both the transaction source and the contract's `admin` argument, so (unlike wallet deploy) no separate owner authorization entry is needed.
 - `types/` — Shared types: `Delegation`, `Caveat`, `Execution`, `ExecutionContext`, `ContractConfig`, `Signer`/`RemoteSigner` (for MPC/HSM-backed signing where the private key never enters this process).
 - `utils/` — Pure helpers: delegation hashing (`computeDelegationHash`, domain-separated per `delegationManager` + `networkPassphrase`), XDR encoding (`getAddressXdrBytes`, `i128ToBuffer`, `encodeTargetWhitelistTerms`, `encodeTimeRestrictionTerms`), and `signTransaction` (works transparently with a local `Keypair` or an async `RemoteSigner`).
 - `config/` — Per-network defaults (`NETWORKS.testnet` / `NETWORKS.mainnet`: RPC URL + network passphrase).
@@ -92,4 +95,4 @@ Supporting building blocks (not modules, just plain exports):
 
 ## API Documentation
 
-The full public API is the set of methods documented above on each module (`KairosClient.wallet`, `.delegation`, `.policy`, `.execution`, `.events`) — see the TypeScript types shipped in `dist/index.d.ts` for exact signatures, and `tests/sdk.test.ts` / `examples/` in this package for runnable usage.
+The full public API is the set of methods documented above on each module (`KairosClient.wallet`, `.delegation`, `.policy`, `.execution`, `.events`, `.registry`) — see the TypeScript types shipped in `dist/index.d.ts` for exact signatures, and `tests/sdk.test.ts` / `examples/` in this package for runnable usage.

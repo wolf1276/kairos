@@ -17,7 +17,7 @@ export interface SmartWalletDto {
 interface BackendResult {
   ok: boolean;
   status: number;
-  data: { error?: string; wallets?: SmartWalletDto[] };
+  data: { error?: string; owner?: string; wallets?: SmartWalletDto[] };
 }
 
 /** Proxies to the existing (already-authenticated) agents-backend — reused by every connect/*

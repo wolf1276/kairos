@@ -2,6 +2,7 @@ import { KairosClient } from './client';
 export { KairosClient };
 export default KairosClient;
 export * from './wallet';
+export * from './registry';
 export * from './delegation';
 export * from './policy';
 export * from './execution';

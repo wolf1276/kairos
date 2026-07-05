@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { registerOnChain } from "@/app/lib/sdk/registry";
 import { registerSmartWallet, requireAuthHeader, requireSmartWalletAddress, withOnboardingErrors } from "../_shared";
 
 /**
@@ -15,5 +16,14 @@ export const POST = withOnboardingErrors(async (request: Request) => {
   if (!registerRes.ok) {
     return NextResponse.json({ error: registerRes.data.error || "Failed to save wallet mapping" }, { status: registerRes.status });
   }
+
+  const owner = registerRes.data.owner;
+  if (owner) {
+    // Best-effort — same non-blocking treatment as /api/connect/submit's registry write.
+    registerOnChain(owner, smartWallet).catch((err) => {
+      console.error("Failed to register smart wallet on-chain registry:", err);
+    });
+  }
+
   return NextResponse.json({ success: true, status: "created", smartWallet });
 });

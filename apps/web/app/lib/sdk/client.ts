@@ -12,6 +12,7 @@ export function getContractConfig() {
     policyEngine: readContractId("POLICY_CONTRACT_ID"),
     customAccount: readContractId("CUSTOM_ACCOUNT_CONTRACT_ID"),
     customAccountWasmHash: readContractId("CUSTOM_ACCOUNT_WASM_HASH"),
+    registry: readContractId("REGISTRY_CONTRACT_ID"),
   };
 }
 
@@ -28,6 +29,7 @@ export function getKairosClient(): KairosClient {
         delegationManager: config.delegationManager,
         policyEngine: config.policyEngine,
         smartWallet: config.customAccount,
+        registry: config.registry,
       },
     });
   }

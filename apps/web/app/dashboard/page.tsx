@@ -1,12 +1,13 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { CardHeader, CardBody } from "@/app/components/ui/Card";
 import { Badge } from "@/app/components/ui/Badge";
 import { Segmented } from "@/app/components/ui/Segmented";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
+import { fetchOrderBookQuote, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
 
 function shortAddress(addr: string) {
   return `${addr.slice(0, 4)}…${addr.slice(-4)}`;
@@ -189,11 +190,32 @@ function PerformanceChart({ range, onRangeChange }: { range: Range; onRangeChang
 export default function DashboardOverview() {
   const [range, setRange] = useState<Range>("1M");
   const { connected, wallet, smartWalletAddress } = useWalletContext();
-  const { xlmBalance, loading: balanceLoading } = useSmartWalletBalances(
+  const { xlmBalance, usdcBalance, loading: balanceLoading } = useSmartWalletBalances(
     smartWalletAddress,
     wallet?.networkPassphrase ?? null,
     wallet?.sorobanRpcUrl
   );
+
+  // Real XLM→USDC spot price from the testnet DEX (liquidity pool, falling back to the order
+  // book) — used to value the XLM portion of the smart wallet in USD terms alongside USDC,
+  // which is already ~1:1 USD.
+  const [xlmUsdPrice, setXlmUsdPrice] = useState<number | null>(null);
+  useEffect(() => {
+    if (!wallet?.networkPassphrase) return;
+    let cancelled = false;
+    fetchOrderBookQuote({ code: "XLM" }, { code: "USDC", issuer: TESTNET_USDC_ISSUER }, wallet.networkPassphrase)
+      .then((quote) => {
+        if (!cancelled) setXlmUsdPrice(quote.price);
+      })
+      .catch(() => {
+        if (!cancelled) setXlmUsdPrice(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [wallet?.networkPassphrase]);
+
+  const portfolioValue = usdcBalance + xlmBalance * (xlmUsdPrice ?? 0);
 
   return (
     <div className="flex flex-col gap-10 pb-4 sm:gap-12">
@@ -213,10 +235,22 @@ export default function DashboardOverview() {
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
               Portfolio Value
             </p>
-            <p className="mt-2 font-display text-3xl font-bold tabular-nums text-text-primary">$12,480</p>
+            {!connected || !smartWalletAddress ? (
+              <p className="mt-2 font-display text-3xl font-bold tabular-nums text-text-primary">$0.00</p>
+            ) : (
+              <p className="mt-2 font-display text-3xl font-bold tabular-nums text-text-primary">
+                {balanceLoading && xlmUsdPrice === null
+                  ? "…"
+                  : `$${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+              </p>
+            )}
             <div className="mt-auto flex items-center justify-between pt-4 text-xs">
-              <span className="text-success/90">+$352 Today</span>
-              <span className="font-mono tabular-nums text-text-secondary">+2.84%</span>
+              <span className="text-text-secondary">
+                {xlmBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} XLM
+              </span>
+              <span className="font-mono tabular-nums text-text-secondary">
+                {usdcBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC
+              </span>
             </div>
           </Panel>
 

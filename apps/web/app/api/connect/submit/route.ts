@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { submitSmartWalletDeploy } from "@/app/lib/sdk";
+import { registerOnChain } from "@/app/lib/sdk/registry";
 import { OnboardingRequestError, registerSmartWallet, requireAuthHeader, requireOwner, withOnboardingErrors } from "../_shared";
 
 /**
@@ -16,6 +17,13 @@ export const POST = withOnboardingErrors(async (request: Request) => {
   const authHeader = requireAuthHeader(request.headers.get("authorization"));
 
   const deployed = await submitSmartWalletDeploy(owner, saltHex, signedEntryXdr);
+
+  // Best-effort on-chain registry write — the DB write below remains the fast-path source of
+  // truth, and the registry is only consulted as a fallback in /api/connect/check, so a
+  // transient registry-write failure here must not block onboarding.
+  registerOnChain(owner, deployed.address).catch((err) => {
+    console.error("Failed to register smart wallet on-chain registry:", err);
+  });
 
   const registerRes = await registerSmartWallet(authHeader, deployed.address);
   if (!registerRes.ok) {

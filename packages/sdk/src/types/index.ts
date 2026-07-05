@@ -31,6 +31,7 @@ export interface ContractConfig {
   delegationManager: string;
   smartWallet?: string;
   policyEngine: string;
+  registry?: string;
 }
 
 export interface Caveat {

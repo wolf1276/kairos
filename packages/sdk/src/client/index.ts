@@ -6,6 +6,7 @@ import { ExecutionModule } from '../execution';
 import { PolicyModule } from '../policy';
 import { ContractConfig, NetworkConfig, TransactionResult, Delegation, Caveat, Signer } from '../types';
 import { WalletModule } from '../wallet';
+import { RegistryModule } from '../registry';
 import { RpcError, TransactionSimulationError } from '../errors';
 import { signTransaction } from '../utils';
 
@@ -17,6 +18,7 @@ export class KairosClient {
   public readonly contracts: ContractConfig;
 
   public readonly wallet: WalletModule;
+  public readonly registry: RegistryModule;
   public readonly delegation: DelegationModule;
   public readonly policy: PolicyModule;
   public readonly execution: ExecutionModule;
@@ -39,6 +41,7 @@ export class KairosClient {
     this.contracts = config.contracts;
 
     this.wallet = new WalletModule(this);
+    this.registry = new RegistryModule(this);
     this.delegation = new DelegationModule(this);
     this.policy = new PolicyModule(config.contracts.policyEngine);
     this.execution = new ExecutionModule(this);
