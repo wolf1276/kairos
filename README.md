@@ -86,6 +86,142 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 
 ---
 
+## Authentication & Onboarding
+
+Kairos has no passwords, emails, or accounts — **the connected Stellar address is the identity**,
+and every session is established by proving control of that address's private key via Freighter.
+There are two independent, wallet-signature-gated layers, both driven off the same Freighter
+connection but serving different purposes:
+
+| Layer | Proves | Yields | Used for |
+| :--- | :--- | :--- | :--- |
+| **Onboarding** | Owner has a Smart Wallet (or provisions one) | A deployed Smart Wallet (`C…`) address, persisted server-side | Dashboard, trading, delegation — the account funds actually live in |
+| **Agent-backend login (SEP-53)** | Owner controls the `G…` address, right now | A short-lived bearer JWT | Every Strategy Mode call (`/api/agents`, `/api/positions`, `/api/audit`, `/api/smart-wallets`) |
+
+Neither layer ever asks for or transmits a private key — only Freighter-signed challenges/entries.
+
+### Identity model
+
+* **Owner wallet (`G…`)** — the Freighter/wallet-kit account the user connects with. This is the
+  identity the backend authenticates and the address every JWT/session is scoped to.
+* **Smart Wallet (`C…`)** — a `CustomAccount` Soroban contract deployed *for* that owner. This is
+  the actual managed wallet: funds, delegations, and agent spend authority all live here. There is
+  no separate "Capital Wallet" concept — the Smart Wallet *is* the account being managed.
+
+### Onboarding flow (first Smart Wallet deploy)
+
+```
+         ┌───────────────┐
+         │     User      │
+         └───────┬───────┘
+                 ▼
+         ┌───────────────┐
+         │Connect Freighter│  → owner public key (G…)
+         └───────┬───────┘
+                 ▼
+   ┌─────────────────────────────┐
+   │  POST /api/connect/check    │  Does this owner already have
+   │                             │  a Smart Wallet on file?
+   └─────────────┬───────────────┘
+                 │
+        ┌────────┴────────┐
+        │ existing         │ new
+        ▼                  ▼
+   (skip straight   ┌─────────────────────────────┐
+    to Dashboard)   │ POST /api/connect/prepare   │  sponsored deploy prepared,
+                    │  (owner)                    │  unsigned Soroban auth entry
+                    └─────────────┬───────────────┘
+                                  ▼
+                    ┌─────────────────────────────┐
+                    │  Freighter signAuthEntry     │  user signs the entry
+                    └─────────────┬───────────────┘
+                                  ▼
+                    ┌─────────────────────────────┐
+                    │  POST /api/connect/submit    │  deploy + init on-chain —
+                    │  (saltHex, signedEntryXdr)   │  Smart Wallet is now live
+                    └─────────────┬───────────────┘
+                                  ▼
+                    ┌─────────────────────────────┐
+                    │  registerSmartWallet()       │  persists {owner, smartWallet}
+                    │  (via POST /api/smart-wallets)│  mapping server-side
+                    └─────────────┬───────────────┘
+                                  │
+                 ┌────────────────┘
+                 ▼
+         ┌───────────────┐
+         │  Dashboard    │  (owner + Smart Wallet + balances)
+         └───────────────┘
+```
+
+* If persistence fails *after* the on-chain deploy already succeeded, the server returns the
+  deployed address in the error payload — the client retries with `POST /api/connect/register`
+  (`registerSmartWallet`), which only re-persists, never re-deploys. This is the one invariant that
+  must never regress: a retry can never leave an owner with two Smart Wallets.
+* This whole sequence runs automatically, once, the first time a new owner connects — see
+  `OnboardingService` (`apps/web/app/services/onboarding/OnboardingService.ts`), which owns every
+  step (check / prepare / submit / register) so no UI component talks to these routes directly.
+* `prepare`/`submit` take `owner` from the request body to build the deploy transaction — safe
+  because only that exact owner's Freighter can produce a valid `signAuthEntry` for it. The final
+  persistence step (`registerSmartWallet`) is different: it never trusts a client-supplied owner
+  at all — the backend derives it from the bearer token forwarded alongside it, so a caller can
+  only ever register a mapping for the address it has itself authenticated as (see the SEP-53
+  session below).
+
+### Agent-backend login (SEP-53 signature session)
+
+Separate from onboarding — this is what authorizes calls to the Strategy Mode agent backend
+(`/backend`, see [`backend/README.md`](./backend/README.md)):
+
+```
+ Connect Freighter (already done above)
+     │
+     ▼
+ POST /api/auth/challenge { publicKey } ──▶ { nonce, message }  (5-min TTL)
+     │
+     ▼
+ Freighter signMessage(message) ──────────▶ SEP-53-wrapped signature
+     │
+     ▼
+ POST /api/auth/verify { publicKey, signature }
+     │              (server re-derives the SEP-53 digest and verifies
+     │               against the Ed25519 public key — never trusts the
+     │               client's claimed address on its own)
+     ▼
+ { token }  ── 7-day JWT, cached in sessionStorage as kairos:session:<publicKey>
+     │
+     ▼
+ Authorization: Bearer <token>  on every /api/agents, /api/positions,
+                                /api/audit, /api/smart-wallets call
+```
+
+* Only prompts Freighter's signature popup on an **interactive** connect, or the first
+  agent-backend call a page actually needs (Trade/Agents pages) — a silent background
+  auto-reconnect on page load never surprises the user with a signature request.
+* A 401 clears every cached session token in `sessionStorage` so a rejected/expired token can't
+  keep being resent — the next call re-runs the challenge/verify handshake.
+* The backend never trusts a client-supplied `owner` string — every session-scoped route derives
+  identity from the verified JWT (`req.auth.publicKey`), and per-agent routes additionally check
+  the agent's `owner` matches it (403 otherwise).
+
+### Frontend composition
+
+The two layers above, plus Freighter connection mechanics, are composed into one hook so every
+page reads a single, already-sequenced wallet state:
+
+| Hook | Owns |
+| :--- | :--- |
+| `useWallet` | Freighter/wallet-kit connection mechanics only (connect, disconnect, account-switch polling) |
+| `useAuthentication` | The SEP-53 login handshake + bearer token (agent-backend session) |
+| `useSmartWallets` | The Smart Wallet list/selection/balance, plus local↔remote reconciliation |
+| `useOnboarding` | UI state (stage/error) for the automatic first-time deploy, delegating every step to `OnboardingService` |
+| `useSmartWallet` | Composes all of the above — the *only* hook pages actually call (via `useWalletContext`) |
+
+`useSmartWallet`'s one job is **sequencing**: auth must settle before the wallet is exposed to
+pages, the Smart Wallet list must be checked before deciding whether to onboard, and a retry must
+never re-deploy if a prior attempt already got the wallet live on-chain.
+
+---
+
 ## Automation Modes
 
 ### AI Managed

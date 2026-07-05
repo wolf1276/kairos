@@ -55,7 +55,10 @@ requires a bearer session token, obtained via a Freighter wallet-signature chall
   `publicKey` (403 otherwise).
 
 See `apps/web/app/lib/agentsAuth.ts` for the frontend side of this handshake (run once per
-Freighter connection, cached in `sessionStorage`).
+Freighter connection, cached in `sessionStorage`). This is separate from the *onboarding* flow
+(deploying/checking a caller's Smart Wallet, via `apps/web/app/api/connect/*` and the
+`smart_wallets` table below) — see the root [`README.md`](../README.md#authentication--onboarding)
+for how the two fit together.
 
 ## Strategy execution
 
@@ -76,7 +79,14 @@ Freighter connection, cached in `sessionStorage`).
 
 SQLite (`better-sqlite3`), manual `CREATE TABLE IF NOT EXISTS` + guarded `ALTER TABLE`
 migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `trades`,
-`positions`, `audit_log`, `users`, `auth_challenges`.
+`positions`, `audit_log`, `users`, `auth_challenges`, `smart_wallets`.
+
+- `smart_wallets` (`src/routes/smartWallets.ts`, `listSmartWallets`/`upsertSmartWallet` in
+  `src/db.ts`) — one row per `(owner, address)`, the server-side record of which Smart Wallet
+  contract(s) an owner has deployed. This is what `apps/web/app/api/connect/*` (onboarding) reads
+  and writes; it's also how a returning owner on a new device/browser recovers their existing
+  Smart Wallet instead of being treated as a first-time user. Databases from before this table
+  was renamed (`capital_wallets`) are migrated in place on first boot.
 
 - `positions` (`src/positionService.ts`) — one row per agent+pair, upserted after every trade
   fill using the same weighted-avg-cost math as PnL, so open positions survive a refresh
@@ -111,6 +121,11 @@ migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `t
 - `GET /api/audit/stream` → SSE feed of new audit events for the authenticated wallet
 - `GET /api/agents/:id/dashboard`, `GET /api/agents/summary` → aggregate stats (win rate, total
   return, running time, delegation/position/PnL snapshot) for one agent or all of them
+- `GET /api/smart-wallets` → this owner's registered Smart Wallet(s)
+- `POST /api/smart-wallets { address, label?, network? }` → idempotent upsert (re-registering an
+  address already on file just updates its label/network); returns the full updated list. Backs
+  the onboarding check/register steps in `apps/web/app/api/connect/*` — see the root README's
+  [Authentication & Onboarding](../README.md#authentication--onboarding) section.
 
 ## Security notes
 

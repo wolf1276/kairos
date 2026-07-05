@@ -480,6 +480,17 @@ export function getDb(): Database.Database {
   // NORMAL is safe (not just fast) under WAL: the WAL file itself still fsyncs on checkpoint,
   // so a power loss can lose only the last few committed transactions, never corrupt the DB.
   db.pragma('synchronous = NORMAL');
+
+  // Pre-existing databases from before the capital_wallets -> smart_wallets rename. Must run
+  // before the CREATE TABLE IF NOT EXISTS smart_wallets below, otherwise that statement creates
+  // an empty smart_wallets table first and this rename then collides with it.
+  const hasLegacyCapitalWalletsTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'capital_wallets'")
+    .get();
+  if (hasLegacyCapitalWalletsTable) {
+    db.exec('ALTER TABLE capital_wallets RENAME TO smart_wallets');
+  }
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -693,14 +704,6 @@ export function getDb(): Database.Database {
   const tradeColumns = db.prepare("PRAGMA table_info(trades)").all() as { name: string }[];
   if (!tradeColumns.some((c) => c.name === 'mode')) {
     db.exec("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
-  }
-
-  // Pre-existing databases from before the capital_wallets -> smart_wallets rename.
-  const hasLegacyCapitalWalletsTable = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'capital_wallets'")
-    .get();
-  if (hasLegacyCapitalWalletsTable) {
-    db.exec('ALTER TABLE capital_wallets RENAME TO smart_wallets');
   }
 
   // Pre-existing databases (created before onboarding recorded a network/last-updated time)
