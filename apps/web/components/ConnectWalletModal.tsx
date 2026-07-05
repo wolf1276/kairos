@@ -53,7 +53,7 @@ export function ConnectWalletModal({ open, connecting, error, onClose, onPick }:
       >
         {/* Learn more panel */}
         <div className="hidden w-1/2 border-r border-white/5 p-6 sm:block">
-          <h2 className="mb-4 text-sm font-semibold text-white">Learn more</h2>
+          <h2 className="mb-4 text-sm font-semibold text-white uppercase">Learn more</h2>
           <div className="space-y-5">
             <div>
               <h3 className="mb-1 text-xs font-medium text-white/90">What is a Wallet?</h3>

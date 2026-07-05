@@ -226,22 +226,24 @@ export async function revokeAgentDelegation(id: string): Promise<AgentSummary> {
   return data.agent;
 }
 
-export interface CapitalWallet {
+export interface SmartWallet {
   owner: string;
   address: string;
   label: string | null;
+  network: string | null;
   created_at: number;
+  updated_at: number;
 }
 
-export async function listCapitalWallets(): Promise<CapitalWallet[]> {
-  const data = await request<{ wallets: CapitalWallet[] }>("/api/capital-wallets");
+export async function listSmartWallets(): Promise<SmartWallet[]> {
+  const data = await request<{ wallets: SmartWallet[] }>("/api/smart-wallets");
   return data.wallets;
 }
 
-export async function registerCapitalWallet(address: string, label?: string): Promise<CapitalWallet[]> {
-  const data = await request<{ wallets: CapitalWallet[] }>("/api/capital-wallets", {
+export async function registerSmartWallet(address: string, label?: string, network?: string): Promise<SmartWallet[]> {
+  const data = await request<{ wallets: SmartWallet[] }>("/api/smart-wallets", {
     method: "POST",
-    body: JSON.stringify({ address, label }),
+    body: JSON.stringify({ address, label, network }),
   });
   return data.wallets;
 }

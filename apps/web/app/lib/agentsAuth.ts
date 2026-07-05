@@ -55,7 +55,9 @@ export async function challengeAndVerify(publicKey: string, networkPassphrase: s
 }
 
 async function runChallengeAndVerify(publicKey: string, networkPassphrase: string): Promise<string> {
-  const challengeRes = await fetch(`${backendBase()}/api/auth/challenge`, {
+  const base = backendBase();
+
+  const challengeRes = await fetchWithTimeout(`${base}/api/auth/challenge`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ publicKey }),
@@ -66,7 +68,7 @@ async function runChallengeAndVerify(publicKey: string, networkPassphrase: strin
   const signature = await kitSignMessage(challenge.message, { networkPassphrase, address: publicKey });
   if (!signature) throw new Error("Wallet returned an empty signed message");
 
-  const verifyRes = await fetch(`${backendBase()}/api/auth/verify`, {
+  const verifyRes = await fetchWithTimeout(`${base}/api/auth/verify`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ publicKey, signature }),
@@ -76,4 +78,20 @@ async function runChallengeAndVerify(publicKey: string, networkPassphrase: strin
 
   storeSessionToken(publicKey, verified.token);
   return verified.token as string;
+}
+
+async function fetchWithTimeout(input: RequestInfo, init?: RequestInit, ms = 8000): Promise<Response> {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(input, { ...init, signal: ctrl.signal });
+    return res;
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "AbortError") {
+      throw new Error(`Agent backend unreachable at ${input} (timed out after ${ms}ms)`);
+    }
+    throw new Error(`Agent backend unreachable — is the server running at ${input}?`);
+  } finally {
+    clearTimeout(id);
+  }
 }

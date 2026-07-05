@@ -1,9 +1,8 @@
 import { NextResponse } from 'next/server';
-import { Asset, Keypair } from '@stellar/stellar-sdk';
-import KairosClient from '@wolf1276/kairos-sdk';
+import { Asset } from '@stellar/stellar-sdk';
 import type { Caveat, Delegation } from '@wolf1276/kairos-sdk';
 import { ROOT_AUTHORITY } from '@wolf1276/kairos-sdk';
-import { getContractConfig } from '../../lib/sdk';
+import { getContractConfig, getKairosClient, getFunderKeypair } from '../../lib/sdk';
 
 // `Delegation.salt`/`.nonce` are bigint and `Caveat.terms` is a Uint8Array — neither survives
 // `JSON.stringify` (bigint throws, Uint8Array serializes as a plain object). Convert to
@@ -32,32 +31,6 @@ function deserializeDelegation(d: JsonSafeDelegation): Delegation {
   };
 }
 
-const FUNDER_SECRET = process.env.FUNDER_SECRET_KEY;
-const NETWORK = 'testnet';
-
-function getFunder(): Keypair {
-  if (FUNDER_SECRET) {
-    return Keypair.fromSecret(FUNDER_SECRET);
-  }
-  throw new Error('FUNDER_SECRET_KEY not configured');
-}
-
-let sdkClient: KairosClient | null = null;
-
-function getClient(): KairosClient {
-  if (!sdkClient) {
-    const config = getContractConfig();
-    sdkClient = new KairosClient({
-      network: NETWORK,
-      contracts: {
-        delegationManager: config.delegationManager,
-        policyEngine: config.policyEngine,
-        smartWallet: config.customAccount,
-      },
-    });
-  }
-  return sdkClient;
-}
 
 export async function POST(request: Request) {
   try {
@@ -68,8 +41,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'action is required' }, { status: 400 });
     }
 
-    const client = getClient();
-    const funder = getFunder();
+    const client = getKairosClient();
+    const funder = getFunderKeypair();
 
     switch (action) {
       case 'PREPARE_WALLET_DEPLOY': {

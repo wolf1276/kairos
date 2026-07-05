@@ -18,7 +18,7 @@ const POLL_MS = 10_000;
  * Reads a smart wallet's (Soroban custom-account contract) token balances via each token's
  * SAC `balance` entrypoint — the only correct way to read a contract address's holdings.
  * Classic Horizon `loadAccount` (as used by `useStellarBalances`) does not work for
- * C-addresses, so this hook is the single source of truth for capital-wallet balances
+ * C-addresses, so this hook is the single source of truth for smart-wallet balances
  * across the app (Overview + Trade pages) instead of each page polling it separately.
  */
 export function useSmartWalletBalances(

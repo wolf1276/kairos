@@ -3,6 +3,7 @@
 import { createContext, useContext, type ReactNode } from "react";
 import { useSmartWallet, type SmartWalletState } from "@/app/hooks/useSmartWallet";
 import { ConnectWalletModal } from "@/components/ConnectWalletModal";
+import { OnboardingOverlay } from "@/components/OnboardingOverlay";
 
 const WalletContext = createContext<SmartWalletState | null>(null);
 
@@ -17,6 +18,11 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         error={wallet.walletPickError}
         onClose={wallet.closeWalletModal}
         onPick={wallet.pickWallet}
+      />
+      <OnboardingOverlay
+        stage={wallet.onboardingStage}
+        error={wallet.onboardingError}
+        onRetry={wallet.retryOnboarding}
       />
     </WalletContext.Provider>
   );

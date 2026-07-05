@@ -7,10 +7,7 @@ import { useWalletContext } from "@/app/contexts/WalletContext";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", exact: true },
-  { href: "/dashboard/trade", label: "Trade", exact: false },
-  { href: "/dashboard/autonomous", label: "Autonomous", exact: false },
   { href: "/dashboard/agents", label: "Agents", exact: false },
-  { href: "/dashboard/history", label: "History", exact: false },
 ] as const;
 
 function shortAddress(addr: string) {

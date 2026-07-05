@@ -8,7 +8,7 @@ import { Spinner } from "@/app/components/ui/Spinner";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
 import { withdrawFromSmartWallet } from "@/app/lib/stellar";
-import type { CapitalWalletInfo } from "@/app/hooks/useSmartWallet";
+import type { SmartWalletInfo } from "@/app/hooks/useSmartWallet";
 import { WalletPicker } from "@/app/components/WalletPicker";
 import {
   getAgentsSummary,
@@ -43,7 +43,7 @@ export default function AgentsPage() {
     ensureAgentAuth,
     walletOwner,
     smartWalletAddress,
-    capitalWallets,
+    smartWallets,
     deploying,
     deployError,
   } = useWalletContext();
@@ -114,7 +114,7 @@ export default function AgentsPage() {
         <Card>
           <CardBody className="text-center">
             <p className="text-xs text-text-muted">
-              {deploying ? "Deploying your capital wallet…" : "Your capital wallet hasn't finished deploying yet."}
+              {deploying ? "Deploying your smart wallet…" : "Your smart wallet hasn't finished deploying yet."}
             </p>
             {deployError && <p className="mt-2 text-xs text-error/90">{deployError}</p>}
           </CardBody>
@@ -148,7 +148,7 @@ export default function AgentsPage() {
                   key={agent.id}
                   agent={agent}
                   smartWalletAddress={smartWalletAddress}
-                  capitalWallets={capitalWallets}
+                  smartWallets={smartWallets}
                   walletOwner={walletOwner!}
                   networkPassphrase={networkPassphrase}
                   sorobanRpcUrl={wallet?.sorobanRpcUrl}
@@ -166,7 +166,7 @@ export default function AgentsPage() {
 function AgentCard({
   agent,
   smartWalletAddress,
-  capitalWallets,
+  smartWallets,
   walletOwner,
   networkPassphrase,
   sorobanRpcUrl,
@@ -174,7 +174,7 @@ function AgentCard({
 }: {
   agent: AgentSummary;
   smartWalletAddress: string | null;
-  capitalWallets: CapitalWalletInfo[];
+  smartWallets: SmartWalletInfo[];
   walletOwner: string;
   networkPassphrase: string;
   sorobanRpcUrl?: string;
@@ -184,7 +184,7 @@ function AgentCard({
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
 
-  // ── Step 1: grant this agent spend access from the capital wallet ──
+  // ── Step 1: grant this agent spend access from the smart wallet ──
   const [spendLimit, setSpendLimit] = useState("100");
   const [periodDays, setPeriodDays] = useState("1");
   const [delegatorWallet, setDelegatorWallet] = useState<string | null>(smartWalletAddress);
@@ -198,7 +198,7 @@ function AgentCard({
   const handleCreateDelegation = async () => {
     const amt = parseFloat(spendLimit) || 0;
     if (amt <= 0) { setError("Enter a valid spend limit"); return; }
-    if (!delegatorWallet) { setError("Capital wallet not ready yet"); return; }
+    if (!delegatorWallet) { setError("Smart wallet not ready yet"); return; }
     setBusy(true);
     setError(null);
     try {
@@ -244,7 +244,7 @@ function AgentCard({
   const handleFundAgent = async () => {
     const amt = parseFloat(fundAmount) || 0;
     if (amt <= 0) { setError("Enter a valid amount"); return; }
-    if (!delegatorWallet) { setError("Capital wallet not ready yet"); return; }
+    if (!delegatorWallet) { setError("Smart wallet not ready yet"); return; }
     setFunding(true);
     setError(null);
     try {
@@ -350,13 +350,13 @@ function AgentCard({
         {(!agent.delegationHash && !agent.strategy) || editingDelegation ? (
           <div className="space-y-2.5 rounded-xl bg-bg-elevated p-3.5">
             <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">
-              {agent.delegationHash ? "Change this agent's spend delegation" : "Step 1 — Grant this agent spend access from your capital wallet"}
+              {agent.delegationHash ? "Change this agent's spend delegation" : "Step 1 — Grant this agent spend access from your smart wallet"}
             </p>
-            {capitalWallets.length > 1 ? (
-              <WalletPicker wallets={capitalWallets} value={delegatorWallet} onChange={setDelegatorWallet} />
+            {smartWallets.length > 1 ? (
+              <WalletPicker wallets={smartWallets} value={delegatorWallet} onChange={setDelegatorWallet} />
             ) : (
               <div>
-                <label className="mb-1 block text-[10px] text-text-muted">Capital wallet</label>
+                <label className="mb-1 block text-[10px] text-text-muted">Smart wallet</label>
                 <input
                   value={delegatorWallet ? shortKey(delegatorWallet) : "—"}
                   disabled
@@ -375,7 +375,7 @@ function AgentCard({
               </div>
             </div>
             <p className="text-[10px] text-text-muted">
-              This agent will only ever be able to spend from your capital wallet, up to the limit
+              This agent will only ever be able to spend from your smart wallet, up to the limit
               you set — and anything it spends stays within that same wallet.
             </p>
             <div className="flex gap-2">

@@ -6,7 +6,7 @@
 // Funding note: role agents trade from their own Turnkey-MPC Stellar account (see tick.ts),
 // never through a delegation redemption — that path is dca-only (agentService.ts's setStrategy/
 // startAgent gate on a delegation only for strategy.type === 'dca'). Paper mode needs no funds
-// since nothing moves. Live mode is funded by a direct transfer from the capital wallet to the
+// since nothing moves. Live mode is funded by a direct transfer from the smart wallet to the
 // agent's own account, done by the Autonomous page's "Add Agent" flow before it starts the agent.
 import { getDb, type AgentMode, type AgentRole, type AgentRow } from './db.js';
 import { createAgent, getAgent, getAgentRow, setStrategy, startAgent } from './agentService.js';
