@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.2] - 2026-07-05
+
+### Fixed
+- Verified the full delegation lifecycle end-to-end against a freshly redeployed testnet `DelegationManager`/`PolicyEngine`/`CustomAccount` (create → sign → register → simulate execution), confirming `register_delegation` and policy-enforcement (`before_all`/`before_hook`) behave as documented; see `configs/contracts.testnet.json` for current testnet contract IDs.
+
 ## [1.0.0] - 2026-06-29
 
 ### Added

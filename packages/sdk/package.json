@@ -1,6 +1,6 @@
 {
   "name": "@wolf1276/kairos-sdk",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Official TypeScript SDK for the Kairos Soroban Delegation Framework",
   "main": "./dist/index.js",
   "module": "./dist/index.mjs",
