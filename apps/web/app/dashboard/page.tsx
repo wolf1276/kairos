@@ -9,6 +9,7 @@ import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useProtocolAllocations } from "@/app/hooks/useProtocolAllocations";
+import { usePortfolioSnapshots, type PortfolioSnapshot } from "@/app/hooks/usePortfolioSnapshots";
 import { fetchOrderBookQuote, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
 
 function shortAddress(addr: string) {
@@ -33,22 +34,9 @@ const RANGE_OPTIONS = [
 
 type Range = (typeof RANGE_OPTIONS)[number]["value"];
 
-const CHART_DATA = [
-  { t: "Jun 08", v: 10820 },
-  { t: "Jun 11", v: 11040 },
-  { t: "Jun 14", v: 10910 },
-  { t: "Jun 17", v: 11280 },
-  { t: "Jun 20", v: 11190 },
-  { t: "Jun 23", v: 11540 },
-  { t: "Jun 26", v: 11430 },
-  { t: "Jun 29", v: 11780 },
-  { t: "Jul 01", v: 11960 },
-  { t: "Jul 02", v: 12080 },
-  { t: "Jul 03", v: 11930 },
-  { t: "Jul 04", v: 12210 },
-  { t: "Jul 05", v: 12128 },
-  { t: "Jul 05", v: 12480 },
-];
+function formatChartLabel(timestampMs: number): string {
+  return new Date(timestampMs).toLocaleDateString(undefined, { month: "short", day: "2-digit" });
+}
 
 // Fallback shown before real allocation data loads (or while disconnected) — replaced by
 // useProtocolAllocations()'s real Spot/Blend/Soroswap breakdown once available.
@@ -91,11 +79,43 @@ function chartGeometry(points: number[], width: number, height: number) {
   return { line, area, coords, min, max };
 }
 
-function PerformanceChart({ range, onRangeChange }: { range: Range; onRangeChange: (r: Range) => void }) {
+function PerformanceChart({
+  range,
+  onRangeChange,
+  history,
+}: {
+  range: Range;
+  onRangeChange: (r: Range) => void;
+  history: PortfolioSnapshot[];
+}) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [hover, setHover] = useState<number | null>(null);
 
-  const values = CHART_DATA.map((d) => d.v);
+  if (history.length < 2) {
+    return (
+      <Panel>
+        <CardHeader
+          title="Portfolio Value"
+          className="flex-wrap gap-y-3"
+          action={
+            <Segmented
+              options={RANGE_OPTIONS as unknown as { value: Range; label: string }[]}
+              value={range}
+              onChange={onRangeChange}
+              size="sm"
+            />
+          }
+        />
+        <CardBody className="pt-4">
+          <div className="flex h-[320px] w-full items-center justify-center text-sm text-text-muted sm:h-[360px]">
+            Not enough portfolio history yet — check back soon.
+          </div>
+        </CardBody>
+      </Panel>
+    );
+  }
+
+  const values = history.map((d) => d.v);
   const { line, area, min, max } = chartGeometry(values, 1000, 300);
   const n = values.length;
 
@@ -106,14 +126,14 @@ function PerformanceChart({ range, onRangeChange }: { range: Range; onRangeChang
     setHover(Math.round(frac * (n - 1)));
   };
 
-  const hoverPoint = hover !== null ? CHART_DATA[hover] : null;
+  const hoverPoint = hover !== null ? history[hover] : null;
   const hoverXPct = hover !== null ? (hover / (n - 1)) * 100 : 0;
   const hoverYPct = hoverPoint ? (1 - (hoverPoint.v - min) / (max - min || 1)) * 100 : 0;
 
   return (
     <Panel>
       <CardHeader
-        title="Portfolio Performance"
+        title="Portfolio Value"
         className="flex-wrap gap-y-3"
         action={
           <Segmented
@@ -181,7 +201,9 @@ function PerformanceChart({ range, onRangeChange }: { range: Range; onRangeChang
                 style={{ left: `${hoverXPct}%`, top: `${hoverYPct}%` }}
               >
                 <div className="font-mono tabular-nums text-text-primary">${hoverPoint.v.toLocaleString()}</div>
-                <div className="mt-0.5 text-[10px] uppercase tracking-wider text-text-muted">{hoverPoint.t}</div>
+                <div className="mt-0.5 text-[10px] uppercase tracking-wider text-text-muted">
+                  {formatChartLabel(hoverPoint.t)}
+                </div>
               </div>
             </>
           )}
@@ -225,6 +247,11 @@ export default function DashboardOverview() {
   }, [wallet?.networkPassphrase]);
 
   const portfolioValue = freighterUsdcBalance + freighterXlmBalance * (xlmUsdPrice ?? 0);
+
+  const { history: portfolioHistory } = usePortfolioSnapshots(
+    wallet?.address ?? null,
+    connected && !freighterBalanceLoading ? portfolioValue : null
+  );
 
   const { allocations, activity } = useProtocolAllocations(connected);
 
@@ -349,7 +376,7 @@ export default function DashboardOverview() {
         </div>
 
         <div className="lg:col-span-2">
-          <PerformanceChart range={range} onRangeChange={setRange} />
+          <PerformanceChart range={range} onRangeChange={setRange} history={portfolioHistory} />
         </div>
       </div>
 
