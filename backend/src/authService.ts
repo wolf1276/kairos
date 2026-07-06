@@ -48,7 +48,11 @@ export function verifyChallenge(publicKey: string, signature: string): { token: 
 }
 
 export function verifySessionToken(token: string): { publicKey: string } {
-  const payload = jwt.verify(token, getAuthJwtSecret()) as jwt.JwtPayload;
+  // Pin the accepted algorithm to the one createChallenge/jwt.sign actually uses (HS256) —
+  // without this, jwt.verify() accepts any algorithm the token header claims, which is exactly
+  // the "algorithm confusion" class of bug (e.g. a token claiming an asymmetric algorithm being
+  // verified as if the HMAC secret were also a valid public key for it).
+  const payload = jwt.verify(token, getAuthJwtSecret(), { algorithms: ['HS256'] }) as jwt.JwtPayload;
   if (typeof payload.sub !== 'string') throw new Error('Malformed session token');
   return { publicKey: payload.sub };
 }

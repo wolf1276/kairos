@@ -50,6 +50,17 @@ export function listTradesForAgent(agentId: string): TradeRow[] {
     .all(agentId) as TradeRow[];
 }
 
+/** Bounded variant of listTradesForAgent for callers (e.g. the Context Layer's Historical
+ *  domain) that only need a recent lookback window, not the agent's entire trade history —
+ *  applies the LIMIT in SQL rather than loading every row and slicing in memory. Returned in
+ *  the same ascending (oldest-first) order as listTradesForAgent. */
+export function listRecentTradesForAgent(agentId: string, limit = 20): TradeRow[] {
+  const rows = getDb()
+    .prepare('SELECT * FROM trades WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(agentId, limit) as TradeRow[];
+  return rows.reverse();
+}
+
 export function getTrade(id: string): TradeRow | undefined {
   return getDb().prepare('SELECT * FROM trades WHERE id = ?').get(id) as TradeRow | undefined;
 }

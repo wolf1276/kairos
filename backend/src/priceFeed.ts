@@ -47,6 +47,17 @@ class PriceFeedService {
     this.agentsByPair.clear();
   }
 
+  /** Read-only status check for the System Context domain. */
+  isRunning(): boolean {
+    return this.rebuildTimer !== null;
+  }
+
+  /** Number of pairs with a live subscription — a zero count while agents are running is a
+   *  signal worth surfacing in System Context even though `isRunning()` is true. */
+  activeSubscriptionCount(): number {
+    return this.closers.size;
+  }
+
   private rebuild(): void {
     const running = listRunningAgents().filter((row) => row.strategy_config_json);
     const nextAgentsByPair = new Map<string, Set<string>>();

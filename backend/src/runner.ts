@@ -53,3 +53,9 @@ export function stopScheduler(): void {
     timer = null;
   }
 }
+
+/** Read-only status check for the System Context domain — true once startScheduler() has been
+ *  called and stopScheduler() hasn't since. */
+export function isSchedulerRunning(): boolean {
+  return timer !== null;
+}

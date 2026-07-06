@@ -437,3 +437,92 @@ export async function recordManualTrade(trade: {
   });
   return data.trade;
 }
+
+// ── Context Layer ────────────────────────────────────────────────────────────────────────────
+// Mirrors backend/src/agentContext/types.ts's AgentContext shape exactly — this is a read-only
+// debug/dev view of what the Context Layer currently sees for one agent, nothing more.
+
+export interface MarketContextView {
+  pair: string;
+  price: number;
+  oracle: { timestamp: number; ageSeconds: number };
+  candles: { resolutionSeconds: number };
+  trend: { ema20: number; ema50: number; sma20: number; trendStrength: number; direction: "up" | "down" | "flat" };
+  momentum: { rsi: number; macdHistogram: number; roc: number };
+  volatility: { atr: number; volatilityPct: number; band: "low" | "normal" | "high" };
+  volume: { window24h: number; changePct: number };
+  liquidity: { recentVolume: number };
+  regime: { base: string; label: string; breakout: boolean; volatilityBand: "low" | "normal" | "high" };
+  confidence: number;
+}
+
+export interface ManagedCapitalContextView {
+  totalManagedCapital: number;
+  idleCapital: number;
+  deployableCapital: number;
+  allocation: { xlmPct: number; usdcPct: number };
+  protocolExposure: { protocolId: string; kind: string; asset: string; amount: string }[];
+  realizedPnl: number;
+  unrealizedPnl: number;
+  pendingExecutions: { kind: "spot" | "protocol"; status: string; ageSeconds: number }[];
+  confidence: number;
+}
+
+export interface PolicyContextView {
+  objective: AgentRole | "unassigned";
+  riskProfile: string;
+  allowedAssets: string[];
+  allowedProtocols: string[];
+  delegationActive: boolean;
+  spendingLimitPerTrade: string | null;
+  minConfidence: number | null;
+  positionLimit: { maxCapital: string | null };
+  confidence: number;
+}
+
+export interface SystemContextView {
+  oracleHealthy: boolean;
+  schedulerRunning: boolean;
+  priceFeedRunning: boolean;
+  protocolExecutionAvailable: boolean;
+  executionAvailable: boolean;
+  featureFlags: Record<string, boolean>;
+  confidence: number;
+}
+
+export interface HistoricalContextView {
+  lastExecution: { side: "buy" | "sell"; pair: string; status: "success" | "failed"; createdAt: number } | null;
+  lastDecision: { action: string; confidence: number; createdAt: number } | null;
+  recentFailureCount: number;
+  cooldown: { active: boolean; remainingSeconds: number };
+  recentExecutionSummary: { tradeCount: number; successCount: number; failureCount: number };
+  confidence: number;
+}
+
+export interface ContextQuality {
+  score: number;
+  level: "high" | "medium" | "low";
+  domainConfidence: { market: number; capital: number; policy: number; system: number; historical: number };
+}
+
+export interface AgentContextSnapshot {
+  agentId: string;
+  owner: string;
+  role: AgentRole | null;
+  pair: string;
+  meta: { version: string; timestamp: number; marketId: string; snapshotId: string; contextHash: string };
+  market: MarketContextView;
+  capital: ManagedCapitalContextView;
+  policy: PolicyContextView;
+  system: SystemContextView;
+  historical: HistoricalContextView;
+  validation: { ok: boolean; errors: string[] };
+  status: "valid" | "invalid";
+  quality: ContextQuality;
+}
+
+export async function getAgentContext(id: string, opts?: { refresh?: boolean }): Promise<AgentContextSnapshot> {
+  const qs = opts?.refresh ? "?refresh=true" : "";
+  const data = await request<{ context: AgentContextSnapshot }>(`/api/agents/${id}/context${qs}`);
+  return data.context;
+}
