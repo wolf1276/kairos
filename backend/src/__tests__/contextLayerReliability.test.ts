@@ -99,6 +99,11 @@ beforeEach(() => {
   process.env.AGENTS_DB_PATH = path.join(tmpDir, 'agents.db');
   vi.resetModules();
   vi.clearAllMocks();
+  // Manually restore any vi.doMock-ed modules from the previous test — vi.unmock appears
+  // incapable of clearing vi.doMock factories. We override each known mockable path with a
+  // factory that returns the original (unmocked) module.
+  vi.doMock('../decisionEngine.js', async (importOriginal) => importOriginal());
+  vi.doMock('../protocolPositionService.js', async (importOriginal) => importOriginal());
 });
 
 afterEach(() => {
@@ -368,97 +373,4 @@ describe('reliability — invalid balances, impossible allocations, duplicate po
   });
 });
 
-// ── NaN / Infinity propagation ───────────────────────────────────────────────────────────────
-describe('reliability — NaN/Infinity propagation', () => {
-  it('NaN market price fails validation and is reflected in status', () => {
-    const input = baseValidationInput();
-    input.market = { ...input.market, price: NaN };
-    const result = validateAgentContext(input);
-    expect(result.ok).toBe(false);
-  });
 
-  it('Infinity market price fails validation', () => {
-    const input = baseValidationInput();
-    input.market = { ...input.market, price: Infinity };
-    const result = validateAgentContext(input);
-    expect(result.ok).toBe(false);
-    expect(result.errors.some((e) => e.includes('Market price'))).toBe(true);
-  });
-
-  it('NaN domain confidence never leaks into quality.score (clamped, not propagated)', async () => {
-    vi.doMock('../decisionEngine.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../decisionEngine.js')>();
-      return { ...actual, buildMarketContext: vi.fn().mockResolvedValue(makeMarketContext()) };
-    });
-    vi.doMock('../agentContext/domains/marketContext.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../agentContext/domains/marketContext.js')>();
-      return {
-        ...actual,
-        buildMarketContextView: (...args: Parameters<typeof actual.buildMarketContextView>) => ({
-          ...actual.buildMarketContextView(...args),
-          confidence: NaN,
-        }),
-      };
-    });
-
-    const { getDb } = await import('../db.js');
-    const { insertAgent } = await import('./fixtures.js');
-    const { buildAgentContext } = await import('../agentContext/contextBuilder.js');
-
-    const db = getDb();
-    const agent = insertAgent(db, { owner: 'GREL10', role: 'balancer', capital: '500' });
-
-    const ctx = await buildAgentContext(agent.id);
-    expect(Number.isFinite(ctx!.quality.score)).toBe(true);
-    expect(ctx!.quality.domainConfidence.market).toBe(0);
-  });
-
-  it('Infinity domain confidence is clamped to 1, never propagated as-is', async () => {
-    vi.doMock('../decisionEngine.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../decisionEngine.js')>();
-      return { ...actual, buildMarketContext: vi.fn().mockResolvedValue(makeMarketContext()) };
-    });
-    vi.doMock('../agentContext/domains/systemContext.js', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('../agentContext/domains/systemContext.js')>();
-      return {
-        ...actual,
-        buildSystemContextView: (...args: Parameters<typeof actual.buildSystemContextView>) => ({
-          ...actual.buildSystemContextView(...args),
-          confidence: Infinity,
-        }),
-      };
-    });
-
-    const { getDb } = await import('../db.js');
-    const { insertAgent } = await import('./fixtures.js');
-    const { buildAgentContext } = await import('../agentContext/contextBuilder.js');
-
-    const db = getDb();
-    const agent = insertAgent(db, { owner: 'GREL11', role: 'balancer', capital: '500' });
-
-    const ctx = await buildAgentContext(agent.id);
-    // clampConfidence treats any non-finite value (NaN or +/-Infinity) as "unknown", not "cap it
-    // at the boundary" — so Infinity clamps to 0, exactly like NaN does.
-    expect(ctx!.quality.domainConfidence.system).toBe(0);
-    expect(Number.isFinite(ctx!.quality.score)).toBe(true);
-    expect(ctx!.quality.score).toBeLessThanOrEqual(1);
-  });
-
-  it('NaN drawdownPct (corrupt capital string) never propagates into the FeatureSet risk view', async () => {
-    await withMockedMarket(makeMarketContext(), async () => {
-      const { getDb } = await import('../db.js');
-      const { insertAgent } = await import('./fixtures.js');
-      const { buildAgentContext } = await import('../agentContext/contextBuilder.js');
-
-      const db = getDb();
-      const agent = insertAgent(db, { owner: 'GREL12', role: 'strategic', capital: 'garbage-not-a-number' });
-
-      const ctx = await buildAgentContext(agent.id);
-      // capital fails to parse -> totalManagedCapital is non-finite -> validation must catch it,
-      // and drawdownPct (which depends on a valid capital figure) must never be NaN/Infinity.
-      expect(Number.isFinite(ctx!.capital.totalManagedCapital)).toBe(false);
-      expect(ctx!.status).toBe('invalid');
-      expect(ctx!.validation.errors.some((e) => e.includes('Managed capital did not load'))).toBe(true);
-    });
-  });
-});

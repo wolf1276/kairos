@@ -17,6 +17,24 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+// Defensive cap to prevent unbounded growth if the system ever adds many distinct
+// (pair, resolution, limit) tuples. The cache is self-cleaning on reads (stale entries
+// are replaced, never served), so this sweep is purely a memory backstop — it fires
+// at most once per sweep interval and evicts the oldest entries only when above the cap.
+const MAX_CACHE_SIZE = 50;
+let lastSweepAt = 0;
+const SWEEP_INTERVAL_MS = 60_000;
+
+function maybeSweep(): void {
+  const now = Date.now();
+  if (now - lastSweepAt < SWEEP_INTERVAL_MS) return;
+  lastSweepAt = now;
+  if (cache.size <= MAX_CACHE_SIZE) return;
+  const sorted = [...cache.entries()].sort((a, b) => a[1].fetchedAt - b[1].fetchedAt);
+  const toEvict = sorted.slice(0, sorted.length - MAX_CACHE_SIZE);
+  for (const [key] of toEvict) cache.delete(key);
+}
+
 interface TradeAggregationRecord {
   timestamp: string;
   open: string;
@@ -33,6 +51,8 @@ interface TradeAggregationRecord {
  * resolution bucket, since Horizon won't have a new completed bucket before then anyway.
  */
 export async function getCandles(pair: string, resolutionSeconds: number, limit: number): Promise<Candle[]> {
+  maybeSweep();
+
   const cacheKey = `${pair}:${resolutionSeconds}:${limit}`;
   const cached = cache.get(cacheKey);
   const now = Date.now();
