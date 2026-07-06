@@ -483,17 +483,41 @@ provider latency.
 
 ## Testing (Phase 3)
 
-`backend/src/__tests__/decisionIntelligence.test.ts` (32 tests, mocked `fetch`) covers: `v2` prompt
+`backend/src/__tests__/decisionIntelligence.test.ts` (35 tests, mocked `fetch`) covers: `v2` prompt
 determinism and its divergence from `v1` (same context sections, different `system`/`outputSchema`);
 end-to-end generation with correct metadata stamping and `strict: true` structured output; policy/
 protocol awareness (unsupported protocol/asset, allocation-ceiling violation, in-range acceptance);
 alternative-count enforcement (2, 3, 1, and 4 alternatives); evidence integrity (uncited step, broken
 reference, duplicate evidence, invalid evidence type, empty evidence array); confidence bounds
 (`NaN`, `Infinity`, out-of-range); malformed output (markdown-fenced JSON, invalid action, tampered
-`decisionHash`); conflicting-evidence/uncertainty handling (accepts a decision that explicitly
-surfaces conflict and higher uncertainty; rejects missing `uncertainty`/`expectedOutcome`/empty
-`assumptions`); and 10/50/100-way concurrent generation with unique `decisionId`s and correct
-per-request `promptHash` attribution.
+`decisionHash`, max_tokens truncation detection); provider error classification (HTTP 402 mapped to
+non-retryable `authentication`, not `network`); conflicting-evidence/uncertainty handling (accepts a
+decision that explicitly surfaces conflict and higher uncertainty; rejects missing `uncertainty`/
+`expectedOutcome`/empty `assumptions`); and 10/50/100-way concurrent generation with unique
+`decisionId`s and correct per-request `promptHash` attribution.
+
+**Provider support.** `requestClient.ts` supports every `providers/types.ts::ProviderName` plus
+`huggingface` (Hugging Face's OpenAI-compatible router, `https://router.huggingface.co/v1`) via a
+locally-typed `DecisionIntelligenceProviderName` — added without touching `providers/types.ts`,
+since Hugging Face is not and will never be a provider in the frozen LLM provider layer.
+
+**Live smoke test findings (Phase 3 production smoke test).** Two real bugs found against NVIDIA
+`z-ai/glm-5.2` and Hugging Face `meta-llama/Llama-3.1-8B-Instruct`, both fixed in `requestClient.ts`:
+1. `maxTokens: 2000` truncated NVIDIA's response mid-JSON (Decision Intelligence's schema is far
+   larger than CandidateDecision's) — the resulting `invalid_json` error was indistinguishable from
+   genuine model malformation. Fixed by checking `finish_reason === 'length'` and raising a specific,
+   actionable error.
+2. A depleted Hugging Face credit balance returned HTTP 402, which `classifyHttpStatus`
+   (`providers/errors.ts`, frozen) has no case for and falls back to `network` — retryable, wrong for
+   a billing failure. Fixed locally (not in `providers/`) by mapping 402 to `authentication`.
+
+Live testing also confirmed the Phase 3 allocation-ceiling check works correctly against a real
+model: at a 25% policy ceiling, `z-ai/glm-5.2` consistently proposed larger allocations (its
+market-driven sizing overriding the stated limit) and every instance was correctly rejected; at a
+60% ceiling the same model produced a fully valid, well-reasoned decision (15 evidence items, 3
+differentiated alternatives, non-trivial uncertainty with genuine conflicting-evidence entries).
+This is a real prompt-adherence characteristic of the model, not a code defect — worth knowing
+before choosing a production default and policy ceiling together.
 
 ## Explicitly out of scope for Phase 3
 

@@ -29,6 +29,15 @@ const DEFAULT_BASE_URLS: Record<DecisionIntelligenceProviderName, string> = {
   huggingface: 'https://router.huggingface.co/v1',
 };
 
+/** Providers confirmed (via live testing) to actually honor OpenAI's `json_schema` structured
+ *  output mode for Decision Intelligence's schema. Everything else falls back to `json_object` —
+ *  found live: Hugging Face's router rejected `json_schema` for meta-llama/Llama-3.1-8B-Instruct
+ *  with HTTP 400 ("Model does not support 'json_schema' response format. Supported formats:
+ *  json_object."), the same category of limitation the frozen provider layer already works around
+ *  for DeepSeek (providers/deepseekProvider.ts always uses json_object). Untested providers
+ *  (openrouter, anthropic, deepseek) default to the safer json_object rather than assuming support. */
+const JSON_SCHEMA_CAPABLE_PROVIDERS = new Set<DecisionIntelligenceProviderName>(['openai', 'nvidia']);
+
 export interface DecisionIntelligenceRawResponse {
   raw: string;
   promptTokens: number;
@@ -85,7 +94,7 @@ export async function requestDecisionIntelligenceCompletion(
     max_tokens: config.maxTokens,
     messages: promptToMessages(prompt),
   };
-  body.response_format = config.structuredOutput
+  body.response_format = config.structuredOutput && JSON_SCHEMA_CAPABLE_PROVIDERS.has(config.provider)
     ? { type: 'json_schema', json_schema: { ...DECISION_INTELLIGENCE_JSON_SCHEMA, strict: true } }
     : { type: 'json_object' };
 
@@ -104,7 +113,13 @@ export async function requestDecisionIntelligenceCompletion(
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    throw new ProviderError(classifyHttpStatus(res.status), errProvider, `HTTP ${res.status}: ${text}`);
+    // classifyHttpStatus (providers/errors.ts, frozen) has no case for 402 and falls back to
+    // 'network' — retryable, which is wrong for a billing/quota failure that will never resolve
+    // on its own. Found during the Phase 3 live smoke test against Hugging Face (a depleted
+    // monthly credit balance returns 402); mapped to 'authentication' instead, which is already
+    // non-retryable and semantically closer ("access denied until account state changes").
+    const kind = res.status === 402 ? 'authentication' : classifyHttpStatus(res.status);
+    throw new ProviderError(kind, errProvider, `HTTP ${res.status}: ${text}`);
   }
 
   const json = (await res.json()) as {

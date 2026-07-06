@@ -211,6 +211,57 @@ describe('Decision Intelligence: generateDecisionIntelligence', () => {
   });
 });
 
+// ── Provider error classification ────────────────────────────────────────────────────────────
+
+describe('Decision Intelligence: provider error classification', () => {
+  // Regression (live smoke test finding): a real Hugging Face call with a depleted monthly
+  // credit balance returned HTTP 402, which the shared classifyHttpStatus (providers/errors.ts)
+  // has no case for and falls back to 'network' — a retryable kind, wrong for a billing failure
+  // that will never resolve on its own. Fixed locally in requestClient.ts (not providers/) by
+  // mapping 402 to 'authentication', which is already non-retryable.
+  it('classifies HTTP 402 (quota/billing exhausted) as non-retryable, not network', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 402, text: async () => 'You have depleted your monthly included credits.' });
+    const { context, prompt } = buildFixture();
+
+    try {
+      await generateDecisionIntelligence(context, prompt, makeConfig({ provider: 'huggingface' as any, maxRetries: 2 }));
+      throw new Error('expected rejection');
+    } catch (err: any) {
+      expect(err.kind).toBe('authentication');
+      expect(err.retryable).toBe(false);
+    }
+    expect(fetchMock).toHaveBeenCalledTimes(1); // never retried
+  });
+
+  // Regression (live smoke test finding, Phase 3 production issue pass): a real Hugging Face
+  // call for meta-llama/Llama-3.1-8B-Instruct returned HTTP 400 — "Model does not support
+  // 'json_schema' response format. Supported formats: json_object." — because requestClient.ts
+  // always requested json_schema structured output whenever config.structuredOutput was true,
+  // regardless of whether the target provider/model actually supports it. Fixed by restricting
+  // json_schema to providers confirmed (via live testing) to honor it (openai, nvidia); every
+  // other provider, including huggingface, now requests json_object instead.
+  it('requests json_object (not json_schema) for huggingface even when structuredOutput is true', async () => {
+    fetchMock.mockResolvedValueOnce(openAiResponse(validDecisionOutput()));
+    const { context, prompt } = buildFixture();
+    await generateDecisionIntelligence(context, prompt, makeConfig({ provider: 'huggingface' as any, model: 'meta-llama/Llama-3.1-8B-Instruct', structuredOutput: true }));
+
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.response_format).toEqual({ type: 'json_object' });
+  });
+
+  it('still requests json_schema (with strict:true) for openai and nvidia', async () => {
+    for (const provider of ['openai', 'nvidia'] as const) {
+      fetchMock.mockResolvedValueOnce(openAiResponse(validDecisionOutput()));
+      const { context, prompt } = buildFixture();
+      await generateDecisionIntelligence(context, prompt, makeConfig({ provider, structuredOutput: true }));
+
+      const body = JSON.parse(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][1].body as string);
+      expect(body.response_format.type).toBe('json_schema');
+      expect(body.response_format.json_schema.strict).toBe(true);
+    }
+  });
+});
+
 // ── Policy / protocol awareness ──────────────────────────────────────────────────────────────
 
 describe('Decision Intelligence: policy and protocol awareness', () => {

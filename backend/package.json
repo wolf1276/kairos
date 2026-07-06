@@ -9,7 +9,11 @@
     "start": "node dist/index.js",
     "build": "tsup",
     "migrate:wallet-delegations": "tsx scripts/migrate-wallet-delegations.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "benchmark": "tsx benchmarks/reasoning/runners/cli.ts",
+    "benchmark:reasoning": "tsx benchmarks/reasoning/runners/cli.ts",
+    "benchmark:model": "tsx benchmarks/reasoning/runners/cli.ts --model",
+    "benchmark:provider": "tsx benchmarks/reasoning/runners/cli.ts --provider"
   },
   "dependencies": {
     "@huggingface/inference": "^4.13.21",
