@@ -15,6 +15,7 @@ import { validateAgentContext } from './validation.js';
 import { AGENT_CONTEXT_SCHEMA_VERSION } from './types.js';
 import type { AgentContext, ContextQuality } from './types.js';
 import { recordContextBuild, recordValidation, recordQuality, recordDomainConfidence } from './metrics.js';
+import { stableStringify } from '../stableStringify.js';
 
 const QUALITY_HIGH_THRESHOLD = 0.75;
 const QUALITY_MEDIUM_THRESHOLD = 0.4;
@@ -49,20 +50,6 @@ export { AGENT_CONTEXT_SCHEMA_VERSION };
 
 const DEFAULT_PAIR = 'XLM/USDC';
 const DEFAULT_INTERVAL_SECONDS = 300;
-
-/** JSON.stringify with all object keys sorted recursively — makes the serialization depend only
- *  on content, never on property insertion order, so two structurally-identical objects always
- *  produce the same string (arrays keep their order, since order is meaningful there). */
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) {
-    return `[${value.map((v) => stableStringify(v)).join(',')}]`;
-  }
-  if (value !== null && typeof value === 'object') {
-    const keys = Object.keys(value as Record<string, unknown>).sort();
-    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify((value as Record<string, unknown>)[k])}`).join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
 
 /** Deterministic hash over everything in the context except fields that are inherently
  *  wall-clock-relative (snapshotId is random, timestamp is "now", and a handful of *Seconds
