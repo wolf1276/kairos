@@ -14,6 +14,7 @@ import { startScheduler } from './runner.js';
 import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
 import { reconcilePendingExecutions } from './executionJournal.js';
+import { reconcilePendingProtocolExecutions } from './protocolExecutionJournal.js';
 
 const app = express();
 app.use(cors({ origin: getAllowedOrigin() }));
@@ -63,6 +64,15 @@ app.listen(port, () => {
     })
     .catch((error) => console.error('[startup] execution journal reconciliation failed:', error))
     .finally(() => {
+      // Synchronous (SQLite-only, no Horizon lookups) — see protocolExecutionJournal.ts.
+      try {
+        const { recovered, markedFailed } = reconcilePendingProtocolExecutions();
+        if (recovered > 0 || markedFailed > 0) {
+          console.log(`[startup] protocol execution journal reconciliation: recovered=${recovered} markedFailed=${markedFailed}`);
+        }
+      } catch (error) {
+        console.error('[startup] protocol execution journal reconciliation failed:', error);
+      }
       startScheduler();
       getPriceFeedService().start();
     });

@@ -2,14 +2,18 @@ import { describe, expect, it } from 'vitest';
 import { Account, Address, Asset, hash, Keypair, Operation, TransactionBuilder } from '@stellar/stellar-sdk';
 import { KairosClient } from '../src/client';
 import { ROOT_AUTHORITY } from '../src/constants';
-import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, getAddressXdrBytes, i128ToBuffer, signTransaction, uint64ToXdrBytes } from '../src/utils';
+import { computeDelegationHash, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, getAddressXdrBytes, i128ToBuffer, signTransaction, uint64ToXdrBytes, PooledSpendValueMode } from '../src/utils';
+import { BLEND_SUBMIT_REQUESTS_ARG_INDEX } from '../src/protocols/blend';
+import { SOROSWAP_SWAP_AMOUNT_IN_ARG_INDEX } from '../src/protocols/soroswap';
+import { getAdapter } from '../src/protocols';
+import type { ProtocolActionRequest } from '../src/protocols/types';
 import type { RemoteSigner } from '../src/types';
 
 describe('Kairos SDK Unit Tests', () => {
   const mockContracts = {
-    delegationManager: 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
-    policyEngine: 'CCPENGINE4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
-    smartWallet: 'CCSSCA4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
+    delegationManager: 'CCGZ3IDTERFBQYVGHGNUI46R4HMSEJMJ2LXYQD5A2GXU6DA6INNKBTGL',
+    policyEngine: 'CAMFIEJACX5BJSJ4YIDNPWSNHTEWHHZSODQFQ4JZ32W7LVAW46LDYVQ6',
+    smartWallet: 'CB4DP5NR67AZAH4FMB4TLAJ2LLOEOLZ5Z3FMDODHR23AUM22ZWLYBU72',
   };
 
   const client = new KairosClient({
@@ -77,7 +81,7 @@ describe('Kairos SDK Unit Tests', () => {
     const kp = Keypair.random();
     const delegate = kp.publicKey();
     const delegator = kp.publicKey();
-    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const delegationManager = 'CCGZ3IDTERFBQYVGHGNUI46R4HMSEJMJ2LXYQD5A2GXU6DA6INNKBTGL';
     const networkPassphrase = 'Test SDF Network ; September 2015';
     const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
@@ -99,7 +103,7 @@ describe('Kairos SDK Unit Tests', () => {
   it('should produce different hash when delegation fields change', () => {
     const delegate = Keypair.random().publicKey();
     const delegator = Keypair.random().publicKey();
-    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const delegationManager = 'CCGZ3IDTERFBQYVGHGNUI46R4HMSEJMJ2LXYQD5A2GXU6DA6INNKBTGL';
     const networkPassphrase = 'Test SDF Network ; September 2015';
     const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
@@ -121,7 +125,7 @@ describe('Kairos SDK Unit Tests', () => {
   it('should include domain separator in hash computation', () => {
     const delegate = Keypair.random().publicKey();
     const delegator = Keypair.random().publicKey();
-    const delegationManager = 'CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP';
+    const delegationManager = 'CCGZ3IDTERFBQYVGHGNUI46R4HMSEJMJ2LXYQD5A2GXU6DA6INNKBTGL';
     const networkPassphrase = 'Test SDF Network ; September 2015';
     const authority = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
 
@@ -138,7 +142,7 @@ describe('Kairos SDK Unit Tests', () => {
         authority: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         caveats: [
           {
-            enforcer: 'CCPENGINE4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP',
+            enforcer: 'CAMFIEJACX5BJSJ4YIDNPWSNHTEWHHZSODQFQ4JZ32W7LVAW46LDYVQ6',
             terms: new Uint8Array(80),
           },
         ],
@@ -242,5 +246,211 @@ describe('Kairos SDK Unit Tests', () => {
     const maxBuf = i128ToBuffer(maxPositive);
     expect(maxBuf.readBigInt64BE(0)).toBe((2n ** 63n) - 1n);
     expect(maxBuf.readBigUInt64BE(8)).toBe(2n ** 64n - 1n);
+  });
+
+  it('should round-trip target-function-set-whitelist terms through create/decode', async () => {
+    const blend = Keypair.random().publicKey();
+    const soroswap = Keypair.random().publicKey();
+    const caveat = await client.policy.create({
+      type: 'target-function-set-whitelist',
+      targets: [
+        { address: blend, functions: ['deposit', 'withdraw'] },
+        { address: soroswap, functions: ['swap_exact_tokens_for_tokens'] },
+      ],
+    });
+
+    expect(caveat.terms[0]).toBe(4);
+    const decoded = client.policy.decode(caveat);
+    expect(decoded.type).toBe('target-function-set-whitelist');
+    expect(decoded.targets).toHaveLength(2);
+    expect(decoded.targets?.[0].functions).toEqual(['deposit', 'withdraw']);
+    expect(decoded.targets?.[1].functions).toEqual(['swap_exact_tokens_for_tokens']);
+  });
+
+  it('should round-trip pooled-protocol-spend-limit terms through create/decode', async () => {
+    const blend = Keypair.random().publicKey();
+    const soroswap = Keypair.random().publicKey();
+    const caveat = await client.policy.create({
+      type: 'pooled-protocol-spend-limit',
+      protocolActions: [
+        { address: blend, function: 'deposit', argIndex: 2 },
+        { address: soroswap, function: 'swap_exact_tokens_for_tokens', argIndex: SOROSWAP_SWAP_AMOUNT_IN_ARG_INDEX },
+      ],
+      spendLimit: 1000n,
+      period: 86400,
+    });
+
+    expect(caveat.terms[0]).toBe(5);
+    const decoded = client.policy.decode(caveat);
+    expect(decoded.type).toBe('pooled-protocol-spend-limit');
+    expect(decoded.protocolActions).toHaveLength(2);
+    expect(decoded.protocolActions?.[0]).toEqual({
+      address: blend,
+      function: 'deposit',
+      argIndex: 2,
+      valueMode: PooledSpendValueMode.FlatI128,
+    });
+    expect(decoded.spendLimit).toBe(1000n);
+    expect(decoded.period).toBe(86400n);
+  });
+
+  it('encodes a Blend request-vec-sum pooled-protocol-spend-limit action with its value mode', async () => {
+    const blend = Keypair.random().publicKey();
+    const caveat = await client.policy.create({
+      type: 'pooled-protocol-spend-limit',
+      protocolActions: [
+        {
+          address: blend,
+          function: 'submit',
+          argIndex: BLEND_SUBMIT_REQUESTS_ARG_INDEX,
+          valueMode: PooledSpendValueMode.RequestVecAmountSum,
+        },
+      ],
+      spendLimit: 1000n,
+      period: 86400,
+    });
+
+    const decoded = client.policy.decode(caveat);
+    expect(decoded.protocolActions?.[0]).toEqual({
+      address: blend,
+      function: 'submit',
+      argIndex: BLEND_SUBMIT_REQUESTS_ARG_INDEX,
+      valueMode: PooledSpendValueMode.RequestVecAmountSum,
+    });
+  });
+
+  describe('protocol-agnostic adapter dispatch (buildAction)', () => {
+    const owner = Keypair.random().publicKey();
+    const usdc = Keypair.random().publicKey();
+    const xlm = Keypair.random().publicKey();
+
+    // A caller that only knows `ProtocolActionRequest` and `getAdapter` — no `if (protocolId ===
+    // 'blend')` anywhere — exercising the same dispatch path protocolExecutionService.ts uses.
+    function dispatch(request: ProtocolActionRequest) {
+      const adapter = getAdapter(client, request.protocolId);
+      return adapter.buildAction(request);
+    }
+
+    it('builds a Blend deposit with a positive position delta', () => {
+      const result = dispatch({ protocolId: 'blend', action: 'deposit', asset: usdc, amount: 500n, owner });
+      expect(result.execution.function).toBe('submit');
+      expect(result.positionDelta).toEqual({ asset: usdc, kind: 'lend', delta: 500n });
+      expect(result.describe('deadbeef')).toContain('Blend deposit');
+    });
+
+    it('builds a Blend withdraw with a negative position delta', () => {
+      const result = dispatch({ protocolId: 'blend', action: 'withdraw', asset: usdc, amount: 200n, owner });
+      expect(result.positionDelta).toEqual({ asset: usdc, kind: 'lend', delta: -200n });
+    });
+
+    it('builds a Soroswap swap with an lp-kind delta on the output asset', () => {
+      const result = dispatch({
+        protocolId: 'soroswap',
+        action: 'swap',
+        path: [xlm, usdc],
+        amountIn: 1000n,
+        minAmountOut: 950n,
+        deadline: 9999999999n,
+        owner,
+      });
+      expect(result.execution.function).toBe('swap_exact_tokens_for_tokens');
+      expect(result.positionDelta).toEqual({ asset: usdc, kind: 'lp', delta: 950n });
+      expect(result.describe('deadbeef')).toContain('Soroswap swap');
+    });
+
+    it('rejects a Blend action with a non-positive amount', () => {
+      expect(() => dispatch({ protocolId: 'blend', action: 'deposit', asset: usdc, amount: 0n, owner })).toThrow();
+      expect(() => dispatch({ protocolId: 'blend', action: 'deposit', asset: usdc, amount: -1n, owner })).toThrow();
+    });
+
+    it('rejects a Blend action with a malformed asset address', () => {
+      expect(() => dispatch({ protocolId: 'blend', action: 'deposit', asset: 'not-an-address', amount: 100n, owner })).toThrow();
+    });
+
+    it('rejects a Soroswap swap with a single-asset path', () => {
+      expect(() =>
+        dispatch({ protocolId: 'soroswap', action: 'swap', path: [xlm], amountIn: 100n, minAmountOut: 90n, deadline: 999n, owner })
+      ).toThrow();
+    });
+
+    it('rejects a Soroswap swap with a non-positive amountIn or expired deadline', () => {
+      expect(() =>
+        dispatch({ protocolId: 'soroswap', action: 'swap', path: [xlm, usdc], amountIn: 0n, minAmountOut: 90n, deadline: 999n, owner })
+      ).toThrow();
+      expect(() =>
+        dispatch({ protocolId: 'soroswap', action: 'swap', path: [xlm, usdc], amountIn: 100n, minAmountOut: 90n, deadline: 0n, owner })
+      ).toThrow();
+    });
+  });
+
+  describe('address validation (no silent fallback for malformed strkeys)', () => {
+    it('throws instead of silently collapsing an invalid strkey to a placeholder address', () => {
+      expect(() => getAddressXdrBytes('not-a-real-address')).toThrow();
+      expect(() => getAddressXdrBytes('CINVALIDCHECKSUMBUTLOOKSLIKEACONTRACTIDXXXXXXXXXXXXXXXXXXXX')).toThrow();
+    });
+
+    it('two different malformed addresses no longer collapse to the same encoded bytes', () => {
+      // Regression test: the old fallback stripped non-hex characters from a 'C...' string and
+      // zero-padded short results, so most malformed contract-like strings collapsed to the same
+      // all-zero 32-byte address — silently merging what should have been distinct identities.
+      let firstError: unknown;
+      let secondError: unknown;
+      try {
+        getAddressXdrBytes('CDWMR4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP');
+      } catch (e) {
+        firstError = e;
+      }
+      try {
+        getAddressXdrBytes('CCPENGINE4I37T72D57P63OHEUXWUNEXN276UIP66GXZEXL4R6XUR3JWR4IP');
+      } catch (e) {
+        secondError = e;
+      }
+      expect(firstError).toBeDefined();
+      expect(secondError).toBeDefined();
+    });
+  });
+
+  describe('execution request validation (fails fast, before any RPC call)', () => {
+    it('rejects execute() with an empty executions array', async () => {
+      await expect(
+        client.execution.execute({
+          redeemer: Keypair.random(),
+          delegationChains: [],
+          executions: [],
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects execute() with an invalid target address', async () => {
+      await expect(
+        client.execution.execute({
+          redeemer: Keypair.random(),
+          delegationChains: [],
+          executions: [{ target: 'not-an-address', function: 'deposit', args: [] }],
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects execute() with a malformed function symbol', async () => {
+      const target = Keypair.random().publicKey();
+      await expect(
+        client.execution.execute({
+          redeemer: Keypair.random(),
+          delegationChains: [],
+          executions: [{ target, function: 'not a valid symbol!', args: [] }],
+        })
+      ).rejects.toThrow();
+    });
+
+    it('rejects execute() with an empty delegation chain', async () => {
+      const target = Keypair.random().publicKey();
+      await expect(
+        client.execution.execute({
+          redeemer: Keypair.random(),
+          delegationChains: [[]],
+          executions: [{ target, function: 'deposit', args: [] }],
+        })
+      ).rejects.toThrow();
+    });
   });
 });

@@ -7,6 +7,8 @@ import { Badge } from "@/app/components/ui/Badge";
 import { Segmented } from "@/app/components/ui/Segmented";
 import { useWalletContext } from "@/app/contexts/WalletContext";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
+import { useStellarBalances } from "@/app/hooks/useStellarBalances";
+import { useProtocolAllocations } from "@/app/hooks/useProtocolAllocations";
 import { fetchOrderBookQuote, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
 
 function shortAddress(addr: string) {
@@ -48,14 +50,14 @@ const CHART_DATA = [
   { t: "Jul 05", v: 12480 },
 ];
 
-const ALLOCATION = [
-  { label: "Spot", pct: 35 },
-  { label: "Perpetuals", pct: 42 },
-  { label: "Blend", pct: 18 },
-  { label: "Idle Cash", pct: 5 },
+// Fallback shown before real allocation data loads (or while disconnected) — replaced by
+// useProtocolAllocations()'s real Spot/Blend/Soroswap breakdown once available.
+const ALLOCATION_PLACEHOLDER = [
+  { label: "Spot", pct: 0 },
+  { label: "Blend", pct: 0 },
+  { label: "Soroswap", pct: 0 },
+  { label: "Perpetuals", pct: 0 },
 ];
-
-const PORTFOLIO_VALUE = 12480;
 
 const AGENTS = [
   { name: "Portfolio Manager", status: "ACTIVE", tone: "success" as const },
@@ -65,13 +67,15 @@ const AGENTS = [
   { name: "Risk Agent", status: "WATCHING", tone: "neutral" as const },
 ];
 
-const ACTIVITY = [
-  { label: "Recent execution — Bought BTC", time: "5m ago" },
-  { label: "Portfolio rebalance", time: "22m ago" },
-  { label: "Blend deposit", time: "1h ago" },
-  { label: "Risk update", time: "3h ago" },
-  { label: "Asset rotation", time: "6h ago" },
-];
+function relativeTime(timestampMs: number): string {
+  const diffMs = Date.now() - timestampMs;
+  const minutes = Math.floor(diffMs / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 function chartGeometry(points: number[], width: number, height: number) {
   const max = Math.max(...points);
@@ -190,6 +194,11 @@ function PerformanceChart({ range, onRangeChange }: { range: Range; onRangeChang
 export default function DashboardOverview() {
   const [range, setRange] = useState<Range>("1M");
   const { connected, wallet, smartWalletAddress } = useWalletContext();
+  const {
+    xlmBalance: freighterXlmBalance,
+    usdcBalance: freighterUsdcBalance,
+    loading: freighterBalanceLoading,
+  } = useStellarBalances(wallet?.address ?? null, wallet?.networkPassphrase ?? null);
   const { xlmBalance, usdcBalance, loading: balanceLoading } = useSmartWalletBalances(
     smartWalletAddress,
     wallet?.networkPassphrase ?? null,
@@ -215,48 +224,97 @@ export default function DashboardOverview() {
     };
   }, [wallet?.networkPassphrase]);
 
-  const portfolioValue = usdcBalance + xlmBalance * (xlmUsdPrice ?? 0);
+  const portfolioValue = freighterUsdcBalance + freighterXlmBalance * (xlmUsdPrice ?? 0);
+
+  const { allocations, activity } = useProtocolAllocations(connected);
+
+  // Real per-venue proportions from raw position amounts — not a true USD split, since no
+  // cross-asset price feed exists yet to convert Blend/Soroswap asset units to a common unit
+  // (see backend/src/routes/stats.ts's /allocations handler). "Perpetuals" stays a static
+  // placeholder until a perps DEX is integrated (Phase 2).
+  const spotTotal = allocations?.spot.reduce((s, p) => s + (parseFloat(p.openAmount) || 0), 0) ?? 0;
+  const blendTotal = allocations?.blend.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) ?? 0;
+  const soroswapTotal = allocations?.soroswap.reduce((s, p) => s + (parseFloat(p.amount) || 0), 0) ?? 0;
+  const realTotal = spotTotal + blendTotal + soroswapTotal;
+  const pctOf = (v: number) => (realTotal > 0 ? (v / realTotal) * 100 : 0);
+
+  const allocationRows = allocations
+    ? [
+        { label: "Spot", pct: pctOf(spotTotal) },
+        { label: "Blend", pct: pctOf(blendTotal) },
+        { label: "Soroswap", pct: pctOf(soroswapTotal) },
+        { label: "Perpetuals", pct: 0 },
+      ]
+    : ALLOCATION_PLACEHOLDER;
+
+  const activityRows = activity.length > 0 ? activity.map((a) => ({ label: a.label, time: relativeTime(a.time) })) : [];
 
   return (
     <div className="flex flex-col gap-10 pb-4 sm:gap-12">
-      <div>
-        <h1 className="font-display text-3xl font-semibold tracking-tight text-text-primary sm:text-4xl">
-          Autonomous Capital Overview
-        </h1>
-        <p className="mt-2 text-sm text-text-secondary">
-          Portfolio managed autonomously according to your investment policy.
-        </p>
-      </div>
+      
 
       {/* Main row: 3 stacked stat cards left, Performance chart right */}
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <div className="flex flex-col gap-5">
           <Panel className="flex h-full flex-col p-6">
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-              Portfolio Value
+              Wallet Balance
             </p>
             {!connected || !smartWalletAddress ? (
               <p className="mt-2 font-display text-3xl font-bold tabular-nums text-text-primary">$0.00</p>
             ) : (
-              <p className="mt-2 font-display text-3xl font-bold tabular-nums text-text-primary">
-                {balanceLoading && xlmUsdPrice === null
-                  ? "…"
-                  : `$${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-              </p>
+              <div className="mt-2 flex flex-col gap-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-accent-hover" />
+                    <span className="text-sm text-text-secondary">XLM</span>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-mono text-sm tabular-nums text-text-primary">
+                      {freighterBalanceLoading && freighterXlmBalance === 0
+                        ? "…"
+                        : `${freighterXlmBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} XLM`}
+                    </p>
+                    {xlmUsdPrice !== null && (
+                      <p className="font-mono text-xs tabular-nums text-text-muted">
+                        ≈ ${(freighterXlmBalance * xlmUsdPrice).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="h-2 w-2 rounded-full bg-[#22c55e]" />
+                    <span className="text-sm text-text-secondary">USDC</span>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-mono text-sm tabular-nums text-text-primary">
+                      {freighterBalanceLoading && freighterUsdcBalance === 0
+                        ? "…"
+                        : `${freighterUsdcBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC`}
+                    </p>
+                    <p className="font-mono text-xs tabular-nums text-text-muted">
+                      ${freighterUsdcBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-1 border-t border-white/[0.06] pt-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs text-text-muted">Total</span>
+                    <span className="font-mono text-base font-bold tabular-nums text-text-primary">
+                      {freighterBalanceLoading && xlmUsdPrice === null
+                        ? "…"
+                        : `$${portfolioValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                    </span>
+                  </div>
+                </div>
+              </div>
             )}
-            <div className="mt-auto flex items-center justify-between pt-4 text-xs">
-              <span className="text-text-secondary">
-                {xlmBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} XLM
-              </span>
-              <span className="font-mono tabular-nums text-text-secondary">
-                {usdcBalance.toLocaleString(undefined, { maximumFractionDigits: 2 })} USDC
-              </span>
-            </div>
           </Panel>
 
           <Panel className="flex h-full flex-col p-6">
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">
-              Wallet Balance
+              Smart Wallet Balance
             </p>
             {!connected ? (
               <p className="mt-2 font-display text-2xl font-bold text-text-primary">Connect Wallet</p>
@@ -295,43 +353,19 @@ export default function DashboardOverview() {
         </div>
       </div>
 
-      {/* AI Status */}
-      <Panel className="flex flex-col p-6 sm:flex-row sm:items-center sm:gap-8">
-        <div className="flex items-center gap-3">
-          <span className="h-2.5 w-2.5 rounded-full bg-success shadow-[0_0_10px_rgba(45,212,160,0.6)]" />
-          <div>
-            <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">AI Status</p>
-            <p className="font-display text-xl font-bold text-text-primary">Active</p>
-          </div>
-        </div>
-        <div className="mt-3 flex flex-wrap gap-x-6 gap-y-1 sm:mt-0 sm:ml-auto">
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-text-muted">Strategy</span>
-            <span className="font-mono tabular-nums text-text-secondary">Momentum</span>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-text-muted">Confidence</span>
-            <span className="font-mono tabular-nums text-text-primary">91%</span>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="text-text-muted">Last decision</span>
-            <span className="text-text-secondary">5m ago</span>
-          </div>
-        </div>
-      </Panel>
 
       <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Panel>
           <CardHeader title="Capital Allocation" />
           <CardBody className="space-y-4 pt-3">
-            {ALLOCATION.map((a) => (
+            {allocationRows.map((a) => (
               <div key={a.label}>
                 <div className="mb-1.5 flex items-center justify-between text-xs">
                   <span className="text-text-secondary">{a.label}</span>
                   <span className="font-mono tabular-nums text-text-primary">
-                    {a.pct}%
+                    {a.pct.toFixed(1)}%
                     <span className="ml-2 text-text-muted">
-                      ${Math.round((PORTFOLIO_VALUE * a.pct) / 100).toLocaleString()}
+                      ${Math.round((portfolioValue * a.pct) / 100).toLocaleString()}
                     </span>
                   </span>
                 </div>
@@ -385,20 +419,24 @@ export default function DashboardOverview() {
         <Panel>
           <CardHeader title="Recent Activity" />
           <CardBody className="pt-3">
-            <div className="space-y-0">
-              {ACTIVITY.map((item, i) => (
-                <div key={item.label} className="relative flex gap-3 pb-5 last:pb-0">
-                  <div className="flex flex-col items-center">
-                    <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent-hover" />
-                    {i < ACTIVITY.length - 1 && <span className="w-px flex-1 bg-white/[0.08]" />}
+            {activityRows.length === 0 ? (
+              <p className="py-4 text-sm text-text-muted">No activity yet.</p>
+            ) : (
+              <div className="space-y-0">
+                {activityRows.map((item, i) => (
+                  <div key={`${item.label}-${i}`} className="relative flex gap-3 pb-5 last:pb-0">
+                    <div className="flex flex-col items-center">
+                      <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent-hover" />
+                      {i < activityRows.length - 1 && <span className="w-px flex-1 bg-white/[0.08]" />}
+                    </div>
+                    <div className="flex flex-1 items-center justify-between pt-0.5">
+                      <span className="text-sm text-text-secondary">{item.label}</span>
+                      <span className="text-xs text-text-muted">{item.time}</span>
+                    </div>
                   </div>
-                  <div className="flex flex-1 items-center justify-between pt-0.5">
-                    <span className="text-sm text-text-secondary">{item.label}</span>
-                    <span className="text-xs text-text-muted">{item.time}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            )}
           </CardBody>
         </Panel>
       </div>

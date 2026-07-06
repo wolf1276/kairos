@@ -16,6 +16,7 @@ export class KairosClient {
   public readonly rpcProvider: rpc.Server;
   public readonly networkPassphrase: string;
   public readonly contracts: ContractConfig;
+  public readonly network?: 'testnet' | 'mainnet';
 
   public readonly wallet: WalletModule;
   public readonly registry: RegistryModule;
@@ -39,6 +40,7 @@ export class KairosClient {
     this.rpcProvider = new rpc.Server(rpcUrl);
     this.networkPassphrase = config.networkPassphrase || netConfig?.networkPassphrase || '';
     this.contracts = config.contracts;
+    this.network = config.network;
 
     this.wallet = new WalletModule(this);
     this.registry = new RegistryModule(this);

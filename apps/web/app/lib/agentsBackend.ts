@@ -338,6 +338,33 @@ export async function getAgentsSummary(): Promise<AgentDashboard[]> {
   return data.agents;
 }
 
+export interface SpotAllocation {
+  pair: string;
+  openAmount: string;
+  avgCost: string;
+}
+
+export interface ProtocolAllocation {
+  asset: string;
+  kind: string;
+  amount: string;
+  updatedAt: number;
+}
+
+export interface Allocations {
+  spot: SpotAllocation[];
+  blend: ProtocolAllocation[];
+  soroswap: ProtocolAllocation[];
+}
+
+/** Real per-venue position breakdown — replaces the dashboard's hardcoded ALLOCATION mock.
+ *  See backend/src/routes/stats.ts's `/allocations` handler for why amounts aren't converted
+ *  to USD percentages here (no cross-asset price feed exists yet). */
+export async function getAllocations(): Promise<Allocations> {
+  const data = await request<{ success: boolean } & Allocations>("/api/allocations");
+  return { spot: data.spot, blend: data.blend, soroswap: data.soroswap };
+}
+
 // ── Autonomous multi-agent system ──
 
 /** Idempotently creates + starts the 3 fixed role agents (yield/strategic/balancer) for the caller. */

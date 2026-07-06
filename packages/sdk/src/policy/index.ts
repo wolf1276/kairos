@@ -1,16 +1,33 @@
 import { Address, xdr, StrKey } from '@stellar/stellar-sdk';
 import { Caveat, Delegation } from '../types';
-import { addressToPublicKey, encodeTargetWhitelistTerms, encodeTimeRestrictionTerms, i128ToBuffer } from '../utils';
+import {
+  addressToPublicKey,
+  encodeTargetWhitelistTerms,
+  encodeTimeRestrictionTerms,
+  encodeTargetFunctionSetWhitelistTerms,
+  encodePooledProtocolSpendLimitTerms,
+  PooledSpendValueMode,
+  i128ToBuffer,
+} from '../utils';
 import { PolicyViolationError, ExecutionFailedError } from '../errors';
 
 export interface PolicyCreateParams {
-  type: 'spend-limit' | 'time-restriction' | 'target-whitelist';
+  type:
+    | 'spend-limit'
+    | 'time-restriction'
+    | 'target-whitelist'
+    | 'target-function-set-whitelist'
+    | 'pooled-protocol-spend-limit';
   token?: string;
   spendLimit?: string | bigint;
   period?: bigint | number;
   start?: bigint | number;
   expiry?: bigint | number;
   target?: string;
+  /** For 'target-function-set-whitelist': the set of allowed (address, functions) pairs. */
+  targets?: { address: string; functions: string[] }[];
+  /** For 'pooled-protocol-spend-limit': the set of (address, function, argIndex, valueMode) actions sharing one limit/period. */
+  protocolActions?: { address: string; function: string; argIndex: number; valueMode?: PooledSpendValueMode }[];
 }
 
 export class PolicyModule {
@@ -109,6 +126,20 @@ export class PolicyModule {
         terms = new Uint8Array(termsBuf);
         break;
       }
+      case 'target-function-set-whitelist': {
+        if (!params.targets || params.targets.length === 0) {
+          throw new PolicyViolationError('target-function-set-whitelist', 'targets is required');
+        }
+        terms = encodeTargetFunctionSetWhitelistTerms(params.targets);
+        break;
+      }
+      case 'pooled-protocol-spend-limit': {
+        if (!params.protocolActions || params.protocolActions.length === 0 || params.spendLimit === undefined || params.period === undefined) {
+          throw new PolicyViolationError('pooled-protocol-spend-limit', 'protocolActions, spendLimit, and period are required');
+        }
+        terms = encodePooledProtocolSpendLimitTerms(params.protocolActions, BigInt(params.spendLimit), params.period);
+        break;
+      }
       default:
         throw new PolicyViolationError(params.type, `Unsupported policy type: ${params.type}`);
     }
@@ -199,6 +230,62 @@ export class PolicyModule {
           type: 'time-restriction',
           start,
           expiry,
+        };
+      }
+      case 4: {
+        const count = terms.readUInt8(1);
+        let offset = 2;
+        const targets: { address: string; functions: string[] }[] = [];
+        for (let i = 0; i < count; i++) {
+          const addrLen = terms.readUInt8(offset);
+          offset += 1;
+          const address = Address.fromScVal(this.parseScValFromBuffer(terms.subarray(offset, offset + addrLen))).toString();
+          offset += addrLen;
+          const fnCount = terms.readUInt8(offset);
+          offset += 1;
+          const functions: string[] = [];
+          for (let j = 0; j < fnCount; j++) {
+            const fnLen = terms.readUInt8(offset);
+            offset += 1;
+            const fn = this.parseScValFromBuffer(terms.subarray(offset, offset + fnLen)).sym().toString();
+            offset += fnLen;
+            functions.push(fn);
+          }
+          targets.push({ address, functions });
+        }
+        return {
+          type: 'target-function-set-whitelist',
+          targets,
+        };
+      }
+      case 5: {
+        const count = terms.readUInt8(1);
+        let offset = 2;
+        const protocolActions: { address: string; function: string; argIndex: number; valueMode: PooledSpendValueMode }[] = [];
+        for (let i = 0; i < count; i++) {
+          const addrLen = terms.readUInt8(offset);
+          offset += 1;
+          const address = Address.fromScVal(this.parseScValFromBuffer(terms.subarray(offset, offset + addrLen))).toString();
+          offset += addrLen;
+          const fnLen = terms.readUInt8(offset);
+          offset += 1;
+          const fn = this.parseScValFromBuffer(terms.subarray(offset, offset + fnLen)).sym().toString();
+          offset += fnLen;
+          const argIndex = terms.readUInt8(offset);
+          offset += 1;
+          const valueMode = terms.readUInt8(offset) as PooledSpendValueMode;
+          offset += 1;
+          protocolActions.push({ address, function: fn, argIndex, valueMode });
+        }
+        const limitHi = terms.readBigInt64BE(offset);
+        const limitLo = terms.readBigUInt64BE(offset + 8);
+        const spendLimit = (limitHi << 64n) | (limitLo & 0xffffffffffffffffn);
+        const period = terms.readBigUInt64BE(offset + 16);
+        return {
+          type: 'pooled-protocol-spend-limit',
+          protocolActions,
+          spendLimit,
+          period,
         };
       }
       default:

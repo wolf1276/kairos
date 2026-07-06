@@ -5,6 +5,8 @@ export const POLICY_TYPES = {
   TARGET_WHITELIST: 1,
   SPEND_LIMIT: 2,
   TIME_RESTRICTION: 3,
+  TARGET_FUNCTION_SET_WHITELIST: 4,
+  POOLED_PROTOCOL_SPEND_LIMIT: 5,
 } as const;
 export const DEFAULT_TESTNET_RPC = 'https://soroban-testnet.stellar.org';
 export const DEFAULT_TESTNET_PASSPHRASE = 'Test SDF Network ; September 2015';

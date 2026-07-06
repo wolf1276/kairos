@@ -2,6 +2,9 @@ import Database from 'better-sqlite3';
 import * as fs from 'fs';
 import * as path from 'path';
 import { getDbPath } from './config.js';
+import type { ProtocolId, ProtocolPositionKind } from '@wolf1276/kairos-sdk';
+
+export type { ProtocolId, ProtocolPositionKind };
 
 export type AgentStatus = 'new' | 'running' | 'stopped' | 'error';
 
@@ -226,6 +229,52 @@ export interface PerformanceSnapshotRow {
   win_rate: number;
   capital_managed: string | null;
   created_at: number;
+}
+
+/** One open position an agent holds in an external protocol (Blend, Soroswap, ...), reached via
+ *  the delegation/redemption execution path (see protocolExecutionService.ts) rather than the
+ *  legacy direct-custody trading loop. Upserted after every protocol execution. */
+export interface ProtocolPositionRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  protocol_id: ProtocolId;
+  kind: ProtocolPositionKind;
+  asset: string;
+  amount: string;
+  updated_at: number;
+  created_at: number;
+}
+
+export type ProtocolExecutionJournalStatus = 'pending' | 'broadcast' | 'recorded' | 'failed';
+
+/**
+ * Outbox pattern for protocol executions (Blend/Soroswap via delegation redemption), mirroring
+ * `ExecutionJournalRow`'s rationale for the legacy trade path. Opened as 'pending' before
+ * `client.execution.execute` is submitted. Once execution confirms on-chain, `tx_hash` is
+ * captured and status moves to 'broadcast' — the risk window that remains is a crash between
+ * that on-chain confirmation and the local position/audit write. `applyProtocolExecutionRecord`
+ * (protocolPositionService.ts) makes that transition atomic (SQLite transaction covering both
+ * the `protocol_positions` delta and this row's move to 'recorded'), and
+ * `reconcilePendingProtocolExecutions` (run at startup, see index.ts) replays any row still
+ * stuck at 'broadcast' — since it has a captured `tx_hash`, we know the trade landed and just
+ * need to finish applying it locally, exactly once (guarded by the unique index below and by
+ * only ever applying a delta while the row's status is still 'broadcast').
+ */
+export interface ProtocolExecutionJournalRow {
+  id: string;
+  agent_id: string;
+  owner: string;
+  protocol_id: ProtocolId;
+  action: string;
+  asset: string;
+  kind: ProtocolPositionKind;
+  delta: string;
+  status: ProtocolExecutionJournalStatus;
+  tx_hash: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 /** Per-owner portfolio target + last-known allocation. One row per owner. */
@@ -660,6 +709,38 @@ export function getDb(): Database.Database {
     CREATE INDEX IF NOT EXISTS idx_journal_agent ON execution_journal(agent_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_journal_status ON execution_journal(status);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_journal_txhash ON execution_journal(tx_hash) WHERE tx_hash IS NOT NULL;
+    CREATE TABLE IF NOT EXISTS protocol_positions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL,
+      owner TEXT NOT NULL,
+      protocol_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      asset TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(agent_id, protocol_id, asset)
+    );
+    CREATE INDEX IF NOT EXISTS idx_protocol_positions_agent ON protocol_positions(agent_id);
+    CREATE INDEX IF NOT EXISTS idx_protocol_positions_owner ON protocol_positions(owner);
+    CREATE TABLE IF NOT EXISTS protocol_execution_journal (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+      owner TEXT NOT NULL,
+      protocol_id TEXT NOT NULL,
+      action TEXT NOT NULL,
+      asset TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      delta TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      tx_hash TEXT,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_protocol_journal_agent ON protocol_execution_journal(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_protocol_journal_status ON protocol_execution_journal(status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_protocol_journal_txhash ON protocol_execution_journal(tx_hash) WHERE tx_hash IS NOT NULL;
   `);
 
   const agentCols0 = db.prepare("PRAGMA table_info(agents)").all() as { name: string }[];

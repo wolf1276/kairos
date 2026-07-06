@@ -24,6 +24,9 @@ import { executePaperQuantTrade } from './paperExecutor.js';
 import { mapThrownError } from './errors.js';
 import { recordCompletedTrade } from './executionEngine.js';
 import { openExecution, markBroadcast, markRecorded } from './executionJournal.js';
+import { executeProtocolAction } from './protocolExecutionService.js';
+import { isProtocolExecutionEnabled } from './config.js';
+import { BLEND_TESTNET_ASSETS } from '@wolf1276/kairos-sdk';
 
 /** stroops (integer string) → decimal asset units string, matching tick.ts's convention. */
 function stroopsToAmount(stroops: string): string {
@@ -84,12 +87,34 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
 
     const willExecute = side !== null && policy.ok && !delegationBlocks && risk.ok;
 
+    // The yield role's reallocation deploys idle capital into a real protocol (Blend deposit)
+    // rather than a spot buy, when protocol execution is turned on for live agents. Paper mode
+    // and the strategic/balancer roles are untouched — they have no real protocol venue mapped
+    // yet (see decisionEngine.ts's simulated yield venues), so they keep using the legacy
+    // spot-trade path exactly as before.
+    const useProtocolExecution = config.role === 'yield' && row.mode === 'live' && isProtocolExecutionEnabled();
+
     let tradeId: string | null = null;
     let executionResult: string;
     let positionAfter = positionBefore;
     let pnlAfter = pnlBefore;
 
-    if (willExecute && side) {
+    if (willExecute && side && useProtocolExecution) {
+      // Blend deposit sizing reuses the same base-unit amount the legacy spot-buy path would
+      // have used for this agent (config.amountPerTrade), rather than inventing a new sizing
+      // rule — see stroopsToAmount's doc for the base-unit convention this assumes.
+      const result = await executeProtocolAction(row, {
+        protocolId: 'blend',
+        action: 'deposit',
+        asset: BLEND_TESTNET_ASSETS.USDC,
+        amount: BigInt(config.amountPerTrade),
+      });
+      // executeProtocolAction already journals (protocol_execution_journal), applies the
+      // position delta, and audit-logs internally — nothing further to record here. The spot
+      // pair position/PnL are untouched by a protocol deposit, so positionAfter/pnlAfter stay
+      // at their pre-tick values.
+      executionResult = result.ok ? `success:${result.txHash}` : `failed:${result.error}`;
+    } else if (willExecute && side) {
       // 7. Execute (paper or live) → 8. update positions. Journaled (outbox pattern) so a
       // crash between broadcast and the DB write is recoverable — see executionJournal.ts.
       const amount = stroopsToAmount(config.amountPerTrade);

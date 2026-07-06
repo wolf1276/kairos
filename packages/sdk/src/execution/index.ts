@@ -1,7 +1,47 @@
 import { Address, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
 import { Delegation, Execution, Signer, TransactionResult } from '../types';
-import { TransactionSimulationError } from '../errors';
+import { RpcError, TransactionSimulationError } from '../errors';
+
+// Soroban `Symbol` is limited to 32 ASCII characters drawn from [A-Za-z0-9_] — a function name
+// outside that shape can't be a valid contract method, so it's rejected here before ever
+// reaching `xdr.ScVal.scvSymbol` (whose own validation behavior isn't something callers should
+// have to rely on for a client-side error message).
+const VALID_SYMBOL = /^[A-Za-z0-9_]{1,32}$/;
+
+/** Rejects a malformed execution request before any XDR is built — an execution with no target/
+ *  function, an invalid target address, or an oversized/invalid function symbol would otherwise
+ *  either throw a low-level stellar-sdk error deep inside XDR encoding or (worse) silently build
+ *  a transaction that fails on-chain in a way that's hard to attribute back to the bad input. */
+function validateExecution(exec: Execution, index: number): void {
+  if (!exec.target) {
+    throw new RpcError(`Execution[${index}]: target is required`);
+  }
+  try {
+    Address.fromString(exec.target);
+  } catch {
+    throw new RpcError(`Execution[${index}]: invalid target address '${exec.target}'`);
+  }
+  if (!exec.function || !VALID_SYMBOL.test(exec.function)) {
+    throw new RpcError(
+      `Execution[${index}]: function name '${exec.function}' is not a valid Soroban Symbol (1-32 chars, [A-Za-z0-9_])`
+    );
+  }
+  if (!Array.isArray(exec.args)) {
+    throw new RpcError(`Execution[${index}]: args must be an array`);
+  }
+}
+
+function validateDelegationChains(chains: Delegation[][]): void {
+  if (chains.length === 0) {
+    throw new RpcError('At least one delegation chain is required');
+  }
+  for (const chain of chains) {
+    if (chain.length === 0) {
+      throw new RpcError('Delegation chains must not be empty');
+    }
+  }
+}
 
 export class ExecutionModule {
   constructor(private client: KairosClient) {}
@@ -17,8 +57,6 @@ export class ExecutionModule {
     delegationChains: Delegation[][] | Delegation[];
     executions: Execution[] | Execution;
   }): Promise<TransactionResult> {
-    const sourceAccount = await this.client.getAccount(params.redeemer.publicKey());
-    
     // Normalize delegationChains
     let chains: Delegation[][];
     if (params.delegationChains.length > 0 && !Array.isArray(params.delegationChains[0])) {
@@ -35,8 +73,18 @@ export class ExecutionModule {
       execs = params.executions;
     }
 
+    if (execs.length === 0) {
+      throw new RpcError('At least one execution is required');
+    }
+    // Validated before any network I/O — a malformed request fails fast instead of wasting an
+    // RPC round-trip fetching the source account first.
+    execs.forEach(validateExecution);
+    validateDelegationChains(chains);
+
+    const sourceAccount = await this.client.getAccount(params.redeemer.publicKey());
+
     const permissionContextsScVal = xdr.ScVal.scvVec(
-      chains.map(chain => 
+      chains.map(chain =>
         xdr.ScVal.scvVec(
           chain.map(delegation => this.client.delegationToScVal(delegation))
         )
@@ -44,7 +92,7 @@ export class ExecutionModule {
     );
 
     const executionsScVal = xdr.ScVal.scvVec(
-      execs.map(exec => 
+      execs.map(exec =>
         xdr.ScVal.scvMap([
           new xdr.ScMapEntry({
             key: xdr.ScVal.scvSymbol('args'),
@@ -92,8 +140,6 @@ export class ExecutionModule {
     delegationChains: Delegation[][] | Delegation[];
     executions: Execution[] | Execution;
   }): Promise<rpc.Api.SimulateTransactionResponse> {
-    const sourceAccount = await this.client.getAccount(params.redeemerAddress);
-    
     let chains: Delegation[][];
     if (params.delegationChains.length > 0 && !Array.isArray(params.delegationChains[0])) {
       chains = [params.delegationChains as Delegation[]];
@@ -108,8 +154,16 @@ export class ExecutionModule {
       execs = params.executions;
     }
 
+    if (execs.length === 0) {
+      throw new RpcError('At least one execution is required');
+    }
+    execs.forEach(validateExecution);
+    validateDelegationChains(chains);
+
+    const sourceAccount = await this.client.getAccount(params.redeemerAddress);
+
     const permissionContextsScVal = xdr.ScVal.scvVec(
-      chains.map(chain => 
+      chains.map(chain =>
         xdr.ScVal.scvVec(
           chain.map(delegation => this.client.delegationToScVal(delegation))
         )
@@ -117,7 +171,7 @@ export class ExecutionModule {
     );
 
     const executionsScVal = xdr.ScVal.scvVec(
-      execs.map(exec => 
+      execs.map(exec =>
         xdr.ScVal.scvMap([
           new xdr.ScMapEntry({
             key: xdr.ScVal.scvSymbol('args'),

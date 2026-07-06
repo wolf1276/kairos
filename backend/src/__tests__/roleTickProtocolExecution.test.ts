@@ -1,0 +1,153 @@
+// Verifies the yield role's reallocation routes through the real protocol-execution path
+// (Blend deposit via executeProtocolAction) instead of the legacy spot-buy path, when
+// ENABLE_PROTOCOL_EXECUTION is on and the agent is live — see roleTick.ts's useProtocolExecution
+// branch. Every collaborator is mocked so this only exercises the dispatch decision itself, not
+// the full oracle/LLM/DB pipeline (those are covered elsewhere).
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { AgentRow } from '../db.js';
+import type { RoleStrategyConfig } from '../types.js';
+
+const executeProtocolActionMock = vi.fn();
+const executeQuantTradeMock = vi.fn();
+const executePaperQuantTradeMock = vi.fn();
+const recordCompletedTradeMock = vi.fn();
+
+vi.mock('../protocolExecutionService.js', () => ({
+  executeProtocolAction: executeProtocolActionMock,
+}));
+vi.mock('../tick.js', () => ({
+  executeQuantTrade: executeQuantTradeMock,
+}));
+vi.mock('../paperExecutor.js', () => ({
+  executePaperQuantTrade: executePaperQuantTradeMock,
+}));
+vi.mock('../executionEngine.js', () => ({
+  recordCompletedTrade: recordCompletedTradeMock,
+}));
+vi.mock('../executionJournal.js', () => ({
+  openExecution: vi.fn(() => ({ id: 'journal-1' })),
+  markBroadcast: vi.fn(),
+  markRecorded: vi.fn(),
+}));
+vi.mock('../agentService.js', () => ({
+  recordTick: vi.fn(),
+}));
+vi.mock('../validation.js', () => ({
+  riskChecks: vi.fn(() => ({ ok: true })),
+  validateDelegation: vi.fn(() => ({ ok: true })),
+  validatePolicy: vi.fn(() => ({ ok: true })),
+}));
+vi.mock('../pnl.js', () => ({
+  computePnlSummary: vi.fn(() => ({ realizedPnl: 0, unrealizedPnl: 0 })),
+}));
+vi.mock('../positionService.js', () => ({
+  getPosition: vi.fn(() => null),
+}));
+vi.mock('../portfolioService.js', () => ({
+  computeAllocation: vi.fn(() => ({ idleUsd: 500, xlmPct: 50, usdcPct: 50 })),
+  getTargets: vi.fn(() => ({ xlmPct: 50, usdcPct: 50, driftThresholdPct: 10 })),
+}));
+vi.mock('../performanceService.js', () => ({
+  snapshotPerformance: vi.fn(),
+}));
+vi.mock('../decisionService.js', () => ({
+  recordDecision: vi.fn(),
+}));
+vi.mock('../auditService.js', () => ({
+  logEvent: vi.fn(),
+}));
+vi.mock('../decisionEngine.js', () => ({
+  buildMarketContext: vi.fn(async () => ({
+    price: 0.12,
+    change24h: 1,
+    volume24h: 1000,
+    candles: [],
+    indicators: { rsi: 50 },
+    regime: { regime: 'ranging', volatilityPct: 5, trendStrength: 10 },
+  })),
+  decideYield: vi.fn(async () => ({
+    action: 'reallocate',
+    confidence: 0.8,
+    reasoning: 'test',
+    yieldVenue: 'usdc-lend',
+    llmModel: null,
+  })),
+  decideStrategic: vi.fn(),
+  decideBalancer: vi.fn(),
+}));
+
+const baseConfig: RoleStrategyConfig = {
+  role: 'yield',
+  pair: 'XLM/USDC',
+  intervalSeconds: 60,
+  amountPerTrade: '1000000000',
+} as unknown as RoleStrategyConfig;
+
+const baseRow: AgentRow = {
+  id: 'agent-1',
+  owner: 'GOWNER',
+  public_key: 'GPUBLICKEY',
+  role: 'yield',
+  encrypted_secret: '',
+  turnkey_private_key_id: 'key-1',
+  status: 'running',
+  delegator: 'GDELEGATOR',
+  strategy: 'role',
+  strategy_config_json: null,
+  last_tick_at: null,
+  last_result: null,
+  last_error: null,
+  created_at: Date.now(),
+  mode: 'live',
+  capital: '1000',
+  risk_level: null,
+  started_at: Date.now(),
+  lock_token: null,
+  lock_expires_at: null,
+} as AgentRow;
+
+describe('roleTick yield reallocation dispatch', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    executeProtocolActionMock.mockResolvedValue({ ok: true, txHash: 'deadbeef' });
+  });
+
+  it('routes a live yield reallocation through executeProtocolAction when protocol execution is enabled', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick(baseRow, baseConfig);
+
+    expect(executeProtocolActionMock).toHaveBeenCalledTimes(1);
+    expect(executeProtocolActionMock).toHaveBeenCalledWith(
+      baseRow,
+      expect.objectContaining({ protocolId: 'blend', action: 'deposit', amount: BigInt(baseConfig.amountPerTrade) })
+    );
+    expect(executeQuantTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the legacy spot-trade path when protocol execution is disabled', async () => {
+    delete process.env.ENABLE_PROTOCOL_EXECUTION;
+    executeQuantTradeMock.mockResolvedValue('legacy-tx-hash');
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-1', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick(baseRow, baseConfig);
+
+    expect(executeProtocolActionMock).not.toHaveBeenCalled();
+    expect(executeQuantTradeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('never routes a paper-mode agent through executeProtocolAction, even when the flag is on', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    executePaperQuantTradeMock.mockResolvedValue('paper-tx-hash');
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-2', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick({ ...baseRow, mode: 'paper' }, baseConfig);
+
+    expect(executeProtocolActionMock).not.toHaveBeenCalled();
+    expect(executePaperQuantTradeMock).toHaveBeenCalledTimes(1);
+  });
+});

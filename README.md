@@ -29,7 +29,8 @@ Traditional decentralized finance (DeFi) is highly manual and requires constant 
 | **DCA / Limit Agents** | `dca` agents redeem a fixed spend on an interval; `limit` agents fire a one-shot conditional order once a trigger price is hit. Both run server-side in the Strategy Mode backend. |
 | **Live Market Data** | Trading decisions are driven by Stellar Horizon trade-aggregation candles and Horizon's SSE trade stream (`backend/src/priceHistory.ts`, `priceFeed.ts`). A separate Binance-fed oracle (`apps/web/oracle/`) powers the app's GraphQL price API but does not feed agent decisions. |
 | **Paper Trading** | Every Strategy Mode agent is created in `paper` or `live` mode. Paper agents get a synthetic fill (`paper-<uuid>`) instead of signing/submitting a real transaction, but flow through the exact same PnL/position/audit pipeline as live trades. |
-| **Policy Engine** | Composable on-chain checks verifying period spend limits (spend-limit), asset whitelists (target-whitelist), and time restrictions. |
+| **Policy Engine** | Composable on-chain checks verifying period spend limits (spend-limit), asset whitelists (target-whitelist), time restrictions, target-function-set whitelists, and a pooled protocol spend limit that shares one cap/period across multiple protocol actions (`contracts/soroban/contracts/policies/`). |
+| **Protocol Execution (Blend / Soroswap)** | Agent actions can be routed through real DeFi protocols via typed, ABI-aware SDK adapters (`packages/sdk/src/protocols/`) instead of the classic-pair spot trading loop — Blend lending deposits/withdrawals and Soroswap swaps, both still redeemed through the same delegation/caveat-checked path. Gated behind `ENABLE_PROTOCOL_EXECUTION`; see `backend/src/protocolExecutionService.ts`. |
 | **Non-Custodial Architecture** | Absolute safety of funds — assets never leave your delegated control. Every proposal passes a deterministic validation pipeline (`backend/src/validation.ts`: policy → delegation → risk) before execution, and every live trade is still checked on-chain against your delegation's caveats regardless of what the backend decided. The LLM **never** determines position size or authorizes fund-moving actions. |
 | **Strategy Mode (Agent Backend)** | Persistent, backend-driven algorithmic trading terminal (`/backend`) — Turnkey MPC-backed agent wallets execute `dca`/`quant`/`limit` strategies in paper or real (testnet) mode, every trade/position/lifecycle event persisted to SQLite and gated behind Freighter wallet-signature auth. See [`backend/README.md`](./backend/README.md). |
 | **Soroban Native** | Purpose-built for Stellar's Soroban smart contract system, utilizing WASM execution and gas-efficient architectures. |
@@ -229,7 +230,9 @@ validation pipeline (`backend/src/roleTick.ts`): Live Oracle → Analysis → LL
   (trending/ranging/volatile) from the full strategy catalogue, then proposes buy/sell/hold —
   grounded against that strategy's own deterministic signal.
 * **Yield Agent:** Decides whether to reallocate idle capital into a simulated yield venue based
-  on live-adjusted APYs.
+  on live-adjusted APYs. For live agents with `ENABLE_PROTOCOL_EXECUTION` set, a reallocation
+  deploys idle capital into a real Blend lending deposit (`backend/src/protocolExecutionService.ts`)
+  instead of a spot buy; paper agents and the Strategic/Balancer roles are unaffected.
 * **Portfolio Balancer Agent:** Proposes a rebalance when the current allocation drifts too far
   from target.
 * **Model:** Hugging Face `meta-llama/Llama-3.1-8B-Instruct`, JSON-only responses, 2 retries with
@@ -541,9 +544,14 @@ pnpm exec playwright test
 
 | Contract | Address |
 | :--- | :--- |
-| DelegationManager | `CDZ3P5DWT3ZCOYWROHAA7PQPF53MBIZTFFYKCRQJIAD74TAECMFNCYEN` |
-| PolicyEngine | `CBD3N3R6GFZAFCBAALQCX32BUTUIWVJRKZCQS7HVXHMQZL32VTXD5NHS` |
-| CustomAccount | `CALOHOUNJEUFMF5R7GIMVWQIN32I7OCNFRVYKFVFAV3F35GRZEXCGI57` |
+| DelegationManager | `CBR4HWJF4ZLDF4C6GF25PQWWZE5M7AOWGZHLJQH6DTEUXJ756KMOHYLF` |
+| PolicyEngine | `CA6BPEFDZIC737VS26DQU77UYX5K4NB7VAKWNZAUO36WG7T24Z7N4BYD` |
+| CustomAccount | `CAN25TOZQ6UXNVQO35RJLVND4VKTL52QOIQ7B4CWZRSZC5BDC5EQFNXF` |
+| Registry | `CBDFFK2F4NZGXR7SRQAND3UZEIS32EHHVYNX4S475A7YYZDGN2E67SJV` |
+
+PolicyEngine was redeployed to reflect the pooled-protocol-spend-limit / typed-error hardening in
+`contracts/soroban/contracts/policies/src/lib.rs` — DelegationManager, CustomAccount, and Registry
+are unchanged from the prior deployment, so existing wallets/delegations remain valid.
 
 ---
 

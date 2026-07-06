@@ -30,21 +30,21 @@ export async function signTransaction(tx: Transaction, signer: Signer): Promise<
  * Used for encoding terms and extracting public keys.
  * G...: 40 bytes (ScAddressType::Account + PublicKey + ed25519 key)
  * C...: 36 bytes (ScAddressType::Contract + contract ID)
+ *
+ * Throws on an invalid/malformed strkey rather than silently substituting a synthetic
+ * contract address — this is used for terms encoding, delegation-hash computation, and
+ * public-key extraction, all of which are security-relevant. Silently accepting a garbage
+ * address here previously meant a malformed caller input would produce a validly-shaped but
+ * wrong address baked into a caveat or hash, instead of failing loudly at the boundary.
  */
 export function getAddressXdrBytes(addressString: string): Buffer {
+  let addr: Address;
   try {
-    const addr = Address.fromString(addressString);
-    return Buffer.from(addr.toScAddress().toXDR());
-  } catch {
-    // Fallback for invalid/placeholder strkeys: create a contract ScAddress
-    let hex = addressString.startsWith('C') ? addressString.slice(1).replace(/[^0-9a-fA-F]/g, '') : '';
-    if (hex.length >= 64) hex = hex.slice(0, 64);
-    const buf = hex.length === 64 ? Buffer.from(hex, 'hex') : Buffer.alloc(32);
-    // xdr.d.ts types `Hash` as `Opaque[]` (a plain byte array), not `Buffer` — Buffer's
-    // Uint8Array shape doesn't structurally satisfy that at the type level even though
-    // the runtime encoder accepts any array-like of byte values.
-    return Buffer.from(xdr.ScAddress.scAddressTypeContract(Array.from(buf) as unknown as xdr.Hash).toXDR());
+    addr = Address.fromString(addressString);
+  } catch (e) {
+    throw new RpcError(`Invalid Stellar/Soroban address: ${addressString}`);
   }
+  return Buffer.from(addr.toScAddress().toXDR());
 }
 
 /**
@@ -52,18 +52,16 @@ export function getAddressXdrBytes(addressString: string): Buffer {
  * This wraps the ScAddress in an ScVal envelope with type discriminator.
  * G...: 44 bytes (ScValType::Address + ScAddress)
  * C...: 40 bytes (ScValType::Address + ScAddress)
+ * Throws on an invalid address — see `getAddressXdrBytes`.
  */
 export function getAddressScValXdrBytes(addressString: string): Buffer {
+  let addr: Address;
   try {
-    const addr = Address.fromString(addressString);
-    return Buffer.from(xdr.ScVal.scvAddress(addr.toScAddress()).toXDR());
-  } catch {
-    // Fallback for invalid/placeholder strkeys
-    const rawScAddr = getAddressXdrBytes(addressString);
-    return Buffer.from(xdr.ScVal.scvAddress(
-      xdr.ScAddress.fromXDR(rawScAddr)
-    ).toXDR());
+    addr = Address.fromString(addressString);
+  } catch (e) {
+    throw new RpcError(`Invalid Stellar/Soroban address: ${addressString}`);
   }
+  return Buffer.from(xdr.ScVal.scvAddress(addr.toScAddress()).toXDR());
 }
 
 /**
@@ -213,4 +211,77 @@ export function encodeTargetWhitelistTerms(targetAddress: string): Uint8Array {
   buf.writeUInt8(1, 0);
   buf.set(targetXdr, 1);
   return new Uint8Array(buf);
+}
+
+/**
+ * Gets the ScVal::Symbol XDR bytes matching the Rust soroban-sdk's `Symbol::to_xdr()`.
+ */
+export function getSymbolScValXdrBytes(name: string): Buffer {
+  return Buffer.from(xdr.ScVal.scvSymbol(name).toXDR());
+}
+
+/**
+ * Helper to encode a target-function-set whitelist policy's terms.
+ * Policy Type = 4: [4][count:u8]{[addr_len:u8][addr ScVal-XDR][fn_count:u8]{[fn_len:u8][fn ScVal-XDR]}*fn_count}*count
+ * Matches the contract's `check_target_function_whitelist` decode in `policies/src/lib.rs`.
+ */
+export function encodeTargetFunctionSetWhitelistTerms(
+  entries: { address: string; functions: string[] }[]
+): Uint8Array {
+  const chunks: Buffer[] = [Buffer.from([4, entries.length])];
+  for (const entry of entries) {
+    const addrXdr = getAddressScValXdrBytes(entry.address);
+    chunks.push(Buffer.from([addrXdr.length]), addrXdr, Buffer.from([entry.functions.length]));
+    for (const fn of entry.functions) {
+      const fnXdr = getSymbolScValXdrBytes(fn);
+      chunks.push(Buffer.from([fnXdr.length]), fnXdr);
+    }
+  }
+  return new Uint8Array(Buffer.concat(chunks));
+}
+
+/**
+ * How the pooled-protocol-spend-limit caveat (policy tag 5) reads the tracked spend amount
+ * out of `context.args[argIndex]` on-chain. Must match `value_mode` in
+ * `contracts/soroban/contracts/policies/src/lib.rs`.
+ */
+export enum PooledSpendValueMode {
+  /** A flat i128 arg (e.g. SEP-41 `transfer`/`xfer`, Soroswap's `amount_in`). */
+  FlatI128 = 0,
+  /**
+   * A `Vec<Map<Symbol, Val>>` of Blend-style `Request { amount, ... }` structs — the tracked
+   * amount is the sum of every entry's "amount" field. Required for Blend's
+   * `submit(from, spender, to, requests: Vec<Request>)`, whose spend isn't a flat arg.
+   */
+  RequestVecAmountSum = 1,
+}
+
+/**
+ * Helper to encode a pooled protocol spend limit policy's terms.
+ * Policy Type = 5:
+ * [5][count:u8]{[addr_len:u8][addr ScVal-XDR][fn_len:u8][fn ScVal-XDR][arg_index:u8][value_mode:u8]}*count[limit:i128][period:u64]
+ * All listed (target, function) actions accumulate against one shared limit/period.
+ */
+export function encodePooledProtocolSpendLimitTerms(
+  entries: { address: string; function: string; argIndex: number; valueMode?: PooledSpendValueMode }[],
+  limit: bigint,
+  period: bigint | number
+): Uint8Array {
+  const chunks: Buffer[] = [Buffer.from([5, entries.length])];
+  for (const entry of entries) {
+    const addrXdr = getAddressScValXdrBytes(entry.address);
+    const fnXdr = getSymbolScValXdrBytes(entry.function);
+    chunks.push(
+      Buffer.from([addrXdr.length]),
+      addrXdr,
+      Buffer.from([fnXdr.length]),
+      fnXdr,
+      Buffer.from([entry.argIndex, entry.valueMode ?? PooledSpendValueMode.FlatI128])
+    );
+  }
+  chunks.push(i128ToBuffer(limit));
+  const periodBuf = Buffer.alloc(8);
+  periodBuf.writeBigUInt64BE(BigInt(period), 0);
+  chunks.push(periodBuf);
+  return new Uint8Array(Buffer.concat(chunks));
 }

@@ -3,7 +3,8 @@ import { getAgent, getAgentRow, listAgents } from '../agentService.js';
 import { getWalletDelegation } from '../db.js';
 import { listTradesForAgent } from '../tradeService.js';
 import { computePnlSummary } from '../pnl.js';
-import { getPosition } from '../positionService.js';
+import { getPosition, listPositionsForOwner } from '../positionService.js';
+import { listProtocolPositionsForOwner } from '../protocolPositionService.js';
 import { getLatestPrice } from '../priceHistory.js';
 import { listDecisionsForAgent } from '../decisionService.js';
 import type { AgentRow } from '../db.js';
@@ -80,6 +81,30 @@ agentStatsRouter.get('/:id/dashboard', async (req, res) => {
   if (!row) return res.status(404).json({ error: 'Agent not found' });
   if (row.owner !== req.auth!.publicKey) return res.status(403).json({ error: 'Not authorized for this agent' });
   res.json({ success: true, ...(await buildDashboard(row)) });
+});
+
+/**
+ * Real per-category position breakdown, replacing the dashboard's hardcoded ALLOCATION mock.
+ * Returns raw amounts grouped by venue rather than forced USD percentages — asset amounts
+ * across spot pairs, Blend deposits, and Soroswap swaps aren't in comparable units without a
+ * real multi-asset price feed, which doesn't exist yet (see priceHistory.ts, XLM/USDC only).
+ * The dashboard hook can compute percentages once amounts are converted to a common unit.
+ */
+statsRouter.get('/allocations', (req, res) => {
+  const owner = req.auth!.publicKey;
+  const spot = listPositionsForOwner(owner).filter((p) => parseFloat(p.open_amount) > 0);
+  const protocolPositions = listProtocolPositionsForOwner(owner).filter((p) => parseFloat(p.amount) > 0);
+
+  res.json({
+    success: true,
+    spot: spot.map((p) => ({ pair: p.pair, openAmount: p.open_amount, avgCost: p.avg_cost })),
+    blend: protocolPositions
+      .filter((p) => p.protocol_id === 'blend')
+      .map((p) => ({ asset: p.asset, kind: p.kind, amount: p.amount, updatedAt: p.updated_at })),
+    soroswap: protocolPositions
+      .filter((p) => p.protocol_id === 'soroswap')
+      .map((p) => ({ asset: p.asset, kind: p.kind, amount: p.amount, updatedAt: p.updated_at })),
+  });
 });
 
 statsRouter.get('/agents/summary', async (req, res) => {

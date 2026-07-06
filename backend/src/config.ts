@@ -58,3 +58,10 @@ export function getHuggingFaceApiKey(): string | undefined {
 export function getRoleIntervalSeconds(): number {
   return Number(process.env.ROLE_INTERVAL_SECONDS) || 120;
 }
+
+/** Feature-flags routing agent decisions through the delegation/redemption protocol adapters
+ *  (Blend, Soroswap — see protocolExecutionService.ts) instead of only the legacy direct-custody
+ *  trading loop. Off by default: real Blend/Soroswap execution is new and unproven end-to-end. */
+export function isProtocolExecutionEnabled(): boolean {
+  return process.env.ENABLE_PROTOCOL_EXECUTION === 'true';
+}
