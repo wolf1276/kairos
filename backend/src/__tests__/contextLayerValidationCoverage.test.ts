@@ -211,6 +211,28 @@ describe('validation coverage — Infinity', () => {
   });
 });
 
+// ── Negative / zero total managed capital ─────────────────────────────────────────────────────
+describe('validation coverage — negative totalManagedCapital', () => {
+  it('negative totalManagedCapital fails validation', () => {
+    const input = baseInput();
+    input.capital = { ...input.capital, totalManagedCapital: -1 };
+    expectError(input, 'Managed capital did not load');
+  });
+
+  it('zero totalManagedCapital is valid (brand-new empty agent)', () => {
+    const input = baseInput();
+    input.capital = { ...input.capital, totalManagedCapital: 0 };
+    const result = validateAgentContext(input);
+    expect(result.ok).toBe(true);
+  });
+
+  it('large negative totalManagedCapital also fails', () => {
+    const input = baseInput();
+    input.capital = { ...input.capital, totalManagedCapital: -1_000_000 };
+    expectError(input, 'Managed capital did not load');
+  });
+});
+
 // ── Negative idle / deployable capital ───────────────────────────────────────────────────────
 describe('validation coverage — negative idle/deployable capital', () => {
   it('negative deployableCapital', () => {

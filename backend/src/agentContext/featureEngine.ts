@@ -1,9 +1,9 @@
 // Centralized Feature Engine for the Agent Foundation Layer. Pure aggregation: every number here
 // is computed by an existing service — this module never recomputes indicators, prices, PnL, or
 // allocations itself. No AI, no decisions, no trade/protocol execution.
+import { getDb } from '../db.js';
 import { buildMarketContext } from '../decisionEngine.js';
 import { getActiveDelegationForAgent, getAgentRow } from '../agentService.js';
-import { listSmartWallets } from '../db.js';
 import { computeAllocation, getTargets } from '../portfolioService.js';
 import { listProtocolPositionsForAgent } from '../protocolPositionService.js';
 import { computePnlSummary } from '../pnl.js';
@@ -18,10 +18,17 @@ export type FeatureBuildResult = CachedFeatureResult;
 
 export class FeatureEngineError extends Error {}
 
+/** Per-key in-flight computation tracker — prevents cache stampede:
+ *  when N concurrent requests see the same cache miss, only the first
+ *  actually computes; the rest await the same in-flight Promise. */
+const inFlight = new Map<string, Promise<FeatureBuildResult | null>>();
+
 function resolveSmartWalletAddress(row: AgentRow): string | null {
   if (!row.delegator) return null;
-  const wallets = listSmartWallets(row.owner);
-  return wallets.find((w) => w.address === row.delegator)?.address ?? row.delegator;
+  const row_ = getDb()
+    .prepare('SELECT address FROM smart_wallets WHERE owner = ? AND address = ?')
+    .get(row.owner, row.delegator) as { address: string } | undefined;
+  return row_?.address ?? row.delegator;
 }
 
 /**
@@ -52,8 +59,38 @@ export async function buildFeatureResult(
       return cached;
     }
     recordCacheMiss();
+
+    // Cache stampede protection: if another request is already computing
+    // this key, await its result instead of starting a duplicate computation.
+    const pending = inFlight.get(key);
+    if (pending) {
+      const result = await pending;
+      if (result) recordCacheHit();
+      return result;
+    }
   }
 
+  // Register this computation so concurrent callers can await it.
+  const computation = buildFeatureResultInner(agentRow, pair, intervalSeconds, key, cache, useCache);
+  inFlight.set(key, computation);
+
+  try {
+    const result = await computation;
+    return result;
+  } finally {
+    // Always clean up — even on failure — to prevent stale Promise retention.
+    inFlight.delete(key);
+  }
+}
+
+async function buildFeatureResultInner(
+  agentRow: AgentRow,
+  pair: string,
+  intervalSeconds: number,
+  key: string,
+  cache: ReturnType<typeof getFeatureCacheProvider>,
+  useCache: boolean
+): Promise<FeatureBuildResult | null> {
   const ctx = await buildMarketContext(pair, intervalSeconds);
   if (!ctx) return null;
 

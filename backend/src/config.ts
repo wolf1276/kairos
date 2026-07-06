@@ -45,6 +45,13 @@ export function getSchedulerIntervalMs(): number {
   return Number(process.env.SCHEDULER_INTERVAL_MS) || 30_000;
 }
 
+/** How often the Context Layer's self-check (agentContext/monitor.ts) recomputes its health
+ *  summary and logs threshold warnings. Independent of SCHEDULER_INTERVAL_MS — monitoring cadence
+ *  and agent-tick cadence are unrelated concerns that happen to reuse the same setInterval pattern. */
+export function getContextMonitorIntervalMs(): number {
+  return Number(process.env.CONTEXT_MONITOR_INTERVAL_MS) || 60_000;
+}
+
 export function getAuthJwtSecret(): string {
   return readRequiredEnv('AUTH_JWT_SECRET');
 }

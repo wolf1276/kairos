@@ -12,6 +12,7 @@ import { smartWalletsRouter } from './routes/smartWallets.js';
 import { agentContextRouter, contextMetricsRouter } from './routes/context.js';
 import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
+import { startContextMonitor } from './agentContext/monitor.js';
 import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
 import { reconcilePendingExecutions } from './executionJournal.js';
@@ -78,5 +79,6 @@ app.listen(port, () => {
       }
       startScheduler();
       getPriceFeedService().start();
+      startContextMonitor();
     });
 });

@@ -3,8 +3,12 @@
 // this is purely "what does the Context Layer currently see for this agent".
 import { Router } from 'express';
 import { getAgentRow } from '../agentService.js';
+import { logEvent } from '../auditService.js';
 import { buildAgentContext, refreshAgentContext } from '../agentContext/contextBuilder.js';
 import { getContextMetricsSnapshot } from '../agentContext/metrics.js';
+import { getContextHealthSummary } from '../agentContext/monitor.js';
+
+const CONTEXT_BUILD_TIMEOUT_MS = 15_000;
 
 export const agentContextRouter = Router();
 
@@ -14,6 +18,11 @@ export const agentContextRouter = Router();
 export const contextMetricsRouter = Router();
 contextMetricsRouter.get('/context-metrics', (_req, res) => {
   res.json({ success: true, metrics: getContextMetricsSnapshot() });
+});
+// Health/monitoring summary — thresholds + warnings computed fresh on every request (not just
+// on the periodic self-check's cadence), so this is always as current as metrics.ts allows.
+contextMetricsRouter.get('/context-health', (_req, res) => {
+  res.json({ success: true, health: getContextHealthSummary() });
 });
 
 // Base/counter asset codes are Stellar asset codes (alphanumeric, max 12 chars per SEP-11)
@@ -42,16 +51,47 @@ agentContextRouter.get('/:id/context', async (req, res) => {
   }
   const pair = parsedPair.pair;
 
+  // Enforce a maximum wall-clock duration so a stuck oracle call doesn't
+  // hang the request (and its connection/socket) indefinitely.
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+
   try {
-    const context = forceRefresh
-      ? await refreshAgentContext(req.params.id, { pair })
-      : await buildAgentContext(req.params.id, { pair });
+    const context = await Promise.race([
+      forceRefresh
+        ? refreshAgentContext(req.params.id, { pair })
+        : buildAgentContext(req.params.id, { pair }),
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Context build timed out')), CONTEXT_BUILD_TIMEOUT_MS);
+      }),
+    ]);
+    clearTimeout(timeout);
 
     if (!context) {
       return res.status(503).json({ error: 'Context not available yet — oracle has insufficient candle history' });
     }
+
+    // Audit log: record every successful context access for operational forensics.
+    try {
+      logEvent({
+        agentId: req.params.id,
+        owner: row.owner,
+        eventType: 'context_access',
+        pair: context.pair,
+        message: `Context accessed by ${req.auth!.publicKey} (status=${context.status}, snapshot=${context.meta.snapshotId}, refresh=${forceRefresh})`,
+      });
+    } catch {
+      // Audit write failure must never break the response — the context was
+      // built successfully; the audit trail is a secondary concern.
+    }
+
     res.json({ success: true, context });
   } catch (error) {
+    clearTimeout(timeout);
+    const message = error instanceof Error ? error.message : String(error);
+    if (message === 'Context build timed out') {
+      console.error(`Context build timed out for agent ${req.params.id}`);
+      return res.status(504).json({ error: 'Context build timed out' });
+    }
     // Log the real error server-side, but never reflect an arbitrary internal error message
     // (RPC/Horizon URLs, adapter internals, stack fragments) back to the caller — an unhandled
     // build failure is a platform detail, not something the client's request caused.

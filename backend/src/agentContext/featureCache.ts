@@ -20,11 +20,15 @@ export async function setCachedFeatureSet(key: string, value: CachedFeatureResul
 /** Explicit invalidation — call after any event that changes the underlying data faster than the
  *  TTL would naturally expire it (e.g. a trade fill for this agent). */
 export function invalidateFeatureSet(agentId: string, pair: string): void {
-  void getFeatureCacheProvider().invalidate(cacheKey(agentId, pair));
+  getFeatureCacheProvider().invalidate(cacheKey(agentId, pair)).catch((err) => {
+    console.error(`[feature-cache] invalidate failed for agent=${agentId} pair=${pair}:`, err);
+  });
 }
 
 export function clearFeatureCache(): void {
-  void getFeatureCacheProvider().clear();
+  getFeatureCacheProvider().clear().catch((err) => {
+    console.error('[feature-cache] clear failed:', err);
+  });
 }
 
 export async function featureCacheSize(): Promise<number> {

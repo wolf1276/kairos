@@ -218,6 +218,30 @@ describe('concurrency — TTL expiry', () => {
       provider.dispose();
     }
   });
+
+  it('featureCacheTtlForInterval handles non-numeric edge cases gracefully', async () => {
+    const { featureCacheTtlForInterval } = await import('../agentContext/cache/index.js');
+    // null and undefined should return the minimum TTL (not NaN).
+    expect(Number.isFinite(featureCacheTtlForInterval(null as any))).toBe(true);
+    expect(Number.isFinite(featureCacheTtlForInterval(undefined as any))).toBe(true);
+    expect(Number.isFinite(featureCacheTtlForInterval(NaN))).toBe(true);
+    expect(Number.isFinite(featureCacheTtlForInterval(Infinity))).toBe(true);
+    expect(Number.isFinite(featureCacheTtlForInterval('abc' as any))).toBe(true);
+    // All return a positive, finite value.
+    const values = [
+      featureCacheTtlForInterval(null as any),
+      featureCacheTtlForInterval(undefined as any),
+      featureCacheTtlForInterval(NaN),
+      featureCacheTtlForInterval(Infinity),
+      featureCacheTtlForInterval('abc' as any),
+      featureCacheTtlForInterval(-1),
+      featureCacheTtlForInterval(0),
+    ];
+    for (const v of values) {
+      expect(v).toBeGreaterThanOrEqual(2000);
+      expect(v).toBeLessThanOrEqual(60_000);
+    }
+  });
 });
 
 // ── Cache invalidation ───────────────────────────────────────────────────────────────────────

@@ -106,7 +106,8 @@ export type AuditEventType =
   | 'delegation_check'
   | 'risk_check'
   | 'trade_opened'
-  | 'trade_closed';
+  | 'trade_closed'
+  | 'context_access';
 
 export interface AuditLogRow {
   id: string;

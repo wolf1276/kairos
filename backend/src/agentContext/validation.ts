@@ -11,6 +11,9 @@ const MAX_ORACLE_AGE_SECONDS = 900; // 15 minutes — well beyond any supported 
 const ALLOCATION_SUM_TOLERANCE_PCT = 0.5; // xlmPct + usdcPct should sum to ~100; a small rounding
 // tolerance, not a hard 100.0 equality — floating point allocation math ends up ever-so-slightly off.
 
+const VALID_RISK_PROFILES = new Set(['unspecified', 'low', 'medium', 'high']);
+const ASSET_CODE_PATTERN = /^[A-Z0-9]{1,12}$/;
+
 export interface ContextValidationInput {
   market: MarketContextView;
   capital: ManagedCapitalContextView;
@@ -39,7 +42,7 @@ export function validateAgentContext(input: ContextValidationInput): ContextVali
   if (!isValidNumber(input.market.price) || input.market.price <= 0) {
     errors.push('Market price is missing or invalid');
   }
-  if (!isValidNumber(input.capital.totalManagedCapital)) {
+  if (!isValidNumber(input.capital.totalManagedCapital) || input.capital.totalManagedCapital < 0) {
     errors.push('Managed capital did not load');
   }
   if (!isValidNumber(input.capital.deployableCapital) || input.capital.deployableCapital < 0) {
@@ -64,6 +67,15 @@ export function validateAgentContext(input: ContextValidationInput): ContextVali
   }
   if (input.policy.objective === 'unassigned') {
     errors.push('No policy/role assigned to this agent — cannot authorize any action');
+  }
+  if (!VALID_RISK_PROFILES.has(input.policy.riskProfile)) {
+    errors.push(`Invalid policy risk profile: "${input.policy.riskProfile}"`);
+  }
+  for (const asset of input.policy.allowedAssets) {
+    if (!ASSET_CODE_PATTERN.test(asset)) {
+      errors.push(`Invalid asset code in allowedAssets: "${asset}"`);
+      break;
+    }
   }
   if (!input.system.oracleHealthy) {
     errors.push('System reports oracle unhealthy');

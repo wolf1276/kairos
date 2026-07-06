@@ -60,13 +60,15 @@ interface PendingExecutionRow {
 const PENDING_EXECUTIONS_TTL_MS = 2_000;
 const pendingExecutionsCache = new Map<string, { rows: PendingExecutionRow[]; expiresAt: number }>();
 
+const PENDING_EXECUTIONS_MAX_ROWS = 100;
+
 function queryPendingExecutionRows(agentId: string): PendingExecutionRow[] {
   const spot = getDb()
-    .prepare(`SELECT status, created_at FROM execution_journal WHERE agent_id = ? AND status IN ('pending','broadcast')`)
-    .all(agentId) as { status: string; created_at: number }[];
+    .prepare(`SELECT status, created_at FROM execution_journal WHERE agent_id = ? AND status IN ('pending','broadcast') LIMIT ?`)
+    .all(agentId, PENDING_EXECUTIONS_MAX_ROWS) as { status: string; created_at: number }[];
   const protocol = getDb()
-    .prepare(`SELECT status, created_at FROM protocol_execution_journal WHERE agent_id = ? AND status IN ('pending','broadcast')`)
-    .all(agentId) as { status: string; created_at: number }[];
+    .prepare(`SELECT status, created_at FROM protocol_execution_journal WHERE agent_id = ? AND status IN ('pending','broadcast') LIMIT ?`)
+    .all(agentId, PENDING_EXECUTIONS_MAX_ROWS) as { status: string; created_at: number }[];
   return [
     ...spot.map((r) => ({ kind: 'spot' as const, status: r.status, created_at: r.created_at })),
     ...protocol.map((r) => ({ kind: 'protocol' as const, status: r.status, created_at: r.created_at })),
@@ -89,7 +91,9 @@ export function clearPendingExecutionsCache(): void {
 
 export function buildManagedCapitalContextView(agentRow: AgentRow, result: FeatureBuildResult, now = Date.now()): ManagedCapitalContextView {
   const { featureSet } = result;
-  const parsedCapital = agentRow.capital ? parseFloat(agentRow.capital) : featureSet.portfolio.totalValue;
+  const parsedCapital = agentRow.capital !== null && agentRow.capital !== undefined && agentRow.capital !== ''
+    ? parseFloat(agentRow.capital)
+    : featureSet.portfolio.totalValue;
   const totalManagedCapital = Number.isFinite(parsedCapital) ? parsedCapital : NaN;
   const pendingExecutions = getPendingExecutionRows(agentRow.id, now).map((r) => ({
     kind: r.kind,
