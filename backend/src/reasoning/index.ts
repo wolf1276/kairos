@@ -16,6 +16,11 @@ export * as decisionIntelligence from './decisionIntelligence/index.js';
  *  docs/architecture/REASONING_ENGINE.md. */
 export * as verification from './verification/index.js';
 
+/** Phase 5 (Execution Planner) — deterministic, no AI/LLM, no blockchain call. Namespaced for
+ *  the same reason as decisionIntelligence/verification above. See executionPlanner/index.ts and
+ *  docs/architecture/REASONING_ENGINE.md. */
+export * as executionPlanner from './executionPlanner/index.js';
+
 export type { ReasoningProvider } from './interfaces.js';
 
 export {

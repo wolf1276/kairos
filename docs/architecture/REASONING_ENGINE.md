@@ -1,4 +1,4 @@
-# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence, Phase 4: Decision Verification)
+# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence, Phase 4: Decision Verification, Phase 5: Execution Planner, Phase 6: Execution Engine)
 
 The Reasoning Engine is the third layer of the Kairos AI Operating System, sitting on top of the
 [Context Layer](./CONTEXT_LAYER.md) and the [Memory Engine](./MEMORY_ENGINE.md). Phase 1 produces
@@ -639,6 +639,588 @@ An Execution Planner (the natural next consumer of `VerifiedDecision`), blockcha
 memory writes, learning, and any change to the Context Layer, Memory Engine, LLM provider layer,
 Benchmark Framework, Decision Intelligence, or prompts. Phase 4 only adds a deterministic gate
 between Decision Intelligence and anything that would act on its output.
+
+## Phase 5: Execution Planner (`reasoning/executionPlanner/`)
+
+Turns a `VerifiedDecision` (Phase 4) + `ReasoningContext` into an `ExecutionPlan` — an ordered,
+hashable, replayable description of what *would* be executed. **No AI, no LLM, no blockchain
+call** — this only builds a plan; a future Execution Engine (not built here) would consume it and
+actually call a protocol.
+
+```
+VerifiedDecision (status must be 'verified' — a RejectedDecision throws immediately)
+        |
+        v
+runPrerequisiteChecks()   supported_protocol, supported_action, asset_exists,
+        |                 balances_non_negative, balances_sufficient — re-derived independently
+        |                 from the CURRENT context, never trusting the decision's own
+        |                 verification-time snapshot (capital can move between verify and plan)
+        v  (any failure -> throw ExecutionPlanValidationError, fail closed)
+buildSteps()              prerequisite_check -> simulate -> execute -> confirm (HOLD: single
+        |                 no_op step, nothing to execute)
+        v
+topologicalSort()         deterministic ordering + circular/missing-dependency detection
+        |
+        v
+estimateFee/Slippage/BalanceChanges/StateChanges()   arithmetic only, no oracle/simulation call
+        |
+        v
+hashExecutionPlan()  ->  deepFreeze()  ->  ExecutionPlan
+```
+
+**Why the planner re-runs its own prerequisite checks instead of trusting Phase 4's verdict.**
+`VerifiedDecision` proves the decision was compliant *at verification time*. Capital, protocol
+availability, and allowed assets can all change between verification and planning (a concurrent
+trade spending capital, a protocol being disabled). The planner treats the `context` it's handed
+as the current source of truth and re-derives every check from it — `deriveAllowedPolicy`
+(Phase 1, reused unmodified) for protocol/asset, and the same `Number.isFinite` + non-negative
+balance pattern Phase 4's capital stage uses for capital.
+
+**Step template.** Every non-`HOLD` action produces the same 4-step chain: `prerequisite_check`
+(no capital moved) → `simulate` (a `SimulationRequest` is generated here, describing what a
+dry-run would need — protocol/action/asset/amount — never an actual call) → `execute` (the only
+step that moves capital) → `confirm`. Each step `dependsOn` the previous, so `dependencies` is
+always a simple chain — `topologicalSort` (`executionPlanner/dependencyGraph.ts`) is still run
+and validated on every build (Kahn's algorithm with an alphabetical tie-break for determinism),
+both as defense-in-depth and because it's independently unit-tested against synthetic cyclic/
+self-referencing/missing-dependency graphs to prove circular-dependency detection actually works,
+not just "never observed to fail."
+
+**Rollback strategy.** One `RollbackStep` per `execute` step, describing the compensating reverse
+action (DEPOSIT↔WITHDRAW, or restoring prior allocation for SWAP/REBALANCE) — descriptive, not
+itself executable code, since Phase 5 never executes anything.
+
+**Estimates are arithmetic, not simulated.** `estimatedFees` uses a flat, documented rate
+(`PROTOCOL_FEE_RATE`, 10bps) times requested capital. `estimatedSlippage` is
+`(requestedCapital / recentVolume) * SLIPPAGE_COEFFICIENT`, capped at `MAX_SLIPPAGE_PCT` — pure
+function of trade size vs. observed liquidity, not a live quote. `expectedBalanceChanges` assumes
+a two-asset (XLM/USDC) portfolio model matching `AgentContext.features.portfolio`'s own shape — a
+documented limitation, not a bug, since extending to N assets would require changing the frozen
+`AgentContext` type.
+
+## Determinism, immutability, replay
+
+`buildExecutionPlan` is synchronous and pure aside from `randomUUID()` for `executionId` (the
+only field allowed to differ between builds). `hashExecutionPlan` (`executionPlanner/hashing.ts`)
+excludes `executionId` and `timestamp` — the same `sha256`-over-`stableStringify` technique used
+everywhere else in this engine — so identical `VerifiedDecision` + `ReasoningContext` always
+produces an identical `planHash`, proven by a 500x replay test. The returned plan is recursively
+frozen (`deepFreeze`, the same technique as `reasoning/contextBuilder.ts`, duplicated locally
+rather than importing a frozen Phase 1 file) — any mutation attempt throws.
+
+## Testing (Phase 5)
+
+`backend/src/__tests__/executionPlanner.test.ts` (33 tests) covers: single-action (4-step) and
+HOLD (1-step no-op) plan generation; rejecting a `RejectedDecision`; deterministic step ordering
+and `executionId` uniqueness vs. `planHash` stability; dependency-graph validation (valid DAG,
+circular dependency, self-dependency, missing dependency, duplicate dependency, stable orphan-node
+tie-break); protocol/asset routing and rejection of an unsupported protocol/asset re-checked
+independently of Phase 4's verdict; capital checks against a context that changed after
+verification (insufficient balance, negative balance — this caught a real gap, see below);
+rollback generation (one per execute step, none for HOLD, deterministic); simulation request
+generation; metadata/hash determinism and replay (500x); immutability (frozen, mutation throws);
+and 10/50/100/250-way concurrency including 100 concurrent distinct decisions with zero
+`planHash` collisions; and average/P95/P99 latency across 500 in-process builds (a regression
+guard — avg < 50ms, P99 < 100ms — not a precise SLO), logged to console using the same
+sort-and-index percentile technique as `benchmarks/reasoning/metrics/aggregate.ts`.
+
+**Bug found and fixed during test-writing:** `runPrerequisiteChecks`'s `balances_sufficient` check
+only compared `requestedCapital <= deployableCapital` — a negative `totalManagedCapital` paired
+with a positive `deployableCapital` produced a negative `requestedCapital` that trivially
+satisfied the comparison, silently passing. Fixed by adding an explicit `balances_non_negative`
+check (mirroring Phase 4's capital-stage fix for the same class of bug) before the sufficiency
+check runs.
+
+`backend/src/__tests__/executionPlannerFinalAudit.test.ts` (66 tests, 14 categories) is a second,
+independent pass over the same module: plan generation, dependency graph, ordering, protocol/asset
+routing, capital, rollback, simulation, metadata, 500x determinism, 10/50/100/250/500-way
+concurrency, adversarial "every attack must fail" cases (forged decisions, forged hashes, forged
+dependency graphs), throughput/avg/P95/P99 performance over 1000 builds, and doc-vs-implementation
+consistency. **Three further bugs found and fixed by this audit:**
+1. No prerequisite check existed for a disabled protocol subsystem
+   (`AgentContext.system.protocolExecutionAvailable`) — a decision verified while the subsystem was
+   up could still be planned after it went down. Fixed by adding a `protocol_enabled` check
+   (exempting `HOLD`, which calls no protocol) to `runPrerequisiteChecks`, following the same
+   re-derive-from-current-context pattern as the capital checks.
+2. No independent check existed on `primaryDecision.allocation` itself — the planner trusted that
+   anything shaped like a `VerifiedDecision` had already been through Decision Intelligence's
+   schema validation, but nothing at runtime enforces that for a directly-constructed/forged
+   object. A forged negative or >1 allocation could reach capital math unchecked (a negative
+   allocation trivially satisfies `requestedCapital <= deployableCapital`). Fixed by adding an
+   `allocation_in_range` check (`Number.isFinite` + `[0, 1]`) as defense-in-depth, not assuming
+   upstream validation was actually run.
+3. `hashExecutionPlan` excluded `metadata.planHash` from its hash input but not the top-level
+   `planHash` field — recomputing the hash on an already-built plan diverged from the hash used to
+   build it (self-referential corruption: `hashExecutionPlan(plan) !== plan.planHash`). Fixed by
+   also destructuring out the top-level `planHash` before hashing.
+
+## Explicitly out of scope for Phase 5
+
+Blockchain execution (an Execution Engine that actually calls a protocol), and any change to the
+Context Layer, Memory Engine, LLM provider layer, Benchmark Framework, Decision Intelligence, or
+Decision Verification. Phase 5 only produces a plan describing what execution would look like.
+
+## Phase 6: Execution Engine (`reasoning/executionEngine/`)
+
+Turns a frozen `ExecutionPlan` (Phase 5) into an `ExecutionResult` by actually running its steps.
+**Deterministic orchestration — no AI, no LLM.** The engine never imports or calls a protocol SDK
+itself; every side effect goes through a caller-supplied `ProtocolAdapter` (`adapter.ts`):
+`simulate(step)`, `submit(step)`, `confirm(step, transactionId)`. **No concrete protocol adapter
+(Blend, a DEX, etc.) is implemented in this phase** — that is explicitly out of scope; only the
+adapter contract and a deterministic in-test mock double exist.
+
+```
+ExecutionPlan
+        |
+        v
+assertPlanExecutable()     re-runs topologicalSort() on the plan's own step graph + validates
+        |                  every rollbackStrategy entry's compensatesStepId exists — a forged/
+        |                  hand-built plan (bypassing buildExecutionPlan) cannot smuggle a cycle
+        |                  or dangling rollback reference past the engine
+        v  (any failure -> throw ExecutionPlanInvalidError, fail closed)
+executeStep() per step, in dependency order (skips downstream of the first failure):
+        prerequisite_check / confirm  -> bookkeeping only, no adapter call
+        simulate                     -> adapter.simulate() -> reject whole run if !ok
+        execute                      -> adapter.submit() -> adapter.confirm(), retried up to
+                                         retryPolicy.maxAttempts for retryable failures;
+                                         a 'timeout' confirm status is always terminal (never
+                                         retried, to avoid double-submitting)
+        |
+        v  (if any step failed)
+runRollback()               re-invokes adapter.submit() as a compensating call for every
+        |                    execute step that succeeded before the failure
+        v
+hashExecutionResult()  ->  deepFreeze()  ->  ExecutionResult
+```
+
+**Status model.** `completed` (nothing failed), `partially_completed` (some steps failed, but
+others completed and rollback wasn't fully successful/needed), `rolled_back` (rollback completed
+for every succeeded execute step), `failed` (nothing completed at all). A single failed step does
+not automatically mean overall `failed` — earlier steps that already succeeded (e.g.
+`prerequisite_check`) are real, recorded outcomes.
+
+**Retry classification.** `classifyFailure()` maps a failure to `retryable | permanent | timeout`.
+A `confirm()` result of `'timeout'` is always terminal — resubmitting after an unknown-outcome
+timeout risks a double-spend. Anything else retries up to `retryPolicy.maxAttempts` (default 3,
+including the first attempt), then becomes `permanent`.
+
+**Journal & replay.** Every simulate/submit/confirm/retry/rollback/skip event is appended to an
+ordered `JournalEntry[]` (`seq`-numbered, not just timestamp-ordered, so replay is stable even if
+entries are reordered). `replayJournal(journal)` reconstructs `completedSteps`/`failedSteps`/
+`rolledBackSteps` from the journal alone, without re-invoking any adapter — the durable audit
+trail is sufficient to answer "what happened" after the fact.
+
+**Concurrency.** Same discipline as the Execution Planner: no module-level mutable state in
+`executionEngine/*.ts`. Each `executePlan()` call gets its own `RunState` (journal, sequence
+counter, runId), so parallel executions of the same or different plans never share memory.
+
+## Determinism, immutability, replay (Phase 6)
+
+`executePlan` is deterministic given a deterministic adapter (same simulate/submit/confirm
+decisions in, same outcome out) aside from `randomUUID()` for `runId` and adapter-generated
+`transactionId`s (neither reproducible, and both excluded from the hash). `hashExecutionResult`
+(`executionEngine/hashing.ts`) excludes `runId`, all wall-clock timestamps/durations,
+`transactionId`s, and **the entire `journal`** — the journal's `detail` strings embed those same
+non-reproducible values (e.g. `"transactionId=tx-blend-3"`), so it can never be part of a stable
+hash; the canonical outcome (status, completed/failed steps, rollback outcome, and each step's
+status/fee/simulationResult/failureKind) is what gets hashed. The returned result is recursively
+frozen (`deepFreeze`, same technique as Phase 5).
+
+## Testing (Phase 6)
+
+`backend/src/__tests__/executionEngine.test.ts` (37 tests) covers: successful multi-step and HOLD
+execution with full per-step field capture (executionId, transactionId, protocol, action, status,
+timestamps, duration, retryCount, fee, simulationResult); simulation failure (rejects before any
+submit); protocol failure (adapter `confirm()` returns `'failed'`); timeout (terminal, never
+retried, classified `timeout`); retry (retryable submit/confirm failures succeed within
+`maxAttempts`, exhausting retries becomes `permanent`); rollback (invoked only when an execute
+step actually succeeded before a later failure; not invoked for HOLD or for a step that never
+ran); partial completion (downstream steps marked `skipped`, not dropped); invalid transaction/
+invalid protocol/malformed plan (missing adapter, cyclic step graph, zero-step plan, dangling
+rollback reference — all rejected before any adapter call); journal replay (reconstructs the same
+completed-step set as the live result, order-independent via `seq`); determinism (500x identical
+`executionHash` for the same plan + deterministic adapter); concurrency (10/50/100/250 parallel
+executions, no cross-contamination, single shared `executionHash`); security (missing/spoofed
+adapter, replay, rollback-bypass, malformed plan — every attack rejected); and average/P95/P99
+latency + throughput across 300 executions (regression guard, not a precise SLO).
+
+**Bugs found and fixed during test-writing (all in the new Phase 6 code, none in Phase 1-5):**
+1. `hashExecutionResult` excluded `runId` at the top level but not each per-step
+   `ExecutionStepResult.executionId` (which echoes `runId`) — every run produced a distinct
+   `executionHash` despite identical outcomes. Only surfaced under a real (non-frozen) clock, in
+   the 10/50/100/250-way concurrency tests. Fixed by also excluding `executionId` from the
+   per-step hash projection.
+2. `replayJournal` reconstructed `completedSteps` by matching `/status=confirmed/` against journal
+   `detail` text, but `prerequisite_check`/`confirm`-type steps (no adapter call) originally
+   logged a detail string without that substring, so replay silently dropped them from
+   `completedSteps` even though the live `ExecutionResult` correctly listed them as completed.
+   Fixed by normalizing every terminal-success log line to include `status=confirmed`.
+3. (Same root cause as #2) A `simulate`-type step's completion was never logged to the journal at
+   all — only `simulate_start`/`simulate_result` were recorded, with no terminal entry — so replay
+   also dropped `step-1-simulate` from `completedSteps`. Fixed by adding a completion log line
+   after a `simulate` step reaches `status: 'simulated'`.
+
+## Explicitly out of scope for Phase 6
+
+Any concrete `ProtocolAdapter` implementation (Blend, a DEX, or any other real protocol/chain
+integration), and any change to the Context Layer, Memory Engine, LLM provider layer, Benchmark
+Framework, Decision Intelligence, Decision Verification, or Execution Planner (all frozen). Phase
+6 only orchestrates execution through adapters supplied by the caller.
+
+## Protocol Adapter Framework (`protocolAdapters/`)
+
+A standalone infrastructure layer, not a Reasoning Engine phase — it has no dependency on
+Context/Memory/Reasoning/Decision Intelligence/Decision Verification/Execution Planner, and they
+have no dependency on it. Exists so the Phase 6 Execution Engine (`reasoning/executionEngine/`)
+never needs to call a protocol SDK directly: it goes Execution Engine → `ProtocolRegistry` →
+`ProtocolAdapter` → protocol SDK. **No Blend/Soroswap/Phoenix implementation exists yet** — only
+the abstraction (interface, registry, factory, deterministic hashing) and a declarative
+`createAdapter()` used to build deterministic test doubles.
+
+### Adapter lifecycle
+
+```
+createAdapter(spec) or a hand-built ProtocolAdapter
+        |
+        v
+registry.register(adapter)
+        |  1. validateAdapterShape() — every required method present, capabilities well-formed,
+        |     capabilities.protocol === adapter.protocol (adapter-spoofing check)
+        |  2. reject if a live entry already exists for this protocol (DuplicateAdapterError)
+        |  3. freeze capabilities, compute capabilityHash + adapterHash
+        v
+ProtocolMetadata (frozen) stored, keyed by protocol name
+        |
+        v
+registry.lookup(protocol) -> live ProtocolAdapter, for simulate/validate/execute/estimate* calls
+registry.health(protocol)  -> always a fresh adapter.health() call, never cached
+registry.unregister(protocol) -> removes the entry; re-registration afterward is allowed
+```
+
+Every method on `ProtocolAdapter` (`adapter.ts`) is async — `initialize`, `health`, `simulate`,
+`validate`, `execute`, `estimateFees`, `estimateSlippage` — except `capabilities()`, which must be
+a pure synchronous function of the adapter's fixed configuration (the registry calls it once, at
+registration, and freezes the result; an adapter is not expected to change what it supports after
+construction).
+
+### Registry design
+
+`ProtocolRegistry` (`registry.ts`) holds a private `Map<string, { adapter, metadata }>` — never
+exposed directly. `list()` returns a frozen, protocol-name-sorted array of `ProtocolMetadata`
+snapshots (not adapter references), so a caller can never mutate the registry's internal state
+through a returned value, and iteration order is deterministic regardless of registration order.
+`register`/`unregister`/`lookup`/`has` are synchronous (`Map` operations are atomic in JS's
+single-threaded model, so no lock is needed for concurrent registration attempts); only `health()`
+is async, since it live-queries the adapter.
+
+Fail-closed on every path: `lookup`/`unregister`/`health` of an unregistered protocol throw
+`AdapterNotFoundError`; `register` of a protocol already present throws `DuplicateAdapterError`;
+`register` of a shape-invalid adapter (missing method, empty capability array, non-boolean flag,
+or a `capabilities.protocol` that doesn't match `adapter.protocol`) throws `MalformedAdapterError`
+— validated *before* the adapter ever enters the map, never discovered later at lookup time.
+
+### Capability model
+
+`ProtocolCapabilities` (`types.ts`): `protocol`, `supportedActions`, `supportedAssets`,
+`supportedNetworks` (all non-empty string arrays), `simulationSupport`/`batchingSupport`/
+`rollbackSupport` (booleans). Declared once, frozen at registration. `hashCapabilities()`
+(`hashing.ts`) sorts the three array fields before hashing, so two declarations listing the same
+actions/assets/networks in different order still produce the same `capabilityHash` — order was
+never meaningful for a capability *set*.
+
+### Health model
+
+Four states (`HEALTH_STATUSES`): `READY`, `DEGRADED`, `UNAVAILABLE`, `UNKNOWN`. The registry never
+caches or infers health — `registry.health(protocol)` always calls the live
+`adapter.health()`, so a health-spoofing attempt (an adapter reporting a stale/fake status) is
+structurally impossible from the registry's side; the adapter's own `health()` implementation is
+the only source of truth, by design (a future real adapter is expected to check actual
+connectivity/RPC health there).
+
+### Simulation flow
+
+`createAdapter()`'s default `simulate()` (`factory.ts`): re-runs `validate()` first (never trusts
+that a caller already validated), and if validation fails, returns `success: false` with the
+validation errors surfaced directly as `SimulationResult.errors` — a decision never reaches
+fee/slippage estimation on an invalid request. On a valid request, it calls `estimateFees()` /
+`estimateSlippage()` (both overridable per spec) and assembles a `SimulationResult` (`success`,
+`estimatedFees`, `estimatedSlippagePct`, `warnings`, `errors`, `estimatedOutputs`,
+`simulationHash`). `hashSimulationResult()` hashes everything except the `simulationHash` field
+itself (self-reference, same discipline as `hashExecutionPlan`/`hashExecutionResult` elsewhere in
+this codebase) — deterministic for identical requests against a deterministic adapter.
+
+### Determinism, immutability
+
+`ProtocolMetadata` and `ProtocolCapabilities` are recursively frozen at registration
+(`deepFreeze`, same technique as Phases 5/6) — any mutation attempt throws under strict mode.
+`hashAdapter(protocol, version, capabilityHash)` excludes `registeredAt` (wall-clock,
+non-deterministic), so re-registering the identical adapter always produces the identical
+`adapterHash` regardless of when it happens — proven by a 500x replay test across fresh registry
+instances.
+
+### Testing
+
+`backend/src/__tests__/protocolAdapterFramework.test.ts` (50 tests): registration (incl. duplicate
+rejection, malformed-metadata rejection, re-registration after unregister); lookup/unregister
+(fail-closed for unknown protocols); capability validation (unsupported action/asset/network,
+missing required params); health transitions (registry always live-queries, never caches);
+simulation (success, validation-failure fail-closed, warnings, deterministic hash); deterministic
+hashing and replay (order-independent `capabilityHash`, `registeredAt`-independent `adapterHash`,
+500x identical hashes across fresh registries); 10/50/100/250-way concurrent registration with no
+race conditions and deterministic final state; security (adapter spoofing, duplicate IDs,
+capability-object mutation after registration, health spoofing, `capabilities()` throwing,
+registry-snapshot mutation via `list()`); and registration/lookup/simulation latency.
+
+**Bug found and fixed during test-writing:** `createAdapter()` originally silently overwrote a
+spec's mismatched `capabilities.protocol` with `spec.protocol` instead of rejecting it — masking
+both a real future config bug (a copy-paste error naming the wrong protocol in a capability
+declaration) and the registry's own adapter-spoofing defense (which the factory's silent fix made
+untestable through the normal adapter-construction path). Fixed by adding `AdapterSpecMismatchError`,
+thrown at `createAdapter()` build time whenever `spec.protocol !== spec.capabilities.protocol`,
+rather than reconciling the two silently.
+
+### Explicitly out of scope
+
+Any concrete protocol implementation (Blend, Soroswap, Phoenix, or any other SDK integration),
+actual blockchain calls, and wiring this framework into the Execution Engine (`reasoning/
+executionEngine/`) — that integration is a later step, not part of this framework build.
+
+## Aquarius Protocol Adapter (`protocolAdapters/aquarius/`)
+
+The first concrete adapter built on the Protocol Adapter Framework above — implements
+`ProtocolAdapter` for the Aquarius Router. **No blockchain execution**: `execute()` always throws
+`AquariusExecutionNotImplementedError`; only quoting, validation, simulation, and unsigned
+transaction *building* are implemented. No Soroban SDK dependency exists anywhere in this
+directory — every external call goes through a caller-supplied client interface
+(`AquariusRouterClient`, `SorobanRpcClient`, `AquariusBackendApiClient`), with a deterministic
+in-memory double of each (`testDoubles.ts`) for development/testing.
+
+### Router integration
+
+Aquarius Router is the **single on-chain integration point** — this adapter never talks to a pool
+contract directly. Every mutating action maps to one Router method:
+
+| Action | Router method |
+|---|---|
+| `SWAP` (single hop) | `swap_chained` — a direct swap is just a 2-element path |
+| `SWAP_CHAINED` (multi-hop) | `swap_chained` |
+| `DEPOSIT` | `deposit` |
+| `WITHDRAW` | `withdraw` |
+| `CLAIM_REWARDS` | `claim_rewards` |
+| `POOL_DISCOVERY` | *(read-only — no transaction; `buildTransaction()` rejects it)* |
+
+The Router contract address is **never hardcoded** — `getAquariusRouterContractId(network)`
+(`aquarius/config.ts`) reads `AQUARIUS_ROUTER_CONTRACT_ID_TESTNET` /
+`AQUARIUS_ROUTER_CONTRACT_ID_MAINNET` from environment config, following the same
+`readRequiredEnv` pattern as `backend/src/config.ts` (not modified). A single adapter instance
+serves both networks — `request.network` selects which contract address is resolved per call, so
+no separate testnet/mainnet adapter instances are needed.
+
+### Backend API usage (optional path finding)
+
+`resolveSwapRoute()` tries the optional `AquariusBackendApiClient.findRoute()` first (off-chain
+path finding across pools); if it's not configured, throws, or returns `null`, the adapter falls
+back to on-chain routing via `routerClient.quoteSwapChained([input, output], ...)` — per the
+requirement "if the backend API is unavailable, continue using on-chain routing where supported."
+Every route — from either source — is shape-validated (`assertValidRouteResult`) before being
+trusted: a malformed response from either external client (wrong type, too-short path, etc.)
+throws immediately rather than silently propagating into a `Quote`/`TransactionBuilder`.
+
+### Simulation flow
+
+`simulate()` always re-validates the request first (never trusts a caller already did), then:
+1. Builds action-specific `estimatedOutputs` (swap output amount, LP tokens for `DEPOSIT`,
+   underlying assets for `WITHDRAW`, reward amount/asset for `CLAIM_REWARDS`, pool count for
+   `POOL_DISCOVERY`).
+2. Calls `SorobanRpcClient.simulateTransaction(contractId, method, args, network)` — the one
+   Soroban RPC touchpoint this adapter has, and strictly simulation-only (`simulate`, never
+   `submit`). A simulation failure reported by Soroban RPC surfaces as `SimulationResult.success:
+   false` with `errors`, not a thrown exception.
+3. Assembles and hashes the result (`hashSimulationResult`, from the shared framework).
+
+`validate()` checks, in order: supported action, supported network, **router availability**
+(`health()` — `UNAVAILABLE`/`UNKNOWN` fail closed; `DEGRADED` still permits the request),
+supported asset(s), **slippage limit** (`params.maxSlippagePct` vs. the adapter's configured
+maximum, default 5%), **token ordering** (a `SWAP_CHAINED` path must start at the request's own
+input asset, no repeated adjacent hops), and **trustline requirements** (any non-`XLM` asset
+requires `params.trustlineEstablished === true`).
+
+### Adapter registration
+
+No different from any other adapter in this framework — `createAquariusAdapter(options)`
+produces a plain `ProtocolAdapter`; `registry.register(adapter)` validates and freezes it exactly
+as documented above. No special-casing exists or was added to `ProtocolRegistry` for Aquarius.
+
+### Testing
+
+`backend/src/__tests__/aquariusAdapter.test.ts` (48 tests): registration/capabilities; quote
+generation (on-chain fallback, backend-API routing, fallback-on-unavailable, fallback-on-null,
+reject-invalid); `SWAP`/`SWAP_CHAINED` (simulate, `buildTransaction` routing both through
+`swap_chained`, path preserved in tx args); `DEPOSIT`/`WITHDRAW`/`CLAIM_REWARDS`/`POOL_DISCOVERY`
+(simulate outputs, correct Router method mapping, `POOL_DISCOVERY` transaction-build rejection);
+validation (unsupported asset/action, invalid route — short path, wrong starting hop, repeated
+hop, unsupported hop asset — slippage over/under limit, router `UNAVAILABLE`/`UNKNOWN`/`DEGRADED`
+health, trustline required/exempt/satisfied); malformed responses (bad router path shape, Soroban
+RPC failure surfaced as a failed simulation not an exception, missing contract-id env var);
+deterministic quote/transaction/simulation hashing (incl. 500x); `execute()` always throws; and
+10/50/100-way concurrent simulate/quote calls with a single deterministic hash across all of them.
+
+**Bug found and fixed during test-writing:** the adapter originally trusted the shape of whatever
+`AquariusRouterClient`/`AquariusBackendApiClient` returned without validation — a malformed
+`path` (wrong type, too short) would propagate silently into a `Quote`/`TransactionBuilder`
+instead of failing. Fixed by adding `assertValidRouteResult()`, called on every external route
+response (on-chain and backend-API) before it's trusted.
+
+### Performance
+
+Simulation/quote/transaction-building are pure in-memory operations against injected clients —
+latency is dominated entirely by whatever `AquariusRouterClient`/`SorobanRpcClient` implementation
+is supplied (the deterministic test doubles resolve in microseconds; a real network-backed client
+would dominate). No separate perf benchmark was added beyond the 500x/100-way determinism checks
+above, since there is no real network call in this phase to measure.
+
+### Remaining technical debt
+
+No real `AquariusRouterClient`/`SorobanRpcClient`/`AquariusBackendApiClient` implementation exists
+(by design — protocol execution and any real Soroban/HTTP integration are out of scope for this
+phase). Concentrated-liquidity-specific pool-level interaction (beyond the Router) is not
+implemented, since no requirement surfaced needing it yet — the Router covers every action this
+adapter currently supports.
+
+### Explicitly out of scope
+
+Blend, Soroswap, Phoenix (any other protocol adapter), and any redesign of the Protocol Adapter
+Framework's own interfaces beyond the two additive, backward-compatible optional methods
+(`quote`, `buildTransaction`) and two shared types (`Quote`, `TransactionBuilder`) added to
+support this and future router-based adapters. (Real Soroban RPC/backend API integration is
+covered below — no longer out of scope.)
+
+## Aquarius: Real Integration (`protocolAdapters/aquarius/real*.ts`, `production.ts`)
+
+Replaces the deterministic test doubles with a real `AquariusRouterClient` and `SorobanRpcClient`
+for production use — `createAquariusAdapter()` and its call contract are **unchanged**; only what
+gets injected into it differs. Verified live against the official Aquarius testnet router.
+
+### What was verified live (see verification log below for exact transcript)
+
+- **Router contract**: `CBCFTQSPDBAIZ6R6PJQKSQWKNKWH2QIV3I4J72SHWBIK3ADRRAM5A6GD` — confirmed to
+  exist on testnet via a real `getLedgerEntries` RPC call (contract instance storage inspected:
+  `PoolCounter`, `TokenHash`, `RewardToken`, `ProtocolFeeFraction`, etc. — genuine AMM router
+  state, not a guess). Sourced from https://docs.aqua.network/developers/code-examples/prerequisites-and-basics;
+  a second candidate address surfaced by a generic web search returned **no ledger entry at all**
+  and was discarded — this is why every address in this integration was independently confirmed
+  on-chain rather than trusted from a single source.
+- **`get_pools(tokens)`**: real call against the router returned 4 real pools for the XLM/AQUA
+  token pair, matching the Aquarius backend API's own pool listing exactly (cross-validated pool
+  index + pool contract address).
+- **`swap_chained`**: a real simulated swap of 1 XLM → AQUA produced a genuine AMM-computed output
+  (`22.831705 AQUA`), including a real `update_reserves` event from the pool contract. The first
+  attempt failed with a real, expected error (`trustline entry is missing`) until a real `AQUA`
+  trustline was established on the test account via a live `changeTrust` operation — this is the
+  same trustline requirement `AquariusAdapter.validate()` already enforces.
+- **`claim`** (the adapter's `CLAIM_REWARDS`): real call returned `0` (no LP position) — signature
+  confirmed.
+- **`withdraw`**: real call with `0` shares returned `[0, 0]` — signature confirmed.
+- **`deposit`**: real call reached the contract with correctly-encoded arguments and failed with a
+  genuine `resulting balance is not within the allowed range` error, because the test account
+  holds `0 AQUA` — a real business-logic failure, not an encoding bug (proves the call reaches the
+  contract correctly; the deposit's *success* path return-value shape was not independently
+  observed live, see technical debt below).
+- **Pool discovery**: the real Aquarius backend API (`https://amm-api-testnet.aqua.network/api/external/v2/pools/`)
+  returned a real, paginated list of 101 pools.
+
+Function signatures came from https://docs.aqua.network/developers/aquarius-soroban-functions and
+were cross-validated against the real `get_pools`/`swap_chained`/`claim`/`withdraw` calls above —
+the documented signature matched the real contract's actual argument order and count in every
+case tested.
+
+### Architecture (unchanged call graph, real implementations)
+
+```
+AquariusAdapter (adapter.ts — UNCHANGED)
+        |
+        v
+options.routerClient          options.sorobanRpcClient
+        |                              |
+        v                              v
+realRouterClient.ts            realSorobanRpcClient.ts
+        |                              |
+        +----------> invocation.ts <---+     (shared: builds the real Soroban operation
+                          |                    for swap_chained/deposit/withdraw/claim,
+                          v                    resolves asset/pool addresses, simulates)
+                    @stellar/stellar-sdk
+                    (rpc.Server.simulateTransaction — never .sendTransaction)
+                          |
+                          v
+              realBackendApi.ts (AssetPoolRegistry)
+                          |
+                          v
+        Aquarius Backend API (real, public, unauthenticated)
+        — pool discovery + dynamic asset-code -> contract-address /
+          (assetA, assetB) -> pool_index resolution. NEVER a hardcoded
+          token or pool address anywhere in this integration.
+```
+
+`production.ts::createProductionAquariusAdapter()` is the one place that assembles "real mode" —
+reads the router contract id, Soroban RPC URL, backend API URL, and simulation source account
+from config/env (all real, network-appropriate defaults, all overridable, **never hardcoded** in
+source beyond the well-known public Stellar RPC/API base URLs, which are Stellar-network-level
+constants, not Aquarius-specific secrets).
+
+### The simulation source account
+
+Soroban's `simulateTransaction` needs a syntactically valid transaction, which needs a *source
+account* with a real sequence number — but simulation never signs or submits, so **only a public
+key is ever required**, read from `AQUARIUS_SIMULATION_SOURCE_ACCOUNT`. No secret key exists
+anywhere in this codebase. For local verification, any funded testnet account works (fund one via
+`https://friendbot.stellar.org?addr=<G...>`).
+
+### Testing
+
+`backend/src/__tests__/aquariusIntegration.test.ts` (10 tests) — real network calls against live
+testnet, skipped unless `AQUARIUS_INTEGRATION_TEST=true` (keeps the default suite hermetic/
+offline; run it with the command in that file's header comment). Covers `health()`, pool
+discovery, `quote()`, `simulate()` for `SWAP`/`SWAP_CHAINED`/`WITHDRAW`/`CLAIM_REWARDS`,
+`buildTransaction()`, deterministic tx-hash generation against the real client, and a
+router-unavailable fail-closed case. All 10 pass against live testnet. The unit suite
+(`aquariusAdapter.test.ts`, 49 tests, test doubles) also passes unaffected.
+
+**Bugs found and fixed by real, live testing (this integration):**
+1. **No caching in the backend-API pool registry** — every one of `listPools`/`resolveAddress`/
+   `findPool`/`findPoolByIndex` re-fetched and re-paginated the full ~101-pool listing (6+ HTTP
+   round trips) independently, and a single `simulate()` call invokes 2-3 of them. The full
+   integration suite took **149 seconds** and two tests hit their 30s timeout before this was
+   fixed. Fixed with a simple TTL cache (60s default) in `realBackendApi.ts`; the same suite now
+   runs in **~13 seconds**.
+2. **`simulate()` threw instead of returning a graceful failure** — a router/backend client
+   exception (unreachable router, nonexistent contract, network error) propagated out of
+   `adapter.simulate()` as a rejected promise, inconsistent with how a Soroban RPC-level failure
+   was already handled (captured into `SimulationResult.errors`). Surfaced by a real integration
+   test against a syntactically valid but undeployed router contract. Fixed by wrapping the
+   router-client call and the Soroban RPC call each in their own `try/catch` inside `simulate()`,
+   both degrading to `{ success: false, errors: [...] }` rather than throwing.
+3. **`describe.skip`'s body still executes synchronously** — the real integration test file
+   originally called `createProductionAquariusAdapter()` (which reads a required env var) at
+   describe-body scope; vitest still runs a skipped suite's synchronous body to collect its
+   `it`s, so the whole repo test suite failed with `Missing env var:
+   AQUARIUS_SIMULATION_SOURCE_ACCOUNT` even with no integration env vars set — breaking the
+   "default suite stays hermetic" guarantee this file exists to provide. Fixed by moving adapter
+   construction into a `beforeAll` hook (hooks, unlike the describe body itself, are genuinely
+   skipped).
+
+### Remaining technical debt
+
+- `deposit()`'s success return value (`(Vec<u128>, u128)` per docs) was not independently observed
+  live — only its failure path was (real error, correct argument encoding). Should be re-verified
+  with a test account funded in both pool assets before this path is trusted for anything beyond
+  simulation.
+- `priceImpactPct` from the real router client is currently always `0` — a real price-impact
+  calculation needs pool reserve data this integration doesn't fetch (documented gap, not
+  fabricated).
+- No caching in `realBackendApi.ts` — every call re-fetches all pool pages; fine for occasional
+  quoting, would need caching for high-frequency use.
+- Concentrated-liquidity pool-level interaction remains unimplemented (unchanged from the
+  framework build) — no requirement has surfaced needing it.
 
 ## CandidateDecision
 
