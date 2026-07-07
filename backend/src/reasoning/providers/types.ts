@@ -2,7 +2,7 @@
 // field into CandidateDecision — this module only describes configuration, raw request/response
 // shapes internal to providers/, and observability records.
 
-export type ProviderName = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | 'nvidia';
+export type ProviderName = 'openai' | 'anthropic' | 'deepseek' | 'openrouter' | 'nvidia' | 'ollama';
 
 export type ProviderErrorKind =
   | 'timeout'

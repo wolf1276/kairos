@@ -3,7 +3,14 @@
 import { OPENROUTER_AUTO_MODEL } from './openrouterProvider.js';
 import type { ProviderCallConfig, ProviderName } from './types.js';
 
-const VALID_PROVIDERS: ReadonlySet<string> = new Set(['openai', 'anthropic', 'deepseek', 'openrouter', 'nvidia']);
+const VALID_PROVIDERS: ReadonlySet<string> = new Set([
+  'openai',
+  'anthropic',
+  'deepseek',
+  'openrouter',
+  'nvidia',
+  'ollama',
+]);
 
 function readEnv(key: string): string | undefined {
   return process.env[key] || undefined;
@@ -76,5 +83,9 @@ function defaultModelFor(provider: ProviderName): string {
       return OPENROUTER_AUTO_MODEL;
     case 'nvidia':
       return 'z-ai/glm-5.2';
+    case 'ollama':
+      // No sane universal default — depends entirely on what model is pulled on the remote
+      // machine. REASONING_MODEL is required when REASONING_PROVIDER=ollama.
+      throw new Error('REASONING_MODEL is required when REASONING_PROVIDER=ollama');
   }
 }

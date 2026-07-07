@@ -12,7 +12,9 @@ import { getProviderMetrics, resetProviderMetrics } from '../reasoning/providers
 import { estimateCost } from '../reasoning/providers/pricing.js';
 import { OpenRouterProvider, OPENROUTER_BASE_URL, OPENROUTER_AUTO_MODEL } from '../reasoning/providers/openrouterProvider.js';
 import { NvidiaProvider, NVIDIA_BASE_URL } from '../reasoning/providers/nvidiaProvider.js';
+import { OllamaProvider, OLLAMA_BASE_URL } from '../reasoning/providers/ollamaProvider.js';
 import { getFreeModelIds, isModelFree, resetOpenRouterRegistryCache } from '../reasoning/providers/openrouterModelRegistry.js';
+import { getProviderConfigFromEnv } from '../reasoning/providers/config.js';
 import { buildReasoningContext } from '../reasoning/contextBuilder.js';
 import { buildPrompt } from '../reasoning/promptBuilder.js';
 import { validateCandidateDecision } from '../reasoning/validation.js';
@@ -235,6 +237,16 @@ function makeNvidiaConfig(overrides: Partial<ProviderCallConfig> = {}): Provider
     provider: 'nvidia',
     model: 'z-ai/glm-5.2',
     baseUrl: NVIDIA_BASE_URL,
+    ...overrides,
+  });
+}
+
+function makeOllamaConfig(overrides: Partial<ProviderCallConfig> = {}): ProviderCallConfig {
+  return makeConfig({
+    provider: 'ollama',
+    model: 'qwen3.5:9b',
+    apiKey: 'shared-secret',
+    baseUrl: 'https://kairos-ollama-relay.example.workers.dev/v1',
     ...overrides,
   });
 }
@@ -558,6 +570,116 @@ describe('NVIDIA provider', () => {
   });
 });
 
+describe('Ollama provider', () => {
+  it('normalizes a well-formed structured response into a valid CandidateDecision', async () => {
+    fetchMock.mockResolvedValueOnce(openAiResponse(validModelOutput()));
+    const provider = new OllamaProvider(makeOllamaConfig());
+    const { context, prompt } = buildPromptFixture();
+
+    const decision = await provider.generateDecision(context, prompt);
+
+    expect(validateCandidateDecision(decision).ok).toBe(true);
+    expect(decision.metadata.providerVersion).toBe('ollama:qwen3.5:9b');
+  });
+
+  it('sets strict:true on the json_schema response_format', async () => {
+    fetchMock.mockResolvedValueOnce(openAiResponse(validModelOutput()));
+    const provider = new OllamaProvider(makeOllamaConfig());
+    const { context, prompt } = buildPromptFixture();
+
+    await provider.generateDecision(context, prompt);
+
+    const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(requestBody.response_format.json_schema.strict).toBe(true);
+  });
+
+  it('requests against the configured relay base URL, sending the shared secret as Bearer auth', async () => {
+    fetchMock.mockResolvedValueOnce(openAiResponse(validModelOutput()));
+    const provider = new OllamaProvider(makeOllamaConfig());
+    const { context, prompt } = buildPromptFixture();
+
+    await provider.generateDecision(context, prompt);
+
+    expect(fetchMock.mock.calls[0][0]).toBe('https://kairos-ollama-relay.example.workers.dev/v1/chat/completions');
+    expect(fetchMock.mock.calls[0][1].headers.authorization).toBe('Bearer shared-secret');
+  });
+
+  it('falls back to localhost base URL when no baseUrl is configured (local dev without a tunnel)', async () => {
+    fetchMock.mockResolvedValueOnce(openAiResponse(validModelOutput()));
+    const provider = new OllamaProvider(makeOllamaConfig({ baseUrl: undefined }));
+    const { context, prompt } = buildPromptFixture();
+
+    await provider.generateDecision(context, prompt);
+
+    expect(fetchMock.mock.calls[0][0]).toBe(`${OLLAMA_BASE_URL}/chat/completions`);
+  });
+
+  it('maps an invalid shared-secret (401 from the auth-proxy) to an authentication ProviderError', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 401, text: async () => 'unauthorized' });
+    const provider = new OllamaProvider(makeOllamaConfig({ maxRetries: 0 }));
+    const { context, prompt } = buildPromptFixture();
+
+    await expect(provider.generateDecision(context, prompt)).rejects.toMatchObject({ kind: 'authentication', provider: 'ollama' });
+  });
+
+  // Regression (live smoke test finding, qwen3.5:9b via the real relay): a thinking model can
+  // write its entire answer into `message.reasoning` and leave `message.content` empty when it
+  // runs out of token budget mid-thought — openAiCompatible.ts only ever reads `content`, so this
+  // must surface as a retryable empty_response, never silently normalize `reasoning` as if it
+  // were the answer.
+  it('treats an empty content field (reasoning-only response) as a retryable empty_response, ignoring the reasoning field', async () => {
+    fetchMock.mockResolvedValueOnce(
+      openAiResponse('', { choices: [{ message: { role: 'assistant', content: '', reasoning: 'thinking forever...' }, finish_reason: 'length' }] })
+    );
+    const provider = new OllamaProvider(makeOllamaConfig({ maxRetries: 0 }));
+    const { context, prompt } = buildPromptFixture();
+
+    await expect(provider.generateDecision(context, prompt)).rejects.toMatchObject({ kind: 'empty_response' });
+  });
+
+  it('empty_response (reasoning-only) recovers on retry once content resolves', async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        openAiResponse('', { choices: [{ message: { role: 'assistant', content: '', reasoning: 'still thinking' }, finish_reason: 'length' }] })
+      )
+      .mockResolvedValueOnce(openAiResponse(validModelOutput()));
+    const provider = new OllamaProvider(makeOllamaConfig({ maxRetries: 1 }));
+    const { context, prompt } = buildPromptFixture();
+
+    const decision = await provider.generateDecision(context, prompt);
+    expect(validateCandidateDecision(decision).ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects malformed JSON in content without retry (a thinking model narrating instead of emitting JSON)', async () => {
+    fetchMock.mockResolvedValueOnce(
+      openAiResponse('', { choices: [{ message: { content: 'Sure, here is my answer: {allocation: 0.1 (not valid json)' } }] })
+    );
+    const provider = new OllamaProvider(makeOllamaConfig({ maxRetries: 3 }));
+    const { context, prompt } = buildPromptFixture();
+
+    await expect(provider.generateDecision(context, prompt)).rejects.toMatchObject({ kind: 'invalid_json' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out if the tunnel/relay chain hangs (e.g. source machine offline)', async () => {
+    fetchMock.mockImplementation(
+      (_url: string, init: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })
+    );
+    const provider = new OllamaProvider(makeOllamaConfig({ timeoutMs: 20, maxRetries: 0 }));
+    const { context, prompt } = buildPromptFixture();
+
+    await expect(provider.generateDecision(context, prompt)).rejects.toMatchObject({ kind: 'timeout' });
+  });
+
+  it('createProvider(ollama) is registered in the factory', () => {
+    expect(createProvider(makeOllamaConfig())).toBeInstanceOf(OllamaProvider);
+  });
+});
+
 describe('OpenRouter provider', () => {
   it('free-model selection: "auto" resolves to a free model from the registry, never a paid one', async () => {
     mockOpenRouterEndpoints(() => openAiResponse(validModelOutput()));
@@ -728,6 +850,63 @@ describe('OpenRouter provider', () => {
 
   it('createProvider(openrouter) is registered in the factory', () => {
     expect(createProvider(makeOpenRouterConfig())).toBeInstanceOf(OpenRouterProvider);
+  });
+});
+
+// ── Env configuration (ollama) ───────────────────────────────────────────────────────────────
+
+describe('ollama env configuration', () => {
+  const ENV_KEYS = [
+    'REASONING_PROVIDER',
+    'REASONING_MODEL',
+    'OLLAMA_API_KEY',
+    'OLLAMA_BASE_URL',
+    'REASONING_MAX_TOKENS',
+    'REASONING_TIMEOUT_MS',
+  ];
+  const savedEnv: Record<string, string | undefined> = {};
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) savedEnv[key] = process.env[key];
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key];
+      else process.env[key] = savedEnv[key];
+    }
+  });
+
+  it('fails closed when REASONING_PROVIDER=ollama but REASONING_MODEL is unset (no sane default)', () => {
+    process.env.REASONING_PROVIDER = 'ollama';
+    delete process.env.REASONING_MODEL;
+    process.env.OLLAMA_API_KEY = 'shared-secret';
+
+    expect(() => getProviderConfigFromEnv()).toThrow(/REASONING_MODEL/);
+  });
+
+  it('fails closed when REASONING_PROVIDER=ollama but OLLAMA_API_KEY is unset', () => {
+    process.env.REASONING_PROVIDER = 'ollama';
+    process.env.REASONING_MODEL = 'qwen3.5:9b';
+    delete process.env.OLLAMA_API_KEY;
+
+    expect(() => getProviderConfigFromEnv()).toThrow(/OLLAMA_API_KEY/);
+  });
+
+  it('wires provider, model, apiKey, and baseUrl from env when fully configured', () => {
+    process.env.REASONING_PROVIDER = 'ollama';
+    process.env.REASONING_MODEL = 'qwen3.5:9b';
+    process.env.OLLAMA_API_KEY = 'shared-secret';
+    process.env.OLLAMA_BASE_URL = 'https://kairos-ollama-relay.example.workers.dev/v1';
+
+    const config = getProviderConfigFromEnv();
+
+    expect(config).toMatchObject({
+      provider: 'ollama',
+      model: 'qwen3.5:9b',
+      apiKey: 'shared-secret',
+      baseUrl: 'https://kairos-ollama-relay.example.workers.dev/v1',
+    });
   });
 });
 

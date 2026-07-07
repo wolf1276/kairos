@@ -5,6 +5,7 @@ import { AnthropicProvider } from './anthropicProvider.js';
 import { DeepSeekProvider } from './deepseekProvider.js';
 import { OpenRouterProvider } from './openrouterProvider.js';
 import { NvidiaProvider } from './nvidiaProvider.js';
+import { OllamaProvider } from './ollamaProvider.js';
 import type { BaseProvider } from './baseProvider.js';
 import type { ProviderCallConfig, ProviderName } from './types.js';
 
@@ -16,6 +17,7 @@ const PROVIDER_REGISTRY: Record<ProviderName, ProviderConstructor> = {
   deepseek: DeepSeekProvider,
   openrouter: OpenRouterProvider,
   nvidia: NvidiaProvider,
+  ollama: OllamaProvider,
 };
 
 export function getProviderConstructor(name: ProviderName): ProviderConstructor {

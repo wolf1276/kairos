@@ -27,6 +27,9 @@ const DEFAULT_BASE_URLS: Record<DecisionIntelligenceProviderName, string> = {
   anthropic: 'https://api.anthropic.com/v1',
   // Hugging Face's OpenAI-compatible router — same chat/completions request shape as the rest.
   huggingface: 'https://router.huggingface.co/v1',
+  // No sane default — depends entirely on the remote machine's tunnel URL; OLLAMA_BASE_URL is
+  // always set explicitly in deployment.
+  ollama: 'http://localhost:11434/v1',
 };
 
 /** Providers confirmed (via live testing) to actually honor OpenAI's `json_schema` structured
