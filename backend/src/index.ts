@@ -10,6 +10,8 @@ import { autonomousRouter, autonomousAgentRouter } from './routes/autonomous.js'
 import { tradesRouter } from './routes/trades.js';
 import { smartWalletsRouter } from './routes/smartWallets.js';
 import { agentContextRouter, contextMetricsRouter } from './routes/context.js';
+import { createMonitoringRouter } from './routes/monitoring.js';
+import { createDashboardRouter } from './routes/dashboard.js';
 import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { startContextMonitor } from './agentContext/monitor.js';
@@ -23,6 +25,14 @@ app.use(cors({ origin: getAllowedOrigin() }));
 app.use(express.json());
 
 app.get('/health', (_req, res) => res.json({ ok: true }));
+// Fuller runtime monitoring snapshot (Phase 8) — public, read-only. No AutonomousRuntime/
+// ProtocolRegistry is wired into this process yet, so `runtime`/`protocolHealth` report `null`;
+// process/RAM and any recorded Decision Intelligence metrics still report real data.
+app.use('/api/monitoring', createMonitoringRouter());
+// Dashboard API (Phase 9) — status/health/metrics/lifecycle over the Autonomous Runtime, plus
+// per-agent memory/learning/history reads. No AutonomousRuntime is wired into this process yet,
+// so status/health/metrics report `null` and start/stop/pause/resume report 503.
+app.use('/api/dashboard', createDashboardRouter());
 app.use('/api/auth', authRouter);
 // Public — must be registered before the broad `/api` requireAuth mount below, otherwise that
 // middleware runs first and 401s every unauthenticated strategies fetch (the frontend's

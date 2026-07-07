@@ -526,3 +526,127 @@ export async function getAgentContext(id: string, opts?: { refresh?: boolean }):
   const data = await request<{ context: AgentContextSnapshot }>(`/api/agents/${id}/context${qs}`);
   return data.context;
 }
+
+// ── Dashboard API (Autonomous Runtime) ──────────────────────────────────────────────────────
+// Thin client for /api/dashboard/* — a passthrough over the single global AutonomousRuntime
+// (status/health/metrics/start/stop/pause/resume) plus the Memory/Learning Engines, which are
+// scoped per agentId. This is the same backend as everything above (mounted unauthenticated
+// in index.ts), just a different router.
+
+export type RuntimeState = "STOPPED" | "STARTING" | "RUNNING" | "PAUSED" | "STOPPING";
+
+export interface RuntimeHeartbeat {
+  status: RuntimeState;
+  uptimeMs: number;
+  lastExecutionAt: number | null;
+  nextExecutionAt: number | null;
+  executionCount: number;
+  failureCount: number;
+  provider: string | null;
+  model: string | null;
+}
+
+export interface RuntimeHealthReport {
+  runtime: "ok" | "degraded" | "down";
+  scheduler: "ok" | "degraded" | "down";
+  pipelineRunner: "ok" | "degraded" | "down";
+  provider: "ok" | "degraded" | "down";
+}
+
+export interface EpisodicRecord {
+  id: string;
+  agentId: string;
+  timestamp: number;
+  contextRef: string;
+  decisionRef: string | null;
+  executionRef: string | null;
+  outcome: "profit" | "loss" | "breakeven" | "pending" | string;
+  pnl: number | null;
+  holdingTimeSeconds: number | null;
+  confidence: number;
+  quality: string;
+  tags: string[];
+}
+
+export interface SemanticFact {
+  id: string;
+  agentId: string;
+  key: string;
+  value: string;
+}
+
+export interface WorkingMemoryEntry {
+  key: string;
+  value: unknown;
+}
+
+export interface MemoryPackage {
+  meta: { version: string; agentId: string; timestamp: number; packageId: string; packageHash: string };
+  episodic: EpisodicRecord[];
+  semantic: SemanticFact[];
+  working: WorkingMemoryEntry[];
+  status: "valid" | "invalid";
+}
+
+export interface LearningSnapshot {
+  snapshotId: string;
+  agentId: string;
+  episodeCount: number;
+  semanticFactCount: number;
+  avgFees: { value: number; sampleCount: number } | null;
+  avgSlippage: { value: number; sampleCount: number } | null;
+  avgExecutionLatencyMs: { value: number; sampleCount: number } | null;
+  verificationPassRate: number;
+  executionDistribution: { protocol: string; fraction: number }[];
+}
+
+async function dashboardRequest<T>(path: string): Promise<T | null> {
+  const res = await fetch(backendUrl(path), { headers: { "Content-Type": "application/json" } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Dashboard API request failed (${res.status})`);
+  return data;
+}
+
+export async function getRuntimeStatus(): Promise<RuntimeState | null> {
+  const data = await dashboardRequest<{ status: RuntimeState | null }>("/api/dashboard/status");
+  return data?.status ?? null;
+}
+
+export async function getRuntimeHealth(): Promise<RuntimeHealthReport | null> {
+  const data = await dashboardRequest<{ health: RuntimeHealthReport | null }>("/api/dashboard/health");
+  return data?.health ?? null;
+}
+
+export async function getRuntimeMetrics(): Promise<RuntimeHeartbeat | null> {
+  const data = await dashboardRequest<{ metrics: RuntimeHeartbeat | null }>("/api/dashboard/metrics");
+  return data?.metrics ?? null;
+}
+
+async function dashboardAction(path: string): Promise<RuntimeState | null> {
+  const res = await fetch(backendUrl(path), { method: "POST", headers: { "Content-Type": "application/json" } });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `Dashboard API request failed (${res.status})`);
+  return data.status ?? null;
+}
+
+export const startRuntime = () => dashboardAction("/api/dashboard/start");
+export const stopRuntime = () => dashboardAction("/api/dashboard/stop");
+export const pauseRuntime = () => dashboardAction("/api/dashboard/pause");
+export const resumeRuntime = () => dashboardAction("/api/dashboard/resume");
+
+export async function getAgentMemoryPackage(agentId: string): Promise<MemoryPackage> {
+  const data = await dashboardRequest<{ memory: MemoryPackage }>(`/api/dashboard/memory?agentId=${encodeURIComponent(agentId)}`);
+  if (!data) throw new Error("Memory unavailable");
+  return data.memory;
+}
+
+export async function getAgentLearningSnapshot(agentId: string): Promise<LearningSnapshot> {
+  const data = await dashboardRequest<{ learning: LearningSnapshot }>(`/api/dashboard/learning?agentId=${encodeURIComponent(agentId)}`);
+  if (!data) throw new Error("Learning snapshot unavailable");
+  return data.learning;
+}
+
+export async function getAgentEpisodicHistory(agentId: string): Promise<EpisodicRecord[]> {
+  const data = await dashboardRequest<{ history: EpisodicRecord[] }>(`/api/dashboard/history?agentId=${encodeURIComponent(agentId)}`);
+  return data?.history ?? [];
+}
