@@ -11,6 +11,11 @@ export { buildReasoningRequest, buildReasoningRequestContext, assemblePrompt, va
  *  decisionIntelligence/index.ts and docs/architecture/REASONING_ENGINE.md. */
 export * as decisionIntelligence from './decisionIntelligence/index.js';
 
+/** Phase 4 (Decision Verification) — deterministic, rule-based, no AI/LLM. Namespaced for the
+ *  same reason as decisionIntelligence above. See verification/index.ts and
+ *  docs/architecture/REASONING_ENGINE.md. */
+export * as verification from './verification/index.js';
+
 export type { ReasoningProvider } from './interfaces.js';
 
 export {

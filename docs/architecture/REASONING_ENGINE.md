@@ -1,4 +1,4 @@
-# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence)
+# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence, Phase 4: Decision Verification)
 
 The Reasoning Engine is the third layer of the Kairos AI Operating System, sitting on top of the
 [Context Layer](./CONTEXT_LAYER.md) and the [Memory Engine](./MEMORY_ENGINE.md). Phase 1 produces
@@ -524,6 +524,121 @@ before choosing a production default and policy ceiling together.
 The Verification Engine, an Execution Planner, blockchain execution, learning/reinforcement
 learning, memory writes, and any change to the Context Layer, Memory Engine, or the LLM provider
 layer (`providers/`). Phase 3 only adds a decision-quality layer on top of the existing pipeline.
+
+## Phase 4: Decision Verification (`reasoning/verification/`)
+
+Phase 4 is a deterministic, rule-based gate between a `DecisionIntelligence` (Phase 3) and
+anything that would act on it (a future Execution Planner — not built yet). **No AI, no LLM call,
+no execution, no memory write** — every rule is a pure function of `(decision, context)` (plus an
+injectable clock for staleness checks), so identical inputs always produce an identical
+`VerificationResult`, byte-for-byte, including its hash.
+
+```
+DecisionIntelligence + ReasoningContext (AgentContext + MemoryPackage + UserPolicy)
+        |
+        v
+  Schema  (hard gate — reuses validateDecisionIntelligence, shape/enum/range/hash only)
+        |  (fails closed here -> reject immediately, no later stage runs)
+        v
+  Policy -> Capital -> Protocol -> Market -> Portfolio -> Evidence -> Consistency -> Risk -> Execution Feasibility
+        |
+        v
+  VerificationResult: VerifiedDecision | RejectedDecision
+```
+
+**Why Schema is a hard gate and nothing else is.** A structurally invalid `DecisionIntelligence`
+can't be safely read by later stages — `capital.ts` reading `.primaryDecision.allocation` on a
+malformed object would throw, not fail gracefully. So Schema failing short-circuits the pipeline
+(`stagesRun: ['schema']`, nothing else evaluated). Every other stage always runs to completion —
+even if Policy already failed, Capital/Protocol/Market/etc still execute — because
+`passedRules`/`failedRules`/`warnings` are meant to give a *complete* diagnostic picture, the same
+philosophy as Phase 1's `validateCandidateDecision` returning every error, not just the first.
+
+## Rule engine
+
+Each stage lives in its own file under `reasoning/verification/rules/`, exporting a pure
+`runXRules(decision, context) -> RuleResult[]`. A `RuleResult` is `{ rule, stage, passed, severity,
+message }` — `rule` is a stable, namespaced id (e.g. `policy.allocation_ceiling`,
+`risk.tolerance_alignment`) that tooling/dashboards can key off across runs. `severity` is
+`'error'` (blocks verification) or `'warning'` (surfaced but non-blocking, e.g. an alternative
+with a policy issue when the primary decision itself is compliant).
+
+| Stage | Rules |
+| --- | --- |
+| `schema` | Reuses `validateDecisionIntelligence` (Phase 3, unmodified) — required fields, enums, allocation/confidence ranges, evidence references, `decisionHash` |
+| `policy` | Protocol/asset in the `deriveAllowedPolicy` intersection (Phase 1, unmodified), allocation ceiling, objectives present, delegation active, confidence meets policy minimum, alternatives compliant |
+| `capital` | No negative balances (all three balances must be finite — `NaN`/`Infinity` rejected, not just `>= 0`), requested capital within deployable capital, requested capital within total managed capital |
+| `protocol` | Protocol execution enabled, action is one of the 5 canonical actions, requested capital within the agent's own position limit |
+| `market` | Oracle healthy, oracle not stale (`ageSeconds <= 300`), `AgentContext` not stale (`builtAt` within 5 minutes), volatility within a 50% hard ceiling |
+| `portfolio` | Concentration limit (80%), diversification (informational), no duplicate `(action, protocol, asset, allocation)` tuples across primary + alternatives |
+| `evidence` | Non-empty evidence, canonical evidence types, every reasoning step's `evidenceRefs` resolve (no broken/hallucinated references), no duplicate evidence |
+| `consistency` | Overall confidence aligns with the per-section average, low confidence never pairs with a large allocation, high uncertainty never pairs with zero identified risks, bullish outcome never pairs with WITHDRAW and bearish outcome never pairs with DEPOSIT |
+| `risk` | Allocation within a risk-tolerance-tiered ceiling (low/medium/high), drawdown within 30%, risk-domain volatility within 50%, requested capital within a liquidity-safe fraction of recent volume (all capital/volume inputs required finite — `Infinity` is rejected, never treated as "unlimited") |
+| `execution_feasibility` | System/scheduler/execution-subsystem ready, no active cooldown, recent-failure count below threshold, wallet delegation active — all skipped for `HOLD` (nothing to execute) |
+
+All thresholds (position limits, staleness windows, risk-tolerance ceilings, etc.) are named
+exported constants at the top of their rule file — tune them there, not inline.
+
+## Output: VerifiedDecision | RejectedDecision
+
+Both share `VerificationReportBase`: `passedRules`, `failedRules`, `warnings`, `verificationHash`,
+`verificationVersion`, `verifiedAt`, `stagesRun`, `ruleResults` (the full list, for anyone who
+wants more than the rule-id summary). `RejectedDecision` adds `rejectionStage` — the first stage
+(in pipeline order) that produced an error-severity failure, for fast triage.
+
+## Replay & determinism
+
+`verifyDecision(decision, context, { now })` never reads the real clock unless `now` is omitted —
+tests always pass a fixed `now` and get byte-identical results (including `verificationHash`)
+across any number of repeated calls. `hashVerification` (`verification/hashing.ts`) hashes
+`{ decisionHash, ruleResults, verificationVersion }` — the same `sha256`-over-`stableStringify`
+technique used everywhere else in the Reasoning Engine — explicitly excluding `verifiedAt` (the
+only wall-clock field) so re-running verification on an unchanged decision always reproduces the
+same hash, the same replay guarantee Phase 1's `hashCandidateDecision` and Phase 3's
+`hashDecisionIntelligence` provide.
+
+## Testing (Phase 4)
+
+`backend/src/__tests__/decisionVerification.test.ts` (43 tests) covers: valid decisions; malformed
+decisions (invalid action, NaN confidence, wrong alternative count, undefined `primaryDecision`)
+all short-circuiting at `schema`; every named policy violation (protocol, asset, allocation
+ceiling, minimum confidence, delegation inactive); insufficient/negative capital; protocol
+restrictions (execution disabled, position-limit overflow); stale market data (unhealthy oracle,
+stale oracle, stale context, excess volatility); evidence integrity (broken reference, duplicate
+evidence); consistency violations (low-confidence/high-allocation pairing, high-uncertainty/
+zero-risk pairing); risk violations (tolerance ceiling, drawdown, liquidity); execution
+infeasibility (system not ready, active cooldown) and `HOLD`'s exemption from those checks; a
+tampered `decisionHash` (rejected at `schema`); five explicit bypass attempts (all correctly fail —
+including one that caught a real gap: `policy.alternatives_compliant` originally checked only
+protocol/asset, not the allocation ceiling, for alternatives — fixed during test-writing);
+determinism (byte-identical repeated output, hash changes only when a rule outcome changes); and
+10/50/100/250-way "parallel" verification (verification is synchronous, so this is sequential
+repeated calls, not concurrent I/O — the point is proving determinism and isolation at each scale,
+not testing an async race).
+
+**Final production audit** (`backend/src/__tests__/decisionVerificationFinalAudit.test.ts`, 76
+tests) re-tested every category above plus schema edge cases (extra fields, null/undefined
+values), 500x replay, 10/50/100/250/500-way concurrency including 500 distinct decisions run
+through `Promise.all` with zero cross-contamination, 8 explicit security bypass attempts (forged
+hash, modified evidence, modified policy, allocation/protocol/rule bypass, malformed types, replay
+attack), and a performance pass (sub-5ms average, all synchronous). Found and fixed 3 real bugs:
+
+1. **Missing rule**: nothing checked "bullish outcome + WITHDRAW" / "bearish outcome + DEPOSIT" —
+   added `consistency.outcome_matches_action`.
+2. **Overflow bypass**: `Infinity` on both `totalManagedCapital` and `deployableCapital` passed
+   `capital.no_negative_balances` (`Infinity >= 0`) and made `capital.available_capital` vacuously
+   true (`Infinity <= Infinity`) — fixed with explicit `Number.isFinite` guards on all three
+   capital balances.
+3. **Liquidity bypass**: `Infinity` `recentVolume` made `requestedCapital / Infinity = 0`, passing
+   `risk.liquidity_sufficient` regardless of trade size — fixed with an explicit
+   `Number.isFinite(recentVolume)` guard.
+
+## Explicitly out of scope for Phase 4
+
+An Execution Planner (the natural next consumer of `VerifiedDecision`), blockchain execution,
+memory writes, learning, and any change to the Context Layer, Memory Engine, LLM provider layer,
+Benchmark Framework, Decision Intelligence, or prompts. Phase 4 only adds a deterministic gate
+between Decision Intelligence and anything that would act on its output.
 
 ## CandidateDecision
 
