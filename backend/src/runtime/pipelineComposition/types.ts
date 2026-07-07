@@ -14,6 +14,7 @@ import type { DecisionIntelligenceProviderConfig } from '../../reasoning/decisio
 import type { BuildContextOptions } from '../../agentContext/contextBuilder.js';
 import type { RuntimeLogger, RuntimePersistenceProvider, ProviderAvailabilityCheck } from '../autonomousRuntime/index.js';
 import type { PipelineRunnerLogger } from '../pipelineRunner/index.js';
+import type { StrategyRegistry } from '../../strategyEngine/index.js';
 
 /** Derives the post-submission facts the Outcome Recorder needs (Phase 8, frozen) from a built
  *  ExecutionResult. Injected because the Execution Engine only ever builds/simulates an unsigned
@@ -36,6 +37,10 @@ export interface KairosCompositionConfig {
   /** Decision Intelligence provider config — defaults to `getProviderConfigFromEnv()` reused
    *  as-is; override to pin a specific provider/model for this composition. */
   decisionIntelligenceConfig?: DecisionIntelligenceProviderConfig;
+  /** Strategy Engine (Phase 14) registry — defaults to `createDefaultStrategyRegistry()` (every
+   *  built-in strategy) when omitted; override to run a custom/subset registry for this
+   *  composition. The Strategy Engine's own files are never modified by Composition. */
+  strategyRegistry?: StrategyRegistry;
   telemetryProvider: TelemetryProvider;
   contextOptions?: BuildContextOptions;
   routeOptions?: Partial<PlanRouteRequestOptions & RouteEngineOptions>;

@@ -61,7 +61,11 @@ export function getProviderConfigFromEnv(): ProviderCallConfig {
     model: readEnv('REASONING_MODEL') || defaultModelFor(provider),
     apiKey,
     temperature: readNumberEnv('REASONING_TEMPERATURE', 0.2),
-    maxTokens: readNumberEnv('REASONING_MAX_TOKENS', 2000),
+    // Decision Intelligence's schema (primaryDecision + 2-3 alternatives + reasoningChain +
+    // risks + uncertainty + summary) routinely needs ~1900+ completion tokens even from a
+    // capable model (observed: Gemini 2.5 Flash truncated at 2000/4000 before completing) — 2000
+    // left near-zero headroom and silently truncated valid responses into invalid_json failures.
+    maxTokens: readNumberEnv('REASONING_MAX_TOKENS', 4000),
     timeoutMs: readNumberEnv('REASONING_TIMEOUT_MS', 30_000),
     maxRetries: readNumberEnv('REASONING_MAX_RETRIES', 2),
     structuredOutput: readBoolEnv('REASONING_STRUCTURED_OUTPUT', true),

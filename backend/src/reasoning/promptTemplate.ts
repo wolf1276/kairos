@@ -106,6 +106,16 @@ function buildV2Sections(context: ReasoningContext): PromptSections {
       'DEPOSIT, WITHDRAW, SWAP, REBALANCE — never another value), protocol, asset, allocation ' +
       '[0,1], confidence [0,1] }, alternatives (2-3 items, each with action, protocol, asset, ' +
       'allocation, confidence, tradeoffs), reasoningChain (each step citing evidence indices via ' +
+      // `protocol` and `asset` must always be exactly one value copied verbatim from the
+      // "Allowed Protocols"/"Allowed Assets" lists above — never the trading pair string (e.g.
+      // never "XLM/USDC"), never a placeholder like "N/A". This applies even to HOLD: every
+      // primaryDecision/alternative is validated against those exact allowed lists regardless
+      // of action, so the model must still name a real allowed protocol/asset.
+      'For every primaryDecision and alternative, `protocol` must be exactly one value copied ' +
+      'verbatim from the Allowed Protocols list below, and `asset` must be exactly one value ' +
+      'copied verbatim from the Allowed Assets list below — never the trading pair as a whole ' +
+      '(e.g. never "XLM/USDC"), never "N/A" or any other placeholder. This still applies when ' +
+      'action is HOLD: name the single allowed protocol/asset the hold decision concerns. ' +
       'evidenceRefs), evidence (each item typed as market_indicator, historical_statistic, ' +
       'historical_pattern, historical_conflict, or policy_rule), risks (description, ' +
       'probability, severity, mitigation), assumptions (non-empty — no hidden assumptions), ' +

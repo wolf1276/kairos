@@ -4,8 +4,23 @@
 // generation, learning statistics — without touching real network/LLM/blockchain calls.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const mockFeatureSet = {
+  pair: 'XLM/USDC',
+  price: 0.12,
+  trend: { ema20: 0.121, ema50: 0.118, sma20: 0.1195, trendStrength: 40, direction: 'up' },
+  momentum: { rsi: 55, macdHistogram: 0.0003, roc: 2.1 },
+  volatility: { atr: 0.002, volatilityPct: 1.8, band: 'normal' },
+  volume: { window24h: 500000, changePct: 5 },
+  liquidity: { recentVolume: 100000 },
+  wallet: { publicKey: 'GABC', smartWalletAddress: null, delegationActive: false, mode: 'paper', capital: '1000' },
+  portfolio: { xlmPct: 50, usdcPct: 50, idleUsd: 50, totalValue: 1000, targetXlmPct: 50, targetUsdcPct: 50, driftPct: 0 },
+  protocolExposure: [],
+  risk: { realizedPnl: 0, unrealizedPnl: 0, drawdownPct: 0, volatilityPct: 1.8 },
+  computedAt: 1_700_000_000_000,
+};
+
 vi.mock('../agentContext/contextBuilder.js', () => ({
-  buildAgentContext: vi.fn(async (agentId: string) => ({ agentId, meta: { contextHash: 'ctx-hash' } })),
+  buildAgentContext: vi.fn(async (agentId: string) => ({ agentId, pair: 'XLM/USDC', features: mockFeatureSet, meta: { contextHash: 'ctx-hash' } })),
 }));
 
 vi.mock('../memoryLayer/index.js', () => ({
@@ -20,9 +35,26 @@ vi.mock('../reasoning/index.js', () => ({
     agentContext,
     memoryPackage,
     userPolicy,
-    meta: { reasoningContextHash: 'rc-hash' },
+    meta: { reasoningContextHash: 'rc-hash', timestamp: 1_700_000_000_000 },
   })),
-  buildPrompt: vi.fn((reasoningContext: unknown) => ({ promptHash: 'prompt-hash', reasoningContext })),
+  buildPrompt: vi.fn((reasoningContext: unknown) => ({
+    promptHash: 'prompt-hash',
+    templateVersion: 'v2',
+    sections: {
+      system: 'system',
+      agentIdentity: 'agentIdentity',
+      marketContext: 'marketContext',
+      managedCapital: 'managedCapital',
+      historicalExperience: 'historicalExperience',
+      detectedPatterns: 'detectedPatterns',
+      evidence: 'base-evidence',
+      riskConstraints: 'riskConstraints',
+      allowedProtocols: 'allowedProtocols',
+      objectives: 'objectives',
+      outputSchema: 'outputSchema',
+    },
+    reasoningContext,
+  })),
 }));
 
 vi.mock('../reasoning/decisionIntelligence/index.js', () => ({

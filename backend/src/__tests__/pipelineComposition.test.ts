@@ -6,10 +6,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const callLog: string[] = [];
 
+const mockFeatureSet = {
+  pair: 'XLM/USDC',
+  price: 0.12,
+  trend: { ema20: 0.121, ema50: 0.118, sma20: 0.1195, trendStrength: 40, direction: 'up' },
+  momentum: { rsi: 55, macdHistogram: 0.0003, roc: 2.1 },
+  volatility: { atr: 0.002, volatilityPct: 1.8, band: 'normal' },
+  volume: { window24h: 500000, changePct: 5 },
+  liquidity: { recentVolume: 100000 },
+  wallet: { publicKey: 'GABC', smartWalletAddress: null, delegationActive: false, mode: 'paper', capital: '1000' },
+  portfolio: { xlmPct: 50, usdcPct: 50, idleUsd: 50, totalValue: 1000, targetXlmPct: 50, targetUsdcPct: 50, driftPct: 0 },
+  protocolExposure: [],
+  risk: { realizedPnl: 0, unrealizedPnl: 0, drawdownPct: 0, volatilityPct: 1.8 },
+  computedAt: 1_700_000_000_000,
+};
+
 vi.mock('../agentContext/contextBuilder.js', () => ({
   buildAgentContext: vi.fn(async (agentId: string) => {
     callLog.push('buildAgentContext');
-    return { agentId, meta: { contextHash: 'ctx-hash' } };
+    return { agentId, pair: 'XLM/USDC', features: mockFeatureSet, meta: { contextHash: 'ctx-hash' } };
   }),
 }));
 
@@ -26,11 +41,28 @@ vi.mock('../memoryLayer/index.js', () => ({
 vi.mock('../reasoning/index.js', () => ({
   buildReasoningContext: vi.fn((agentContext: unknown, memoryPackage: unknown, userPolicy: unknown) => {
     callLog.push('buildReasoningContext');
-    return { agentContext, memoryPackage, userPolicy, meta: { reasoningContextHash: 'rc-hash' } };
+    return { agentContext, memoryPackage, userPolicy, meta: { reasoningContextHash: 'rc-hash', timestamp: 1_700_000_000_000 } };
   }),
   buildPrompt: vi.fn((reasoningContext: unknown) => {
     callLog.push('buildPrompt');
-    return { promptHash: 'prompt-hash', reasoningContext };
+    return {
+      promptHash: 'prompt-hash',
+      templateVersion: 'v2',
+      sections: {
+        system: 'system',
+        agentIdentity: 'agentIdentity',
+        marketContext: 'marketContext',
+        managedCapital: 'managedCapital',
+        historicalExperience: 'historicalExperience',
+        detectedPatterns: 'detectedPatterns',
+        evidence: 'base-evidence',
+        riskConstraints: 'riskConstraints',
+        allowedProtocols: 'allowedProtocols',
+        objectives: 'objectives',
+        outputSchema: 'outputSchema',
+      },
+      reasoningContext,
+    };
   }),
 }));
 
@@ -205,6 +237,40 @@ describe('createPipelineStages — dependency wiring', () => {
     expect(acc.verification).toEqual({ status: 'verified', decision: { id: 'decision-1' } });
     expect(acc.plan).toEqual({ steps: [{ stepId: 'step-1' }] });
     expect(acc.route).toEqual({ stepId: 'step-1', route: { routeId: 'route-1' } });
+  });
+
+  it('Phase 14: reasoning stage threads StrategySignal[] and StrategyConsensus, and Decision Intelligence receives them via the prompt evidence section', async () => {
+    const stages = createPipelineStages(baseConfig());
+    const context = await stages.context({});
+    const memory = await stages.memory({});
+    const reasoning = await stages.reasoning({ context, memory }) as {
+      strategySignals: unknown[];
+      strategyConsensus: { totalStrategies: number; majoritySignal: string | null };
+      prompt: { sections: { evidence: string } };
+    };
+
+    expect(reasoning.strategySignals.length).toBe(12); // every built-in strategy
+    expect(reasoning.strategyConsensus.totalStrategies).toBe(12);
+    expect(reasoning.prompt.sections.evidence).toContain('base-evidence'); // original evidence preserved
+    expect(reasoning.prompt.sections.evidence).toContain('Strategy Signals');
+    expect(reasoning.prompt.sections.evidence).toContain('Consensus:');
+
+    await stages.decision({ context, memory, reasoning });
+    expect(generateDecisionIntelligence).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ sections: expect.objectContaining({ evidence: expect.stringContaining('Strategy Signals') }) }),
+      expect.anything(),
+    );
+  });
+
+  it('Phase 14: is deterministic — identical StrategyInput produces identical strategySignals/consensus across repeated calls', async () => {
+    const stages = createPipelineStages(baseConfig());
+    const context = await stages.context({});
+    const memory = await stages.memory({});
+    const first = await stages.reasoning({ context, memory }) as { strategySignals: unknown[]; strategyConsensus: unknown };
+    const second = await stages.reasoning({ context, memory }) as { strategySignals: unknown[]; strategyConsensus: unknown };
+    expect(JSON.stringify(first.strategySignals)).toBe(JSON.stringify(second.strategySignals));
+    expect(first.strategyConsensus).toEqual(second.strategyConsensus);
   });
 
   it('passes injected userPolicy, network, and protocolRegistry through to the right stages', async () => {
