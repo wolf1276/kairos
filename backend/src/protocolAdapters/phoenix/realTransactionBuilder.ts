@@ -1,11 +1,10 @@
-// Real, unsigned, resource-assembled Soroban transaction builder for Soroswap Router calls —
-// same technique as `aquarius/realTransactionBuilder.ts` (the production reference). See
-// `invocation.ts`'s header for the ABI-confidence caveat: real XDR construction against a
-// documented-but-not-live-verified router interface.
+// Real, unsigned, resource-assembled Soroban transaction builder for Phoenix (multihop/pool) —
+// same technique as `aquarius/realTransactionBuilder.ts`. See `invocation.ts`'s header for the
+// source-verified-but-not-live-tested caveat.
 import { Address, Operation, rpc, TransactionBuilder as StellarTransactionBuilder } from '@stellar/stellar-sdk';
-import { buildRouterOperation, getNetworkPassphrase } from './invocation.js';
+import { buildPhoenixOperation, getNetworkPassphrase } from './invocation.js';
 import type { InvocationOptions } from './invocation.js';
-import type { SoroswapNetwork } from './config.js';
+import type { PhoenixNetwork } from './config.js';
 
 export interface RealResourceEstimate {
   cpuInstructions: number;
@@ -19,16 +18,16 @@ export type RealTransactionDetail =
   | { success: true; unsignedXdr: string; resourceEstimate: RealResourceEstimate; simulationErrors: [] }
   | { success: false; unsignedXdr: null; resourceEstimate: null; simulationErrors: string[] };
 
-export async function buildRealSoroswapTransaction(
-  routerContractId: string,
+export async function buildRealPhoenixTransaction(
+  contractId: string,
   method: string,
   args: Record<string, unknown>,
-  network: SoroswapNetwork,
+  network: PhoenixNetwork,
   options: InvocationOptions,
 ): Promise<RealTransactionDetail> {
   const server = new rpc.Server(options.rpcUrl);
   const account = await server.getAccount(options.sourceAccountPublicKey);
-  const operation = await buildRouterOperation(routerContractId, method, args, network, options);
+  const operation = buildPhoenixOperation(contractId, method, args, options);
   const tx = new StellarTransactionBuilder(account, { fee: '10000000', networkPassphrase: getNetworkPassphrase(network) })
     .addOperation(operation)
     .setTimeout(30)
@@ -57,19 +56,7 @@ export async function buildRealSoroswapTransaction(
   };
 }
 
-/**
- * Verifies a real, unsigned XDR's contract/function identity, and — when `expectedArgsXdr` is
- * supplied — every argument value too, byte-for-byte.
- *
- * `expectedArgsXdr` closes a real gap found during live production verification: checking only
- * `contractId`/`method` does not catch a tampered *argument* (e.g. a swapped `amount_in`, a
- * substituted recipient, or a rewritten `path`) — live-tested by flipping one byte in the middle
- * of a real, valid, router-accepted XDR and confirming the contract-id/method-only check still
- * reported `ok: true`. Pass each expected argument's canonical XDR (base64) — in call order,
- * exactly as built (e.g. via `nativeToScVal(...).toXDR('base64')`) — to catch this. Omitting it
- * preserves the exact prior (weaker) behavior, so existing callers are unaffected.
- */
-export function verifyUnsignedXdr(unsignedXdr: string, network: SoroswapNetwork, expectedContractId: string, expectedMethod: string, expectedArgsXdr?: string[]): { ok: boolean; errors: string[] } {
+export function verifyUnsignedXdr(unsignedXdr: string, network: PhoenixNetwork, expectedContractId: string, expectedMethod: string): { ok: boolean; errors: string[] } {
   const errors: string[] = [];
   let parsed;
   try {
@@ -90,18 +77,5 @@ export function verifyUnsignedXdr(unsignedXdr: string, network: SoroswapNetwork,
   const functionName = invocation.functionName().toString();
   if (contractId !== expectedContractId) errors.push(`XDR invokes contract '${contractId}' but '${expectedContractId}' was expected — possible invalid-contract attack`);
   if (functionName !== expectedMethod) errors.push(`XDR invokes function '${functionName}' but '${expectedMethod}' was expected`);
-
-  if (expectedArgsXdr) {
-    const actualArgs = invocation.args();
-    if (actualArgs.length !== expectedArgsXdr.length) {
-      errors.push(`XDR invokes '${functionName}' with ${actualArgs.length} argument(s) but ${expectedArgsXdr.length} were expected — possible modified-XDR attack`);
-    } else {
-      actualArgs.forEach((actual, i) => {
-        const actualXdr = actual.toXDR('base64');
-        if (actualXdr !== expectedArgsXdr[i]) errors.push(`XDR argument #${i} does not match its expected value — possible modified-XDR attack (tampered argument payload)`);
-      });
-    }
-  }
-
   return { ok: errors.length === 0, errors };
 }

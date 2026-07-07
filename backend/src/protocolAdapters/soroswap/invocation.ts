@@ -26,18 +26,30 @@ export function toStroops(amount: string): bigint {
 }
 
 export interface AssetResolver {
-  /** Issuer account per non-native asset code — required to compute a real Stellar Asset
-   *  Contract address (`Asset.contractId()`). 'XLM'/'native' never needs an entry (resolved via
-   *  `Asset.native()`). */
-  assetIssuers: Record<string, string>;
+  /** Issuer account per non-native asset code — used to *derive* a real Stellar Asset Contract
+   *  (SAC) address (`Asset.contractId()`) for a classic Stellar asset wrapped as a Soroban token.
+   *  'XLM'/'native' never needs an entry (resolved via `Asset.native()`). */
+  assetIssuers?: Record<string, string>;
+  /** Direct contract address per asset code — takes priority over `assetIssuers` when both are
+   *  present for the same code. Required for a real Soroban token that is *not* a classic-asset
+   *  SAC (a plain SEP-41 token contract with no backing classic issuer) — confirmed to be common
+   *  in practice during live verification: the real Soroswap testnet token list's USDC
+   *  (`CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F`) is exactly this — its `name()`
+   *  returns `"USDCoin"`, not the `"code:issuer"` format a SAC's `name()` returns, so
+   *  `Asset.contractId()` cannot be used to reach it at all; only a direct address works. Without
+   *  this, `AssetResolver` could only ever resolve classic-asset SACs, which excludes a large and
+   *  common class of real Soroban tokens. */
+  assetAddresses?: Record<string, string>;
 }
 
 function resolveAssetAddress(assetCode: string, network: SoroswapNetwork, resolver: AssetResolver): string {
   if (assetCode.toUpperCase() === 'XLM' || assetCode.toUpperCase() === 'NATIVE') {
     return Asset.native().contractId(getNetworkPassphrase(network));
   }
-  const issuer = resolver.assetIssuers[assetCode];
-  if (!issuer) throw new Error(`No issuer configured for asset '${assetCode}' — cannot derive its Stellar Asset Contract address.`);
+  const directAddress = resolver.assetAddresses?.[assetCode];
+  if (directAddress) return directAddress;
+  const issuer = resolver.assetIssuers?.[assetCode];
+  if (!issuer) throw new Error(`No address or issuer configured for asset '${assetCode}' — cannot resolve its Soroban contract address. Supply it via assetResolver.assetAddresses (direct contract) or assetResolver.assetIssuers (classic-asset SAC derivation).`);
   return new Asset(assetCode, issuer).contractId(getNetworkPassphrase(network));
 }
 

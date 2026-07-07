@@ -350,7 +350,16 @@ export function createPhoenixAdapter(options: PhoenixAdapterOptions): ProtocolAd
       case 'SWAP_CHAINED':
         return { path: request.params?.path, amount: request.amount, minOutput: request.params?.minOutput ?? null, poolType: request.params?.poolType ?? DEFAULT_POOL_TYPE };
       case 'DEPOSIT':
-        return { assetA: request.asset, assetB: request.params?.assetB, amount: request.amount };
+        // `amountB` is optional here (matches Soroswap's ADD_LIQUIDITY convention) but is
+        // required by the real Phoenix pool's `provide_liquidity` entrypoint, which panics
+        // (`ProvideLiquidityAtLeastOneTokenMustBeBiggerThenZero`) unless *both* `desired_a` and
+        // `desired_b` are `Some(x>0)` — confirmed by reading the real, tagged-release (v2.0.0)
+        // contract source during Phoenix's real-integration verification. A caller that omits
+        // `params.amountB` still gets a synthetic transaction/hash here (this function's
+        // contract with the rest of the adapter is unchanged); only the real transaction
+        // provider (`routeExecutionEngine/phoenixProvider.ts`) requires it and fails closed if
+        // it's missing.
+        return { assetA: request.asset, assetB: request.params?.assetB, amount: request.amount, amountB: request.params?.amountB ?? null };
       case 'WITHDRAW':
         return { poolId: request.params?.poolId, amount: request.amount };
       case 'POOL_DISCOVERY':

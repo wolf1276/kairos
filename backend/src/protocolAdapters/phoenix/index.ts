@@ -4,6 +4,8 @@ export { getPhoenixMultihopContractId, getPhoenixFactoryContractId, getSorobanRp
 export { hashQuote, hashTransaction } from './hashing.js';
 export { PHOENIX_ACTIONS, PHOENIX_POOL_TYPES } from './types.js';
 export { createDeterministicMultihopClient, createDeterministicFactoryClient, createDeterministicPoolClient, createDeterministicSorobanRpcClient } from './testDoubles.js';
+export { buildRealPhoenixTransaction, verifyUnsignedXdr } from './realTransactionBuilder.js';
+export { buildPhoenixOperation, getNetworkPassphrase, simulateCall, toStroops, POOL_TYPE_DISCRIMINANT } from './invocation.js';
 
 export type { PhoenixAdapterOptions } from './adapter.js';
 export type { PhoenixNetwork } from './config.js';
@@ -20,3 +22,5 @@ export type {
   PhoenixPoolClient,
   SorobanRpcClient,
 } from './types.js';
+export type { RealTransactionDetail, RealResourceEstimate } from './realTransactionBuilder.js';
+export type { InvocationOptions, AssetResolver } from './invocation.js';

@@ -1091,7 +1091,7 @@ invalid simulation, RPC/adapter spoofing rejected by the registry itself, malfor
 fee-estimate/simulation shape checks); and a performance suite measuring avg/P95/P99 latency
 across 250 sequential executions.
 
-### Production Gap Closure — real Soroban integration (Aquarius)
+### Production Gap Closure — real Soroban integration (Aquarius, then Soroswap)
 
 Closes the "synthetic XDR/resource estimate" gap for one protocol, using the pre-existing,
 live-testnet-verified real Aquarius Soroban integration (`protocolAdapters/aquarius/
@@ -1135,14 +1135,17 @@ pre-existing) instead of a test-double adapter makes `simulationResult`/`estimat
 real with zero changes to `engine.ts`. This was verified, not assumed — see
 `executionEngineAquariusIntegration.test.ts` below.
 
-**Why only Aquarius.** Blend/Phoenix/Soroswap have no equivalent `invocation.ts`-style real
-Soroban call builder — nobody has verified their real contract ABIs against a live network (the
-Aquarius one carries a header comment recording exactly that verification). Fabricating ScVal
-argument encoders for three unverified contract ABIs would produce transactions with no evidence
-they're actually correct, which is a worse outcome than clearly-labeled synthetic data — so this
-gap closure deliberately stayed scoped to the one protocol with a verified foundation to build on.
-Extending the same pattern to the other three is the largest remaining item in "Production
-Readiness" below.
+**Why only Aquarius (at this point in the doc — see "round 2" below).** At the time this section
+was written, Blend/Phoenix/Soroswap had no equivalent `invocation.ts`-style real Soroban call
+builder — nobody had verified their real contract ABIs against a live network (the Aquarius one
+carries a header comment recording exactly that verification). Fabricating ScVal argument encoders
+for unverified contract ABIs would produce transactions with no evidence they're actually correct,
+which is a worse outcome than clearly-labeled synthetic data — so this gap closure deliberately
+stayed scoped to the one protocol with a verified foundation to build on. A second gap-closure
+round ("Production Gap Closure round 2" below) later extended real coverage to Soroswap (a
+documented-but-not-live-verified ABI — a step short of Aquarius's bar) and evaluated Blend/Phoenix,
+concluding both should stay synthetic for now (contract struct/enum encoding risk with no verified
+spec to build against).
 
 **Testing.**
 - `backend/src/__tests__/aquariusRealTransactionBuilder.test.ts` (9 tests, offline/hermetic —
@@ -1178,6 +1181,281 @@ functions (`checkTransactionWellFormed`, `checkTransactionIntegrity`, `checkSimu
 etc.) already covered every new failure mode the real integration introduces; only
 `checkRealTransactionDetail` (shape-checking a real provider's response) was newly added.
 
+### Production Gap Closure round 2 — Soroswap real integration; Blend/Phoenix stay synthetic
+
+Extended the same pattern to Soroswap, and evaluated Blend/Phoenix against the same bar Aquarius
+was held to — concluding neither currently qualifies for a real `RealTransactionProvider` without
+risking exactly what "never fabricate real data" forbids.
+
+**Soroswap — real, additive, same technique as Aquarius:**
+- `protocolAdapters/soroswap/invocation.ts` (new): `buildRouterOperation`/`simulateRouterCall`,
+  encoding `swap_exact_tokens_for_tokens(amount_in, amount_out_min, path, to, deadline)` /
+  `add_liquidity(token_a, token_b, amount_a_desired, amount_b_desired, amount_a_min, amount_b_min,
+  to, deadline)` / `remove_liquidity(token_a, token_b, liquidity, amount_a_min, amount_b_min, to,
+  deadline)` — the Uniswap-V2-style signatures this codebase's own `soroswap/types.ts` header has
+  documented since the adapter was first built, and the same convention the adapter's
+  `buildRouterArgs`/`ROUTER_METHOD_BY_ACTION` already targeted. Asset addresses are derived via
+  `@stellar/stellar-sdk`'s `Asset.contractId()` — a real, deterministic, offline computation of
+  the actual Stellar Asset Contract address for a classic asset (verified directly: `Asset.
+  native().contractId(Networks.TESTNET)` produces the well-known canonical XLM SAC address) —
+  never a guessed or hardcoded address. Non-native assets require their issuer account supplied
+  via `AssetResolver.assetIssuers` (real, standard classic-asset config — not fabricated, but
+  caller-supplied, since this framework has no Soroswap-side asset registry the way Aquarius's
+  backend API provides one).
+- `protocolAdapters/soroswap/realTransactionBuilder.ts` (new): `buildRealSoroswapTransaction`/
+  `verifyUnsignedXdr` — identical structure to Aquarius's (assembles real resource/fee data via
+  `rpc.assembleTransaction`, verifies a given XDR's decoded contract/function against what was
+  expected).
+- `routeExecutionEngine/soroswapProvider.ts` (new): `createSoroswapRealTransactionProvider`,
+  wired the same way as `aquariusProvider.ts`.
+
+**Live production verification (post-gap-closure).** Soroswap's real path was subsequently
+verified against the actual deployed testnet router — same epistemic bar as Aquarius now. Real
+addresses discovered live via Soroswap's public API (not hardcoded/guessed):
+router `CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD`
+(`api.soroswap.finance/api/testnet/router`), XLM SAC
+`CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` (confirmed to exactly match this
+codebase's own `Asset.native().contractId(Networks.TESTNET)` derivation — independent proof that
+derivation is correct), testnet USDC `CB3TLW74NBIOT3BUWOZ3TUM6RFDF6A4GVIRUQRQZABG5KPOUL4JJOV2F`
+(`api.soroswap.finance/api/tokens?network=testnet`). A real, funded testnet account
+(funded live via `friendbot.stellar.org` for this verification) was used as the simulation source.
+
+A real `swap_exact_tokens_for_tokens(XLM, USDC)` call built by `buildRealSoroswapTransaction` and
+simulated against the live router **succeeded** — the live event log shows the router receiving
+exactly the call this codebase builds: `fn_call, ROUTER, swap_exact_tokens_for_tokens, data:
+[amount_in, amount_out_min, path, to, deadline]`, argument-for-argument matching the ABI this file
+documents. This independently confirms both the function name and the argument encoding/order are
+correct against the real deployed contract — not just internally consistent. Real resource/fee
+data came back (~5.7M CPU instructions, 242166 stroops resource fee — realistic live Soroban
+numbers, nothing like the synthetic path's fixed placeholders), and `verifyUnsignedXdr`
+successfully round-tripped the resulting real XDR.
+
+**Bug found and fixed during live verification (High severity): `AssetResolver` could not
+resolve a real, commonly-used token.** The original `AssetResolver` only derived a classic-asset
+Stellar Asset Contract (SAC) address via `Asset(code, issuer).contractId()`. Live-querying the
+real testnet USDC token's `name()` function returned `"USDCoin"` — not the `"code:issuer"` format
+a SAC's `name()` returns — proving it is a plain SEP-41 token contract with **no backing classic
+issuer at all**. `assetIssuers`-only resolution can therefore never reach a real, common class of
+Soroban tokens, which would silently block real-XDR construction for any pair involving one.
+**Fix**: added `AssetResolver.assetAddresses` (a direct contract-address map, checked before
+`assetIssuers`) — additive, backward-compatible (`assetIssuers` remains supported and is now
+optional rather than required). Verified: the live USDC swap above uses `assetAddresses` and
+succeeds; `assetIssuers`-based SAC derivation still works unchanged for classic assets (regression
+tests cover both, plus priority-when-both-are-supplied).
+
+**Attack surface — every attempt failed closed, live:**
+- **Malformed/unresolvable asset**: rejected by this codebase's own code before any network
+  call (`Error: No address or issuer configured for asset 'DOGE'`).
+- **Invalid amount (negative)**: reached the real router, which rejected it on-chain
+  (`HostError: Error(Contract, #502)`, visible in the live event log).
+- **Invalid amount (exceeds balance)**: reached the real router, which rejected it on-chain
+  during the real token `transfer` call (`HostError: Error(Contract, #12)`, "spent amount is too
+  large").
+- **Wrong function name**: rejected by this codebase's own code before any network call
+  (`Unknown Soroswap router method '...'`).
+- **Wrong contract** (a real, deployed, but non-router contract — the USDC token contract
+  itself): reached live chain state, which correctly reported
+  `"trying to invoke non-existent contract function"`.
+- **`verifyUnsignedXdr` against the wrong expected contract**: correctly rejected a real, valid,
+  successfully-simulated XDR when checked against a different expected contract ID.
+
+No case produced a false "success", a thrown-instead-of-rejected malformed result, or any
+XDR/resource data misrepresented as real when it wasn't. This transcript is captured as regression
+tests in `soroswapIntegration.test.ts` (opt-in, live, same gating as Aquarius's) — see Testing
+below.
+
+**Blend and Phoenix stay synthetic — by design, not by omission.** Both were evaluated and
+rejected as unsafe to fabricate real ScVal encoders for right now:
+- **Blend**: its real `submit` entrypoint takes a `Vec<Request>` where `Request` is a
+  contract-defined struct (`request_type`, `address`, `amount`). Soroban's `#[contracttype]`
+  struct encoding is positional and depends on the exact field declaration order in the compiled
+  contract — getting this wrong produces a transaction that looks like valid Soroban XDR but
+  silently encodes the wrong call, which is a worse outcome than a clearly-labeled synthetic
+  placeholder. No verified contract spec for Blend's real `Request` struct exists in this repo.
+- **Phoenix**: its real `swap`/multihop entrypoints take several `Option<...>` parameters
+  (max belief price, max spread, deadline) plus a `PairType` enum — the same class of
+  struct/enum-encoding risk as Blend, with no verified contract spec in this repo either.
+
+Both continue to return `dataSource: 'synthetic'` — proven by
+`executionEngineFourProtocols.test.ts`'s two dedicated regression tests, which register no
+provider for either protocol and assert the fallback engages cleanly (never throws, never
+silently returns a fabricated `'real'` tag). This is the explicitly anticipated outcome ("if a
+protocol cannot yet produce a real transaction, continue returning synthetic dataSource"), not an
+incomplete implementation — extending real coverage to them is the top item in "Remaining
+Technical Debt," gated on obtaining a verified contract spec (WASM interface / published ABI docs)
+for each, the same prerequisite Aquarius's and Soroswap's real integrations were built against.
+
+**Testing (round 2).**
+- `backend/src/__tests__/soroswapRealTransactionBuilder.test.ts` (10 tests, offline/hermetic,
+  same mocking discipline as Aquarius's) — real unsigned XDR for `swap_exact_tokens_for_tokens`/
+  `add_liquidity`, real resource estimate extraction, XLM's real canonical SAC address
+  cross-checked directly, an unconfigured-issuer asset failing closed, RPC-unavailable/simulation-
+  failure fail-closed, and the same two security tests (contract substitution, modified function
+  name) — plus a performance suite (avg/P95/P99 across 100 calls).
+- `backend/src/__tests__/executionEngineFourProtocols.test.ts` (4 tests) — one `executeRoute` test
+  per protocol in a single regression suite: Aquarius (`dataSource: 'real'`, verified XDR),
+  Soroswap (`dataSource: 'real'`, verified XDR), Blend (`dataSource: 'synthetic'`, no provider
+  registered), Phoenix (`dataSource: 'synthetic'`, no provider registered at all — proves the
+  pipeline works with zero `realTransactionProviders` configuration, not just an empty map).
+
+No Critical/High issues were found in this round either — Blend/Phoenix correctly never claim
+`dataSource: 'real'` (the type system and `runPipeline`'s `dataSource: 'synthetic'` default,
+unchanged from round 1, already made this the only reachable outcome for a protocol with no
+provider registered; there was no code path to regress).
+
+### Live Production Verification — Soroswap
+
+Round 2 flagged Soroswap's real path as "documented-ABI, not live-verified." This round closed
+that gap. One High-severity bug was found and fixed (see below); everything else the ABI depended
+on — function name, argument encoding/order, unsigned XDR, simulation, resource estimation, fee
+estimation — was independently confirmed correct against the real deployed testnet router (see the
+"Live production verification" and "Attack surface" write-ups above, in the round-2 Soroswap
+section).
+
+**Bug found:** `AssetResolver` (issuer-only) could not resolve a real, commonly-used Soroban token
+(testnet USDC — a plain SEP-41 contract, not a classic-asset SAC). **Fix:** added
+`AssetResolver.assetAddresses` (direct contract-address override, checked before `assetIssuers`),
+additive and backward-compatible. No other issues — Critical or otherwise — were found; every
+attack attempt (malformed asset, invalid amount, wrong function, wrong contract) failed closed,
+live, exactly as designed.
+
+**Testing (live verification round).**
+- `backend/src/__tests__/soroswapIntegration.test.ts` (9 tests, **opt-in, skipped by default** —
+  `SOROSWAP_INTEGRATION_TEST=true` + `SOROSWAP_SOURCE_ACCOUNT=<funded testnet account>`, same
+  gating pattern as `aquariusIntegration.test.ts`) — hits the live Soroswap testnet router.
+  Documents the exact real addresses discovered and used (router/XLM/USDC), so the transcript is
+  reproducible. Covers: real router invocation with correct function name/argument encoding (the
+  live event log is asserted to match), real XDR/resource/fee data (not synthetic placeholders),
+  two concurrent live calls each independently valid, and all five attack categories (malformed
+  asset, invalid amount ×2, wrong function, wrong contract, wrong-contract XDR verification) — all
+  failing closed against live chain state or this codebase's own pre-network checks.
+- `backend/src/__tests__/soroswapRealTransactionBuilder.test.ts`: updated header (no longer says
+  "not live-verified" — see above), updated one assertion for the new error message, and 2 new
+  offline regression tests locking in the `assetAddresses` fix (resolves via direct address with
+  no issuer; `assetAddresses` takes priority over `assetIssuers` when both are supplied for the
+  same code) — now 12 tests total.
+
+### Deep Live Production Verification — Soroswap (bytecode-level ABI, argument-tampering)
+
+A follow-up round went beyond the prior round's live check (which confirmed the router accepts
+real calls) to verify the ABI against the **deployed contract's own compiled bytecode** — not
+GitHub source, not documentation, the actual on-chain WASM — and to probe argument-level XDR
+tampering specifically, since the prior round only tested contract/function-level attacks.
+
+**Router and factory contract identity, verified on-chain.** Both `CCJUD55AG6W5HAI5LRVNKAE5WDP5XGZBUDS5WNTIVDU7O264UZZE7BRD`
+(router) and `CDP3HMUH6SMS3S7NPGNDJLULCOXXEPSHY4JKUKMBNQMATHDHWXRRJTBY` (factory, from
+`api.soroswap.finance/api/testnet/factory`) confirmed as real deployed WASM contracts via
+`getLedgerEntries`. Cross-validated the two are the correct, linked pair — not a coincidental
+match — by calling the live router's own `get_factory()` and confirming it returns exactly the
+independently-discovered factory address.
+
+**ABI verified against the deployed bytecode itself.** Fetched the router's WASM (via
+`getLedgerEntries` on its `ContractCode` key) and extracted its embedded function spec with
+`@stellar/stellar-sdk`'s `contract.Spec.fromWasm()` — the same mechanism a contract explorer or
+SDK codegen tool uses. The live bytecode's spec for `swap_exact_tokens_for_tokens` is exactly
+`(amount_in: I128, amount_out_min: I128, path: Vec, to: Address, deadline: U64)` — argument
+names, order, and types all matching this codebase's implementation exactly, position for
+position. Same exact match for `add_liquidity` and `remove_liquidity`. This is strictly stronger
+evidence than the GitHub-source cross-check performed in the Phoenix round: it confirms the
+*deployed* code matches, not just that some repo revision matches. `soroswap/core`'s public GitHub
+source (`contracts/router/src/lib.rs`) was also read directly and matches the bytecode spec
+exactly, corroborating both.
+
+**A real, live-confirmed High-severity gap in `verifyUnsignedXdr`.** The existing check (contract
+ID + function name only) does not catch a tampered *argument*. Proven live: built a real,
+router-accepted, valid XDR, flipped the last byte of its encoded `amount_in` argument specifically
+(located by byte-searching for the argument's own known-correct encoded bytes within the full
+transaction buffer), and confirmed the old check still reported `ok: true` — a corrupted amount
+would pass verification undetected. (A first attempt flipping a byte at a random offset happened
+to land in the transaction's outer envelope/resource-footprint framing rather than the args
+themselves, and was inconclusive on its own — the targeted argument-byte attack is the one that
+matters and that this fix addresses.)
+
+**Fix**: added an optional 5th parameter, `expectedArgsXdr?: string[]`, to `verifyUnsignedXdr`
+(`soroswap/realTransactionBuilder.ts`) — additive, fully backward-compatible (existing 4-arg call
+sites are unaffected; the type signature only gained an optional parameter). When supplied (each
+expected argument's own canonical XDR, base64, in call order), every argument is compared
+byte-for-byte against the live-parsed XDR's actual arguments; a mismatch in count or content is
+reported as a `modified-XDR attack`. Live re-verified after the fix: the same targeted
+`amount_in`-byte-flip attack now correctly reports `ok: false` when `expectedArgsXdr` is supplied,
+and still reports the original (documented, unchanged) `ok: true` when it is not — proving the fix
+closes the gap without breaking existing behavior.
+
+**Other attacks — all failed closed, live, this round:** malformed path (empty array, single-
+element/no-hop) rejected by the live router itself; malformed amount (non-numeric string) rejected
+by this codebase's own pre-network check; a truncated XDR rejected as a malformed envelope by
+`verifyUnsignedXdr`; "stale route"/replay — confirmed live that two independent simulate-only
+builds against the same account report an *identical* sequence number (simulation never advances
+account state, so a built-but-never-submitted XDR cannot itself replay a state change — the actual
+replay protection for a full pipeline run is `routeExecutionEngine`'s `checkRouteFreshness`,
+unaffected by and orthogonal to this protocol-level verification).
+
+**Testing.** `soroswapIntegration.test.ts` grew from 9 to 17 tests (malformed path ×2, malformed
+amount, modified-XDR argument-tampering regression, truncated-XDR rejection, replay/stale-route
+sequence-number check, bytecode-level ABI verification for all three mutating router functions,
+and the router/factory cross-check) — all live, opt-in, verified passing against the real testnet
+router in this session. `soroswapRealTransactionBuilder.test.ts` gained 4 offline regression tests
+locking in the `expectedArgsXdr` fix (accepts untampered XDR, catches a tampered argument that the
+old check misses, catches an argument-count mismatch, and confirms omitting the parameter
+preserves the exact prior behavior) — now 16 tests total. Full repo suite (hermetic): 1180 passed,
+0 failed. `tsc --noEmit`: clean.
+
+### Production Gap Closure — real Soroban integration (Phoenix)
+
+Extended real coverage to Phoenix using a stricter verification bar than Soroswap's original
+round: every type this integration depends on (the `swap`/`provide_liquidity`/`withdraw_liquidity`
+function signatures, the `Swap` struct, the `PoolType` enum) was read directly from the real,
+tagged-release (`v2.0.0`, 2025-06-07) `phoenix-contracts` source on GitHub — not inferred, not
+guessed, and cross-checked against `nativeToScVal`'s own runtime source in this repo's
+`node_modules` for the exact `Option<T>`/struct/enum XDR encoding rules (see
+`protocolAdapters/phoenix/invocation.ts`'s header for the full citation trail). This satisfies
+"never infer `Option<T>`/enums/tagged unions" by having the real values instead of inferring them.
+
+**A public deployed Phoenix testnet contract address could not be found**, despite checking: the
+official `phoenix-contracts` GitHub repo for a committed deployments file (none exists — only
+`scripts/deploy.sh`, no address output committed), Phoenix's own API/landing-page repos (no
+contract config), a GitHub code search for `phoenix-contracts` + `contract-id` (no results),
+`stellar.expert`'s public contract API (no name-search endpoint; brute-forcing its full contract
+list to find one by trial is not a genuine verification method), and the `DefiLlama-Adapters`
+repo (an unrelated dead EVM project that coincidentally shares the name "Phoenix"). Without a
+deployed contract, this integration could not be live-simulated the way Aquarius's and Soroswap's
+were — it is **source-verified, not live-testnet-verified**, a distinct and clearly weaker bar
+than Aquarius's/Soroswap's, documented explicitly everywhere this integration is used.
+
+**A real, verified struct-encoding bug was caught by this level of rigor, before it ever ran.**
+`nativeToScVal`'s own default map-key encoding for a plain JS object is `ScVal::String`, not
+`ScVal::Symbol` — but a real `#[contracttype]` struct's fields are always `Symbol`-keyed. Passing
+the `Swap` struct (or any struct) to `nativeToScVal(plainObject)` directly would have silently
+produced structurally-wrong XDR that still "looks like" a map. `contractStruct()`
+(`invocation.ts`) hand-builds the `ScVal.scvMap` with `Symbol` keys instead, sorted
+alphabetically per the SDK's own map-ordering requirement.
+
+**A real args-shape gap was found and fixed.** Phoenix's real `provide_liquidity` requires *both*
+`desired_a` and `desired_b` to be `Some(x > 0)` — confirmed directly from source: the contract
+panics (`ProvideLiquidityAtLeastOneTokenMustBeBiggerThenZero`) otherwise. This codebase's existing
+`buildRouterArgs` for `DEPOSIT` only ever carried one amount. **Fix**: added `amountB` to
+`buildRouterArgs`'s `DEPOSIT` case (`phoenix/adapter.ts`, an internal, non-shared-API helper —
+additive, doesn't change `TransactionBuilder`'s shape or `ProtocolAdapter`'s interface; all 71
+pre-existing Phoenix adapter tests still pass unmodified). The real `provide_liquidity` provider
+fails closed with a clear message when `amountB` is still missing at build time, rather than
+guessing a paired amount (guessing here would risk real economic loss — a wrong second-asset
+amount either reverts or, worse, deposits an unintended ratio).
+
+**Testing.** `backend/src/__tests__/phoenixRealTransactionBuilder.test.ts` (15 tests, offline/
+hermetic, same mocking discipline as Aquarius's/Soroswap's) — real unsigned XDR for a single-hop
+and a 2-hop `swap`, both pool types (`xyk`/`stable`, the real `PoolType::Xyk = 0`/`Stable = 1`
+discriminants), `withdraw_liquidity`, `provide_liquidity` (both the amountB-missing fail-closed
+case and the succeeds-when-supplied case), an unresolvable asset and an unknown pool type failing
+closed pre-network, RPC-unavailable/simulation-failure fail-closed, the same two security tests
+(contract substitution, modified function name), a replay test (two independent builds each
+produce their own valid XDR — not asserting exact hash equality, since Phoenix's deadline is
+`Date.now()`-derived rather than caller-supplied the way Aquarius's/Soroswap's are), and a
+performance suite (avg/P95/P99 across 100 calls). `executionEngineFourProtocols.test.ts` gained a
+5th test: `executeRoute` with a registered Phoenix provider produces `dataSource: 'real'` with a
+`verifyUnsignedXdr`-passing XDR; the pre-existing no-provider test still proves the synthetic
+fallback. No Critical/High issues found beyond the two documented above (struct-encoding risk
+caught before any code shipped; args-shape gap found and fixed).
+
 ## Explicitly out of scope for the Route Execution Engine
 
 Signing or submitting any transaction (`adapter.execute()` is never called). Choosing which
@@ -1185,11 +1463,13 @@ protocol to route to (that's Phase 6, frozen input here) or how much capital to 
 Phase 5's `allocation`, frozen input here). Any change to the Context Layer, Memory Engine, LLM
 provider layer, Decision Intelligence, Decision Verification, Execution Planner, Route Engine,
 the Protocol Layer's shared contract (`protocolAdapters/adapter.ts`/`types.ts`/`registry.ts`), or
-the pre-existing `reasoning/executionEngine/` orchestrator — all frozen/untouched. Real Soroban
-`RealTransactionProvider`s for Blend/Phoenix/Soroswap — not built, since no verified real
-contract-ABI invocation builder exists for them yet (see "Production Gap Closure" above); they
-remain on the synthetic path (`dataSource: 'synthetic'`) until one is built and verified the same
-way Aquarius's was.
+the pre-existing `reasoning/executionEngine/` orchestrator — all frozen/untouched. A real
+`RealTransactionProvider` for Blend — not built, since no verified contract spec exists for its
+`submit(Vec<Request>)` entrypoint's `Request` struct field order (unlike Phoenix, no public
+GitHub source for the exact deployed Blend contract version was located during this pass); it
+remains on the synthetic path (`dataSource: 'synthetic'`) until one is built and verified.
+Live-testnet verification for Phoenix specifically — not possible, no public deployed testnet
+contract address could be found (see above); Phoenix's real path is source-verified only.
 
 ## Protocol Adapter Framework (`protocolAdapters/`)
 

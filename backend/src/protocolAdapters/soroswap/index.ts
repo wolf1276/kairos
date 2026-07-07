@@ -4,6 +4,8 @@ export { getSoroswapRouterContractId, getSorobanRpcUrl } from './config.js';
 export { hashQuote, hashTransaction } from './hashing.js';
 export { SOROSWAP_ACTIONS } from './types.js';
 export { createDeterministicRouterClient, createDeterministicSorobanRpcClient } from './testDoubles.js';
+export { buildRealSoroswapTransaction, verifyUnsignedXdr } from './realTransactionBuilder.js';
+export { buildRouterOperation, getNetworkPassphrase, simulateRouterCall, toStroops } from './invocation.js';
 
 export type { SoroswapAdapterOptions } from './adapter.js';
 export type { SoroswapNetwork } from './config.js';
@@ -15,3 +17,5 @@ export type {
   SoroswapRouterClient,
   SorobanRpcClient,
 } from './types.js';
+export type { RealTransactionDetail, RealResourceEstimate } from './realTransactionBuilder.js';
+export type { InvocationOptions, AssetResolver } from './invocation.js';
