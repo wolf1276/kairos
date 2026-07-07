@@ -27,6 +27,7 @@ export interface PlanRouteRequestOptions {
    *  has the plan's underlying capital amount should supply this to get real trade sizes. */
   resolveAmount?: (step: PlanStep) => string;
   outputAssetFor?: (step: PlanStep) => string | undefined;
+  adapterParamsFor?: (step: PlanStep) => Record<string, unknown> | undefined;
   liquidityHints?: Record<string, number>;
 }
 
@@ -42,6 +43,7 @@ export function routeRequestsFromPlan(plan: ExecutionPlan, options: PlanRouteReq
         outputAsset: options.outputAssetFor?.(step),
         amount: resolveAmount(step),
         network: options.network,
+        adapterParams: options.adapterParamsFor?.(step),
         liquidityHints: options.liquidityHints,
       };
       return { step, request };

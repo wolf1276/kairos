@@ -1,4 +1,4 @@
-# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence, Phase 4: Decision Verification, Phase 5: Execution Planner, Phase 6: Execution Engine)
+# Reasoning Engine (Phase 1: Foundation, Phase 2: LLM Integration, Phase 3: Decision Intelligence, Phase 4: Decision Verification, Phase 5: Execution Planner, Phase 6: Route Engine, Phase 7: Execution Engine)
 
 The Reasoning Engine is the third layer of the Kairos AI Operating System, sitting on top of the
 [Context Layer](./CONTEXT_LAYER.md) and the [Memory Engine](./MEMORY_ENGINE.md). Phase 1 produces
@@ -760,7 +760,127 @@ Blockchain execution (an Execution Engine that actually calls a protocol), and a
 Context Layer, Memory Engine, LLM provider layer, Benchmark Framework, Decision Intelligence, or
 Decision Verification. Phase 5 only produces a plan describing what execution would look like.
 
-## Phase 6: Execution Engine (`reasoning/executionEngine/`)
+## Phase 6: Route Engine (`reasoning/routeEngine/`)
+
+Turns an `ExecutionPlan` (Phase 5, frozen) + the live `ProtocolRegistry` (Protocol Layer, frozen)
+into an `ExecutionRoute` — the single best protocol to actually run a given action.
+**Deterministic — no AI, no LLM, no blockchain execution.** Sits between the Execution Planner and
+the Execution Engine: the plan decides *what* moves, the Route Engine decides *which protocol*
+moves it, the Execution Engine (Phase 7) actually runs it.
+
+```
+ExecutionPlan  +  ProtocolRegistry
+        |
+        v
+  Discovery (discovery.ts)
+    - maps a RouteAction (SWAP, MULTI_HOP_SWAP, LENDING, BORROWING, DEPOSIT, WITHDRAW,
+      REWARD_CLAIM) onto each protocol's own adapter-action vocabulary
+    - filters registered adapters by declared capabilities (action/asset/network support) —
+      unsupported protocols are ignored automatically, never queried
+        |
+        v
+  Quoting (quoting.ts) — one adapter call sequence per surviving candidate
+    - health() -> validate() -> simulate() -> quote() (if the adapter implements one)
+    - normalizes every candidate (swap-shaped or not) into a comparable CandidateQuote:
+      outputAmount, estimatedFees, estimatedSlippagePct, liquidityScore, routeHops
+        |
+        v
+  Rules (rules.ts) — reject unhealthy/failed-simulation/invalid/stale/spoofed/forged candidates
+        |
+        v
+  Ranking (ranking.ts) — pure, deterministic weighted score (output, fees, slippage, liquidity,
+    health, hop complexity); ties broken by protocol name, never randomly
+        |
+        v
+  ExecutionRoute (selectedProtocol, candidates, ranking, rejected, routeHash)
+```
+
+**RouteAction vocabulary and eligibility.** `ROUTE_ACTIONS` (`types.ts`) is the Route Engine's own
+protocol-agnostic action set — distinct from `PrimaryAction` (Decision Intelligence) and from each
+adapter's own action enum. `LENDING` and `DEPOSIT` both resolve to the adapter action `'DEPOSIT'`
+but are told apart by whether the adapter also declares `'BORROW'` support: a true lending market
+(Blend) is a `LENDING` candidate, an AMM liquidity deposit (Phoenix/Soroswap) is a `DEPOSIT`
+candidate. This is a capability-declared distinction, never inferred from protocol name.
+
+**Quote normalization.** Not every adapter implements the optional `quote()` (Blend deliberately
+doesn't — see the Protocol Layer section below). Where `quote()` exists, its `outputAmount`/
+`estimatedFees`/`route` seed the candidate; where it doesn't, the candidate is synthesized from
+`simulate()`'s `estimatedOutputs`/`estimatedFees`/`estimatedSlippagePct` instead — so lending,
+borrowing, and reward-claim actions are ranked on the same fields as swaps, never treated as a
+special case downstream.
+
+**Ranking.** `scoreCandidateQuote` (`ranking.ts`) is a pure function of one `CandidateQuote` + its
+`HealthStatus` — no adapter I/O, no wall clock. `DEGRADED` health is not a rejection (only
+`UNAVAILABLE`/`UNKNOWN` are — see Routing rules below) but is weighted heavily against in scoring,
+so a degraded protocol only wins when every healthy candidate was rejected or genuinely worse.
+Candidates are sorted highest-score-first; ties break on protocol name (ascending) so ordering is
+never a function of registry insertion order, `Promise.all` resolution order, or any other
+non-deterministic source.
+
+**Routing rules (rejection).** Every rejection carries a `RouteRejectionReason`
+(`ROUTE_REJECTION_REASONS`, `types.ts`): `unsupported_action`, `unsupported_asset`,
+`unhealthy_protocol` (adapter health is `UNAVAILABLE`/`UNKNOWN`), `invalid_quote` (adapter
+`validate()` failed), `failed_simulation` (adapter `simulate()` reported `success: false`),
+`stale_quote` (quote older than `RouteEngineOptions.quoteTtlMs`, default 30s), `duplicate_quote`
+(same protocol produced more than one candidate for one request), and four security-specific
+reasons — see below. A malformed *request* (missing `outputAsset` for a swap, a non-positive
+amount, ...) throws `RouteRequestValidationError` before any adapter is ever called; a rejected
+*candidate* never throws — it's recorded in `ExecutionRoute.rejected` so the caller always gets a
+structured result back.
+
+**Security.** `protocol_spoofing` rejects a `Quote` whose own `protocol` field doesn't match the
+adapter that returned it. `adapter_spoofing` independently re-verifies
+`registry.lookupMetadata(protocol).capabilities.protocol === protocol` at Route Engine level (the
+registry already prevents this at registration time — this is defense in depth, not redundant
+trust). `forged_quote` recomputes a live adapter `Quote`'s hash the same way every protocol's own
+`hashQuote` does (`sha256(quote-without-quoteHash)`, see `rules.ts: checkForgedQuote`) and rejects
+on mismatch — catches a quote tampered with after the adapter produced it. `manipulated_fee` /
+`manipulated_slippage` reject a non-finite/negative fee or an out-of-`[0,100]`-range slippage
+percentage outright, regardless of source.
+
+**Determinism, immutability, replay.** `hashExecutionRoute` (`hashing.ts`) excludes every
+wall-clock field before hashing — `routeId` (a fresh UUID per call), `metadata.timestamp`, and
+each candidate/ranked quote's `fetchedAt` — so replaying the same `RouteRequest` against the same
+registry state always produces an identical `routeHash`, even though `routeId`/`fetchedAt` differ
+across calls. `CandidateQuote.quoteHash` is computed the same way, independent of `fetchedAt`.
+
+**Testing (Phase 6).** `src/__tests__/routeEngine.test.ts`, 40 tests, exercising every real
+protocol adapter (Aquarius/Phoenix/Soroswap/Blend) through its own deterministic test double — no
+adapter/protocol mock is invented specifically for the Route Engine. Covers: discovery (single
+protocol, multiple protocols, lending-vs-deposit eligibility, unsupported asset/action), ranking
+(best output amount, fee/slippage/liquidity tie-breakers, deterministic tie-break by protocol
+name), every rejection reason (unhealthy, failed simulation, invalid quote, stale quote, duplicate
+quote, unsupported asset/action), determinism (identical ranking and `routeHash` across repeated
+calls and across different `now()` values), a stress suite computing 10/50/100/250 parallel routes
+and asserting every run converges on one identical `routeHash`, a security suite attempting forged
+quotes, manipulated fees/slippage, protocol spoofing, and adapter spoofing (all rejected), a
+Phase-5 plan-integration test (`computeRoutesForPlan`), and a performance suite measuring avg/P95/
+P99 latency across 250 sequential route calculations (all in-memory test doubles: 250 calls
+complete in well under 100ms total, no network I/O).
+
+## Explicitly out of scope for Phase 6
+
+Blockchain execution — the Route Engine never calls `adapter.execute()`; it only reads
+(`health`/`validate`/`simulate`/`quote`). Choosing *how much* capital to move (that's the
+Execution Planner's `allocation`, Phase 5) or building/signing a real transaction (Phase 7,
+Execution Engine). Any change to the Context Layer, Memory Engine, LLM provider layer, Decision
+Intelligence, Decision Verification, Execution Planner, or Protocol Layer — all frozen inputs.
+
+## Phase 7: Execution Engine
+
+Two modules share Phase 7, each solving a different part of "run the plan": the original
+multi-step plan orchestrator below (`reasoning/executionEngine/` — retry/rollback/journal across
+an entire `ExecutionPlan.steps[]`, driven by a caller-supplied mock-shaped `ProtocolAdapter`), and
+`reasoning/routeExecutionEngine/` (added later — consumes one `ExecutionRoute` from the Route
+Engine, Phase 6, and drives the *real* Protocol Layer adapter for that route through
+build-transaction/simulate/validate/estimate-fees, producing an unsigned, hashable
+`ExecutionResult` with `transactionXDR`/`resourceEstimate`). Neither was redesigned to absorb the
+other — they were built independently, at different times, against different immediate
+requirements, and are documented separately below (this section, then "Route Execution Engine").
+A future integration point is `reasoning/executionEngine/adapter.ts`'s `ProtocolAdapter.submit()`
+calling into `routeExecutionEngine.executeRoute()`'s output — not built here.
+
+### `reasoning/executionEngine/` — multi-step plan orchestrator
 
 Turns a frozen `ExecutionPlan` (Phase 5) into an `ExecutionResult` by actually running its steps.
 **Deterministic orchestration — no AI, no LLM.** The engine never imports or calls a protocol SDK
@@ -814,7 +934,7 @@ trail is sufficient to answer "what happened" after the fact.
 `executionEngine/*.ts`. Each `executePlan()` call gets its own `RunState` (journal, sequence
 counter, runId), so parallel executions of the same or different plans never share memory.
 
-## Determinism, immutability, replay (Phase 6)
+## Determinism, immutability, replay (Phase 7)
 
 `executePlan` is deterministic given a deterministic adapter (same simulate/submit/confirm
 decisions in, same outcome out) aside from `randomUUID()` for `runId` and adapter-generated
@@ -826,7 +946,7 @@ hash; the canonical outcome (status, completed/failed steps, rollback outcome, a
 status/fee/simulationResult/failureKind) is what gets hashed. The returned result is recursively
 frozen (`deepFreeze`, same technique as Phase 5).
 
-## Testing (Phase 6)
+## Testing (Phase 7)
 
 `backend/src/__tests__/executionEngine.test.ts` (37 tests) covers: successful multi-step and HOLD
 execution with full per-step field capture (executionId, transactionId, protocol, action, status,
@@ -844,7 +964,7 @@ executions, no cross-contamination, single shared `executionHash`); security (mi
 adapter, replay, rollback-bypass, malformed plan — every attack rejected); and average/P95/P99
 latency + throughput across 300 executions (regression guard, not a precise SLO).
 
-**Bugs found and fixed during test-writing (all in the new Phase 6 code, none in Phase 1-5):**
+**Bugs found and fixed during test-writing (all in the new Phase 7 code, none in Phase 1-5):**
 1. `hashExecutionResult` excluded `runId` at the top level but not each per-step
    `ExecutionStepResult.executionId` (which echoes `runId`) — every run produced a distinct
    `executionHash` despite identical outcomes. Only surfaced under a real (non-frozen) clock, in
@@ -860,18 +980,222 @@ latency + throughput across 300 executions (regression guard, not a precise SLO)
    also dropped `step-1-simulate` from `completedSteps`. Fixed by adding a completion log line
    after a `simulate` step reaches `status: 'simulated'`.
 
-## Explicitly out of scope for Phase 6
+## Explicitly out of scope for Phase 7
 
 Any concrete `ProtocolAdapter` implementation (Blend, a DEX, or any other real protocol/chain
 integration), and any change to the Context Layer, Memory Engine, LLM provider layer, Benchmark
 Framework, Decision Intelligence, Decision Verification, or Execution Planner (all frozen). Phase
 6 only orchestrates execution through adapters supplied by the caller.
 
+### `reasoning/routeExecutionEngine/` — Route Execution Engine
+
+Turns an `ExecutionPlan` (Phase 5, frozen) + one `ExecutionRoute` (Phase 6, frozen) into an
+`ExecutionResult` describing an **unsigned** transaction: built, simulated (through the real
+Protocol Layer adapter's own Soroban RPC integration), fee-estimated, resource-estimated, and
+validated. **Deterministic — no AI, no LLM, no blockchain execution.** Never calls
+`adapter.execute()`; the engine only ever builds and simulates — signing/submission stays
+out of scope for this framework end to end (same boundary the Protocol Layer itself draws).
+
+```
+ExecutionPlan  +  ExecutionRoute
+        |
+        v
+  route selected?  ->  no  ->  fail closed: 'no_route_selected'
+        |  yes
+        v
+  route fresh? (now - route.metadata.timestamp <= routeTtlMs, default 60s)
+        |  no -> fail closed: 'stale_route'  (replay-attack protection)
+        v  yes
+  resolve adapter from ProtocolRegistry (frozen, Protocol Layer)
+        |
+        v
+  adapter.protocol === route.selectedProtocol?  ->  no  ->  fail closed: 'adapter_spoofing'
+        |  yes
+        v
+  Transaction Builder: adapter.buildTransaction(request), retried on thrown/transient error
+        |    -> shape-checked (checkTransactionWellFormed) and hash-verified
+        |       (checkTransactionIntegrity: recompute sha256(tx-without-hash), must match) —
+        |       this is what makes "forged transaction" / "modified XDR" attacks fail: nothing
+        |       downstream ever trusts a transaction whose own hash doesn't match its content
+        v
+  Simulation: adapter.simulate(request) — the adapter's own Soroban RPC integration
+        |    -> shape-checked (malformed RPC response) and success-checked
+        v
+  Validation: adapter.validate(request)
+        |    -> ok-checked
+        v
+  Fee estimation: adapter.estimateFees(request)
+        |    -> shape-checked (non-negative numeric string)
+        v
+  resourceEstimate (pure fn of the built tx)  +  transactionXDR (pure fn of the built tx)
+        |
+        v
+  hashExecutionResult()  ->  deepFreeze()  ->  ExecutionResult
+```
+
+**Real vs. synthetic XDR/resource data — `metadata.dataSource`.** Every `ExecutionResult` records
+whether its `transactionXDR`/`resourceEstimate` are `'real'` or `'synthetic'`
+(`metadata.dataSource`, `types.ts: DataSource`), never silently mixed. `'real'`: a genuine unsigned
+Soroban transaction, resource-assembled from a live `simulateTransaction` response via a
+`RealTransactionProvider` registered for the resolved protocol (`ExecuteRouteOptions.
+realTransactionProviders`) — currently wired only for Aquarius
+(`protocolAdapters/aquarius/realTransactionBuilder.ts` + `routeExecutionEngine/
+aquariusProvider.ts`), the only protocol with a live-testnet-verified Soroban invocation builder
+(see "Production Gap Closure" below). `'synthetic'`: no provider is registered for the resolved
+protocol (Blend/Phoenix/Soroswap today, or Aquarius without a provider configured) —
+`resourceEstimate.ts: encodeSyntheticXdr`/`computeSyntheticResourceEstimate` produce a
+deterministic placeholder derived purely from the built `TransactionBuilder`'s own shape, no
+adapter or network call, so the pipeline still produces something replayable/hashable rather than
+failing closed over a missing "nice to have".
+
+**Retry.** `withRetry` (`retry.ts`) retries only a *thrown* exception from `buildTransaction`/
+`simulate`/`validate`/`estimateFees` — up to `retryPolicy.maxAttempts` (default 3, including the
+first attempt) — treating it as transient (e.g. "RPC unavailable"). A *structured* failure (an
+adapter resolving normally with `simulate() -> { success: false }` or `validate() -> { ok: false
+}`) is never retried: the protocol adapter already considered the request and said no, and
+retrying doesn't change that fact.
+
+**Security.** `checkTransactionIntegrity` recomputes a live `TransactionBuilder`'s hash the exact
+way every protocol adapter computes its own `hashTransaction` and rejects on mismatch — catches a
+forged/tampered transaction, and by extension forecloses "modified XDR" entirely, since
+`transactionXDR` is always engine-derived from this same integrity-checked object, never accepted
+as external input. `checkAdapterIdentity` independently re-verifies the resolved adapter's own
+`.protocol` matches `route.selectedProtocol` (RPC/adapter-substitution protection — defense in
+depth; the `ProtocolRegistry` already prevents this at registration time). `checkRouteFreshness`
+rejects a stale `ExecutionRoute` (replay-attack protection — an old route's quotes/health/ranking
+may no longer reflect live protocol state). `checkSimulationWellFormed`/`checkTransactionWellFormed`/
+`checkFeeEstimate` shape-check every adapter response field-by-field, rejecting a malformed RPC
+response (missing/wrong-typed field) before it can propagate. Every `ExecutionResult` this engine
+returns is fully typed and deep-frozen by construction, so a "malformed execution result" cannot
+leave the module.
+
+**Determinism, immutability, replay.** `hashExecutionResult` (`hashing.ts`) excludes
+`executionId` (fresh UUID per run), every wall-clock field (`startedAt`/`completedAt`/`durationMs`
+in `metadata`, plus the embedded route's own `routeId`/`metadata.timestamp` from Phase 6) before
+hashing — identical `ExecutionPlan` + `ExecutionRoute` + adapter state always produce an identical
+`executionHash`, regardless of when either run happened. The returned `ExecutionResult` is
+recursively frozen (`deepFreeze`, same technique as Phase 5/6).
+
+**Testing.** `backend/src/__tests__/executionEngineV2.test.ts` (30 tests, named to avoid
+colliding with the pre-existing `executionEngine.test.ts`), exercising real Protocol Layer
+adapters (Aquarius/Soroswap/Blend) through their own deterministic test doubles, plus hand-built
+minimal fake adapters for RPC-unavailable/malformed-response scenarios the real adapters can't
+produce on demand. Covers: happy-path transaction generation/simulation/fee estimation/resource
+estimate/XDR; failure paths (no route selected, invalid transaction, simulation failure, RPC
+unavailable exhausting retries, malformed RPC response); retry logic (recovers within budget,
+never retries a structured failure); determinism (identical `executionHash` across repeats and
+across different `now()`); immutability (deep-frozen result); concurrency (shared-registry
+non-contamination, 10/50/100/250 parallel executions all converging on one `executionHash`);
+security (forged transaction, "modified XDR" structural impossibility, replay via stale route,
+invalid simulation, RPC/adapter spoofing rejected by the registry itself, malformed
+fee-estimate/simulation shape checks); and a performance suite measuring avg/P95/P99 latency
+across 250 sequential executions.
+
+### Production Gap Closure — real Soroban integration (Aquarius)
+
+Closes the "synthetic XDR/resource estimate" gap for one protocol, using the pre-existing,
+live-testnet-verified real Aquarius Soroban integration (`protocolAdapters/aquarius/
+invocation.ts`/`realSorobanRpcClient.ts`/`production.ts` — not modified) as the foundation. **The
+Protocol Layer's shared contract is untouched**: `ProtocolAdapter`, `AdapterActionRequest`,
+`TransactionBuilder`, `SimulationResult`, and `ProtocolRegistry` (`protocolAdapters/adapter.ts`/
+`types.ts`/`registry.ts`) have zero changes. New code is additive only:
+
+- `protocolAdapters/aquarius/realTransactionBuilder.ts` (new file): `buildRealAquariusTransaction`
+  replays the exact same real operation-building logic the adapter's own simulation path already
+  uses (`buildRouterOperation`, now exported — its behavior is unchanged, only its visibility),
+  then calls `rpc.assembleTransaction(tx, simulation)` — the same step a real wallet/SDK performs
+  before signing — to fold the live `simulateTransaction` response's actual resource footprint and
+  fee into the transaction. Returns `unsignedXdr` (`tx.toXDR()` of the assembled transaction — a
+  real, submittable-shape Soroban transaction envelope, still unsigned) and a real
+  `resourceEstimate` (`cpuInstructions`/`diskReadBytes`/`writeBytes` from `SorobanTransactionData.
+  resources()`, `resourceFeeStroops` from `minResourceFee` — genuine ledger-provided numbers, not
+  a heuristic). `verifyUnsignedXdr` independently parses a given XDR string and cross-checks its
+  decoded invocation's contract address + function name against what was expected — "unsigned XDR
+  correctness" validation, and the mechanism that catches a forged/modified/substituted XDR.
+- `routeExecutionEngine/aquariusProvider.ts` (new file): `createAquariusRealTransactionProvider`
+  adapts the above into a `RealTransactionProvider` (`routeExecutionEngine/types.ts`) — the new,
+  additive, opt-in extension point on `ExecuteRouteOptions.realTransactionProviders`, keyed by
+  protocol name. `engine.ts`'s pipeline calls it (if present for the resolved protocol)
+  immediately after `buildTransaction()` succeeds and integrity-checks, independent of and before
+  `adapter.simulate()` — a real provider performs its own `simulateTransaction` call to assemble
+  real resource data, so it does not depend on the adapter's own `simulate()` step at all. A
+  malformed real-provider response is shape-checked (`rules.ts: checkRealTransactionDetail`) and
+  rejected with `failureReason: 'malformed_xdr'` before it can reach an `ExecutionResult`.
+- `routeExecutionEngine/types.ts`: `ResourceEstimate`'s fields were renamed from the placeholder
+  set (`memoryBytes`/`ledgerEntryReads`/`ledgerEntryWrites`) to the real Soroban resource
+  vocabulary (`diskReadBytes`/`writeBytes`/`resourceFeeStroops`) so the same shape is populated
+  identically whether `dataSource` is `'real'` or `'synthetic'` — this is Phase 7's own type
+  (not Protocol Layer), so renaming it is a refinement, not a frozen-layer change.
+
+**Gap 3/4 (real simulation, real fee estimation) required no engine code change at all.**
+`adapter.simulate()`/`adapter.estimateFees()` already call whatever `SorobanRpcClient` the caller
+registered the adapter with (see Protocol Adapter Framework below) — `executeRoute` was never
+hardcoded to a deterministic double. Registering `createProductionAquariusAdapter()` (real RPC,
+pre-existing) instead of a test-double adapter makes `simulationResult`/`estimatedFees` genuinely
+real with zero changes to `engine.ts`. This was verified, not assumed — see
+`executionEngineAquariusIntegration.test.ts` below.
+
+**Why only Aquarius.** Blend/Phoenix/Soroswap have no equivalent `invocation.ts`-style real
+Soroban call builder — nobody has verified their real contract ABIs against a live network (the
+Aquarius one carries a header comment recording exactly that verification). Fabricating ScVal
+argument encoders for three unverified contract ABIs would produce transactions with no evidence
+they're actually correct, which is a worse outcome than clearly-labeled synthetic data — so this
+gap closure deliberately stayed scoped to the one protocol with a verified foundation to build on.
+Extending the same pattern to the other three is the largest remaining item in "Production
+Readiness" below.
+
+**Testing.**
+- `backend/src/__tests__/aquariusRealTransactionBuilder.test.ts` (9 tests, offline/hermetic —
+  mocks only `rpc.Server.prototype.getAccount`/`simulateTransaction`; everything else, including
+  ScVal encoding, transaction assembly, and XDR parsing, is the real `@stellar/stellar-sdk` doing
+  real work). Covers: real unsigned XDR generation for `SWAP_CHAINED`, real resource estimate
+  extraction from a mocked-but-realistically-shaped simulation response, `verifyUnsignedXdr`
+  round-tripping a real XDR correctly, simulation-failure fail-closed (invalid contract/asset/
+  trustline), an unresolvable asset rejecting before any XDR is produced, RPC-unavailable
+  propagating as a rejection, malformed-XDR rejection, and two live security tests — feeding a
+  correctly-assembled real XDR to `verifyUnsignedXdr` under a *different* expected contract ID (
+  substitution attack) and a different expected function name (modified-XDR attack) — both
+  correctly rejected. Plus a performance suite (avg/P95/P99 latency across 100 calls, mocked RPC —
+  measures the real ScVal/assembly pipeline's own CPU overhead, not network latency).
+- `backend/src/__tests__/executionEngineRealXdr.test.ts` (3 tests, offline/hermetic) — proves the
+  gap closure end to end through `executeRoute` itself, not just the standalone builder: a real,
+  `verifyUnsignedXdr`-passing XDR and a real `resourceEstimate` come back with
+  `metadata.dataSource: 'real'` when a provider is registered; the synthetic fallback still works
+  (`dataSource: 'synthetic'`) when no provider is registered for the protocol; a real provider's
+  simulation failure fails the whole execution closed.
+- `backend/src/__tests__/executionEngineAquariusIntegration.test.ts` (2 tests, **opt-in, skipped
+  by default** — `AQUARIUS_INTEGRATION_TEST=true`, same gating pattern as the pre-existing
+  `aquariusIntegration.test.ts`) — hits the live Aquarius testnet router. Proves `executeRoute`
+  produces a real, *live*-verified unsigned XDR (not just mocked-RPC-verified) with a genuine
+  positive resource fee, and that two independent live calls each produce their own valid XDR
+  (deliberately does **not** assert exact `executionHash` equality across two live calls — live
+  RPC resource/fee numbers can vary slightly between real network calls as ledger state moves, so
+  that assertion would be flaky by construction, not a real regression signal; exact-hash
+  determinism is proven against fixed/mocked data in the two suites above instead).
+
+No Critical/High issues were found during this gap closure — the existing fail-closed rule
+functions (`checkTransactionWellFormed`, `checkTransactionIntegrity`, `checkSimulationWellFormed`,
+etc.) already covered every new failure mode the real integration introduces; only
+`checkRealTransactionDetail` (shape-checking a real provider's response) was newly added.
+
+## Explicitly out of scope for the Route Execution Engine
+
+Signing or submitting any transaction (`adapter.execute()` is never called). Choosing which
+protocol to route to (that's Phase 6, frozen input here) or how much capital to move (that's
+Phase 5's `allocation`, frozen input here). Any change to the Context Layer, Memory Engine, LLM
+provider layer, Decision Intelligence, Decision Verification, Execution Planner, Route Engine,
+the Protocol Layer's shared contract (`protocolAdapters/adapter.ts`/`types.ts`/`registry.ts`), or
+the pre-existing `reasoning/executionEngine/` orchestrator — all frozen/untouched. Real Soroban
+`RealTransactionProvider`s for Blend/Phoenix/Soroswap — not built, since no verified real
+contract-ABI invocation builder exists for them yet (see "Production Gap Closure" above); they
+remain on the synthetic path (`dataSource: 'synthetic'`) until one is built and verified the same
+way Aquarius's was.
+
 ## Protocol Adapter Framework (`protocolAdapters/`)
 
 A standalone infrastructure layer, not a Reasoning Engine phase — it has no dependency on
 Context/Memory/Reasoning/Decision Intelligence/Decision Verification/Execution Planner, and they
-have no dependency on it. Exists so the Phase 6 Execution Engine (`reasoning/executionEngine/`)
+have no dependency on it. Exists so the Phase 7 Execution Engine (`reasoning/executionEngine/`)
 never needs to call a protocol SDK directly: it goes Execution Engine → `ProtocolRegistry` →
 `ProtocolAdapter` → protocol SDK. **No Blend/Soroswap/Phoenix implementation exists yet** — only
 the abstraction (interface, registry, factory, deterministic hashing) and a declarative

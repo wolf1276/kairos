@@ -8,8 +8,12 @@ export { createRealAquariusRouterClient } from './realRouterClient.js';
 export { createRealSorobanRpcClient } from './realSorobanRpcClient.js';
 export { createRealAquariusBackendApiClient, createAssetPoolRegistry } from './realBackendApi.js';
 export { createProductionAquariusAdapter } from './production.js';
+export { buildRealAquariusTransaction, verifyUnsignedXdr } from './realTransactionBuilder.js';
+export { buildRouterOperation, getNetworkPassphrase, simulateRouterCall, toStroops, fromStroops } from './invocation.js';
 
 export type { AquariusAdapterOptions } from './adapter.js';
 export type { AquariusNetwork } from './config.js';
 export type { AquariusAction, PoolInfo, RouteResult, AquariusRouterClient, AquariusBackendApiClient, SorobanRpcClient } from './types.js';
 export type { AssetPoolRegistry } from './realBackendApi.js';
+export type { RealTransactionDetail, RealResourceEstimate } from './realTransactionBuilder.js';
+export type { InvocationOptions } from './invocation.js';

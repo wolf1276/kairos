@@ -89,7 +89,7 @@ export async function simulateRouterCall(
  *  function signatures. The router contract itself (`routerContractId`) is the call target for
  *  every method — `swap_chained`/`deposit`/`withdraw`/`claim` are all router entry points, never
  *  a pool contract directly, per "Use Aquarius Router as the single integration point". */
-async function buildRouterOperation(routerContractId: string, method: string, args: Record<string, unknown>, registry: AssetPoolRegistry, userPublicKey: string) {
+export async function buildRouterOperation(routerContractId: string, method: string, args: Record<string, unknown>, registry: AssetPoolRegistry, userPublicKey: string) {
   const user = new Address(userPublicKey).toScVal();
   const contract = new Contract(routerContractId);
 
