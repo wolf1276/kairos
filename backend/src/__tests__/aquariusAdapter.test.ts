@@ -36,8 +36,9 @@ function makeAdapter(overrides: Partial<AquariusAdapterOptions> = {}) {
   });
 }
 
-const swapReq: AdapterActionRequest = { action: 'SWAP', asset: 'XLM', network: 'testnet', amount: '100.000000', params: { outputAsset: 'USDC', trustlineEstablished: true } };
-const chainedReq: AdapterActionRequest = { action: 'SWAP_CHAINED', asset: 'XLM', network: 'testnet', amount: '100.000000', params: { path: ['XLM', 'USDC', 'AQUA'], trustlineEstablished: true } };
+const FUTURE_DEADLINE = Math.floor(Date.now() / 1000) + 3600;
+const swapReq: AdapterActionRequest = { action: 'SWAP', asset: 'XLM', network: 'testnet', amount: '100.000000', params: { outputAsset: 'USDC', trustlineEstablished: true, deadline: FUTURE_DEADLINE, minOutput: '1' } };
+const chainedReq: AdapterActionRequest = { action: 'SWAP_CHAINED', asset: 'XLM', network: 'testnet', amount: '100.000000', params: { path: ['XLM', 'USDC', 'AQUA'], trustlineEstablished: true, deadline: FUTURE_DEADLINE, minOutput: '1' } };
 const depositReq: AdapterActionRequest = { action: 'DEPOSIT', asset: 'XLM', network: 'testnet', amount: '100.000000', params: { assetB: 'USDC', trustlineEstablished: true } };
 const withdrawReq: AdapterActionRequest = { action: 'WITHDRAW', asset: 'XLM', network: 'testnet', amount: '50.000000', params: { poolId: 'pool-xlm-usdc' } };
 const claimReq: AdapterActionRequest = { action: 'CLAIM_REWARDS', asset: 'XLM', network: 'testnet', amount: '0', params: { poolId: 'pool-xlm-usdc' } };
@@ -286,6 +287,116 @@ describe('validation: unsupported assets, invalid routes, slippage, router unava
     const result = await adapter.validate({ ...swapReq, params: { ...swapReq.params, trustlineEstablished: true } });
     expect(result.ok).toBe(true);
   });
+
+  // Regression (Protocol Layer final production audit): `request.amount` was never validated —
+  // a non-numeric string, "NaN", "Infinity", empty string, or a negative value all passed
+  // validate() cleanly and then produced `estimatedFees: "NaN"` / `"Infinity"` / a negative fee
+  // inside an otherwise `success: true` SimulationResult. Same bug class independently found and
+  // fixed in the Phoenix adapter.
+  it.each(['abc', '-50', 'Infinity', 'NaN', '', '-0.0001'])('invalid amount %j is rejected by validate() and degrades simulate() to failure', async (amount) => {
+    const adapter = makeAdapter();
+    const validation = await adapter.validate({ ...swapReq, amount });
+    expect(validation.ok).toBe(false);
+    const result = await adapter.simulate({ ...swapReq, amount });
+    expect(result.success).toBe(false);
+    expect(result.estimatedFees).toBe('0.000000');
+  });
+
+  it('amount with more than 7 decimal places is rejected (not a valid Stellar asset amount)', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, amount: '10.12345678' });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('decimal places'))).toBe(true);
+  });
+
+  it('amount with exactly 7 decimal places is accepted', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, amount: '10.1234567' });
+    expect(result.ok).toBe(true);
+  });
+
+  // Regression: a circular route (revisiting an asset via a non-adjacent hop) previously passed
+  // validation — only immediately-adjacent repeats were rejected.
+  it('circular route (revisiting an asset non-adjacently) is rejected', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...chainedReq, params: { path: ['XLM', 'USDC', 'XLM'], trustlineEstablished: true } });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('circular'))).toBe(true);
+  });
+
+  // Regression: a throwing onHealth (e.g. a real health check whose own RPC call fails)
+  // previously propagated as an uncaught rejection out of validate()/simulate().
+  it('a throwing onHealth is treated as UNAVAILABLE, never an uncaught rejection', async () => {
+    const adapter = makeAdapter({ onHealth: () => { throw new Error('health check RPC unreachable'); } });
+    const validation = await adapter.validate(swapReq);
+    expect(validation.ok).toBe(false);
+    const result = await adapter.simulate(swapReq);
+    expect(result.success).toBe(false);
+  });
+});
+
+// ── Slippage / deadline safety (swap-specific fund-loss protections) ───────────────────────────
+// Regression (Protocol Layer final production audit): the Soroswap adapter's audit found and
+// fixed a missing swap deadline/minOutput check; Aquarius's SWAP/SWAP_CHAINED validation had the
+// exact same gap (buildRouterArgs already threaded `minOutput` through, but nothing required the
+// caller supply one or a deadline) — fixed identically here.
+
+describe('slippage and deadline safety', () => {
+  it('a swap with no deadline is rejected — an undated swap has no protection against stale-price execution', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, params: { ...swapReq.params, deadline: undefined } });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('deadline'))).toBe(true);
+  });
+
+  it('a swap with a past deadline is rejected', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, params: { ...swapReq.params, deadline: Math.floor(Date.now() / 1000) - 100 } });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('past'))).toBe(true);
+  });
+
+  it('a non-numeric deadline is rejected', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, params: { ...swapReq.params, deadline: 'soon' as unknown as number } });
+    expect(result.ok).toBe(false);
+  });
+
+  it('a swap with no minOutput is rejected — no slippage protection', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate({ ...swapReq, params: { ...swapReq.params, minOutput: undefined } });
+    expect(result.ok).toBe(false);
+    expect(result.errors.some((e) => e.includes('minOutput'))).toBe(true);
+  });
+
+  it('a swap with a zero or negative minOutput is rejected', async () => {
+    const adapter = makeAdapter();
+    const zero = await adapter.validate({ ...swapReq, params: { ...swapReq.params, minOutput: '0' } });
+    expect(zero.ok).toBe(false);
+    const negative = await adapter.validate({ ...swapReq, params: { ...swapReq.params, minOutput: '-5' } });
+    expect(negative.ok).toBe(false);
+  });
+
+  it('SWAP_CHAINED also requires deadline and minOutput', async () => {
+    const adapter = makeAdapter();
+    const noDeadline = await adapter.validate({ ...chainedReq, params: { ...chainedReq.params, deadline: undefined } });
+    expect(noDeadline.ok).toBe(false);
+    const noMinOutput = await adapter.validate({ ...chainedReq, params: { ...chainedReq.params, minOutput: undefined } });
+    expect(noMinOutput.ok).toBe(false);
+  });
+
+  it('DEPOSIT/WITHDRAW/CLAIM_REWARDS/POOL_DISCOVERY do not require deadline/minOutput (not swap actions)', async () => {
+    expect((await makeAdapter().validate(depositReq)).ok).toBe(true);
+    expect((await makeAdapter().validate(withdrawReq)).ok).toBe(true);
+    expect((await makeAdapter().validate(claimReq)).ok).toBe(true);
+    expect((await makeAdapter().validate(poolDiscoveryReq)).ok).toBe(true);
+  });
+
+  it('a swap with a valid future deadline and positive minOutput passes this check', async () => {
+    const adapter = makeAdapter();
+    const result = await adapter.validate(swapReq);
+    expect(result.ok).toBe(true);
+  });
 });
 
 // ── Malformed responses ──────────────────────────────────────────────────────────────────────
@@ -295,7 +406,7 @@ describe('malformed responses', () => {
     const badRouter = createDeterministicRouterClient();
     (badRouter as { quoteSwapChained: unknown }).quoteSwapChained = async () => ({ path: 'not-an-array', estimatedOutput: '1', priceImpactPct: 0 });
     const adapter = makeAdapter({ routerClient: badRouter });
-    const result = await adapter.simulate({ ...swapReq, params: { outputAsset: 'USDC', trustlineEstablished: true } });
+    const result = await adapter.simulate({ ...swapReq, params: { outputAsset: 'USDC', trustlineEstablished: true, deadline: FUTURE_DEADLINE, minOutput: '1' } });
     expect(result.success).toBe(false);
     expect(result.errors[0]).toMatch(/router client failure/);
   });
@@ -310,7 +421,7 @@ describe('malformed responses', () => {
       throw new Error('router unreachable');
     };
     const adapter = makeAdapter({ routerClient: failingRouter });
-    const result = await adapter.simulate({ ...swapReq, params: { outputAsset: 'USDC', trustlineEstablished: true } });
+    const result = await adapter.simulate({ ...swapReq, params: { outputAsset: 'USDC', trustlineEstablished: true, deadline: FUTURE_DEADLINE, minOutput: '1' } });
     expect(result.success).toBe(false);
     expect(result.errors[0]).toMatch(/router unreachable/);
   });
@@ -374,7 +485,7 @@ describe('execution is explicitly out of scope', () => {
 // ── Concurrency / stress ─────────────────────────────────────────────────────────────────────
 
 describe('concurrency stress', () => {
-  it.each([10, 50, 100])('%i parallel simulate() calls all produce the same deterministic simulationHash', async (n) => {
+  it.each([10, 50, 100, 250])('%i parallel simulate() calls all produce the same deterministic simulationHash', async (n) => {
     const adapter = makeAdapter();
     const req = { ...swapReq, params: { ...swapReq.params, trustlineEstablished: true } };
     const results = await Promise.all(Array.from({ length: n }, () => adapter.simulate(req)));
@@ -382,7 +493,7 @@ describe('concurrency stress', () => {
     expect(new Set(results.map((r) => r.simulationHash)).size).toBe(1);
   });
 
-  it.each([10, 50, 100])('%i parallel quote() calls produce identical quoteHash for identical input', async (n) => {
+  it.each([10, 50, 100, 250])('%i parallel quote() calls produce identical quoteHash for identical input', async (n) => {
     const adapter = makeAdapter();
     const results = await Promise.all(Array.from({ length: n }, () => adapter.quote!(swapReq)));
     expect(new Set(results.map((r) => r.quoteHash)).size).toBe(1);

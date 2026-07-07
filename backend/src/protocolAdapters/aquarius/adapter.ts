@@ -94,6 +94,25 @@ export function createAquariusAdapter(options: AquariusAdapterOptions): Protocol
     if (!options.supportedAssets.includes(asset)) errors.push(`${label} '${asset}' is not supported by 'aquarius'`);
   }
 
+  /** `request.amount` was never validated — a non-numeric string ("abc"/""), "NaN", "Infinity",
+   *  or a negative value all passed `validate()` cleanly and then silently produced
+   *  `estimatedFees: "NaN"` / `"Infinity"` / a negative fee in an otherwise `success: true`
+   *  SimulationResult. Also rejects more decimal precision than Stellar assets actually support
+   *  (7 decimal places) — a higher-precision amount is not a value that could ever exist
+   *  on-chain. Found during the Protocol Layer final production audit (same bug class
+   *  independently found and fixed in the Phoenix adapter). */
+  function checkAmount(request: AdapterActionRequest, errors: string[]): void {
+    const value = Number(request.amount);
+    if (request.amount === '' || !Number.isFinite(value) || value < 0) {
+      errors.push(`amount '${request.amount}' must be a non-negative finite decimal string`);
+      return;
+    }
+    const decimalPart = request.amount.split('.')[1];
+    if (decimalPart && decimalPart.length > 7) {
+      errors.push(`amount '${request.amount}' has more than 7 decimal places — not a valid Stellar asset amount`);
+    }
+  }
+
   function checkTrustline(asset: string, request: AdapterActionRequest, errors: string[]): void {
     if (isNative(asset)) return;
     if (request.params?.trustlineEstablished !== true) errors.push(`trustline required for asset '${asset}' before this action can proceed`);
@@ -120,7 +139,47 @@ export function createAquariusAdapter(options: AquariusAdapterOptions): Protocol
       checkAssetSupported(typedPath[i], errors, `params.path[${i}]`);
       if (i > 0 && typedPath[i] === typedPath[i - 1]) errors.push(`params.path has a repeated hop at index ${i} ('${typedPath[i]}') — invalid route`);
     }
+    // Circular route check: only adjacent-hop repeats were rejected above — a path like
+    // ['XLM','USDC','XLM'] (revisiting an earlier asset via a non-adjacent hop) previously passed
+    // validation entirely. Found during the Protocol Layer final production audit.
+    if (new Set(typedPath).size !== typedPath.length) {
+      errors.push(`params.path revisits the same asset more than once ('${typedPath.join(' -> ')}') — circular routes are not valid`);
+    }
     return typedPath;
+  }
+
+  /** A swap with no deadline (or one already in the past) can be replayed/held and executed far
+   *  later at a stale price — a real fund-loss vector for AMM swaps, not a cosmetic check. Every
+   *  SWAP/SWAP_CHAINED request must carry a future-dated `params.deadline` (Unix seconds).
+   *  `buildRouterArgs` already threads `minOutput` through to the built transaction without ever
+   *  requiring the caller supply one or a deadline — the same fund-loss bug class the Soroswap
+   *  adapter's audit already fixed. Found here during the Protocol Layer final production audit
+   *  and fixed identically. */
+  function checkDeadline(request: AdapterActionRequest, errors: string[], now: () => number = Date.now): void {
+    const deadline = request.params?.deadline;
+    if (deadline === undefined) {
+      errors.push('params.deadline is required for a swap — an undated swap can be executed at an arbitrarily stale price');
+      return;
+    }
+    if (typeof deadline !== 'number' || !Number.isFinite(deadline) || deadline <= 0) {
+      errors.push('params.deadline must be a positive Unix-seconds timestamp');
+      return;
+    }
+    if (deadline * 1000 <= now()) errors.push(`params.deadline (${deadline}) is in the past — a swap must have a future deadline`);
+  }
+
+  /** A swap with no `minOutput` (or one set to 0/undefined) accepts *any* output amount, which
+   *  defeats slippage protection entirely regardless of `maxSlippagePct`. Same bug class/fix as
+   *  Soroswap's `checkMinOutput`, found here during the Protocol Layer final production audit. */
+  function checkMinOutput(request: AdapterActionRequest, errors: string[]): void {
+    const minOutput = request.params?.minOutput;
+    if (minOutput === undefined) {
+      errors.push('params.minOutput is required for a swap — a swap with no minimum output has no slippage protection');
+      return;
+    }
+    if (typeof minOutput !== 'string' || !Number.isFinite(Number(minOutput)) || Number(minOutput) <= 0) {
+      errors.push('params.minOutput must be a positive numeric string');
+    }
   }
 
   async function validateRequest(request: AdapterActionRequest): Promise<ValidationResult> {
@@ -129,6 +188,8 @@ export function createAquariusAdapter(options: AquariusAdapterOptions): Protocol
 
     const health = await adapterHealth();
     if (health === 'UNAVAILABLE' || health === 'UNKNOWN') errors.push(`Aquarius router is not available (health: ${health})`);
+
+    checkAmount(request, errors);
 
     const action = request.action as AquariusAction;
     switch (action) {
@@ -140,12 +201,16 @@ export function createAquariusAdapter(options: AquariusAdapterOptions): Protocol
         checkTrustline(request.asset, request, errors);
         if (typeof outputAsset === 'string') checkTrustline(outputAsset, request, errors);
         checkSlippage(request, errors);
+        checkDeadline(request, errors);
+        checkMinOutput(request, errors);
         break;
       }
       case 'SWAP_CHAINED': {
         const path = checkPath(request.params?.path, request, errors);
         if (path) for (const hop of path) checkTrustline(hop, request, errors);
         checkSlippage(request, errors);
+        checkDeadline(request, errors);
+        checkMinOutput(request, errors);
         break;
       }
       case 'DEPOSIT': {
@@ -170,9 +235,18 @@ export function createAquariusAdapter(options: AquariusAdapterOptions): Protocol
     return { ok: errors.length === 0, errors };
   }
 
+  /** `options.onHealth` is caller-supplied and may perform a real health check (RPC call, etc.)
+   *  that can itself fail — a throwing health check must be treated as UNAVAILABLE, not propagate
+   *  as an uncaught rejection out of validate()/simulate()/quote()/buildTransaction() (all of
+   *  which call this). Found during the Protocol Layer final production audit (same bug class
+   *  independently found and fixed in the Phoenix adapter). */
   async function adapterHealth(): Promise<HealthStatus> {
-    if (options.onHealth) return options.onHealth();
-    return 'READY';
+    if (!options.onHealth) return 'READY';
+    try {
+      return await options.onHealth();
+    } catch {
+      return 'UNAVAILABLE';
+    }
   }
 
   /** A malformed response from a caller-supplied router/backend client (wrong shape — e.g. a

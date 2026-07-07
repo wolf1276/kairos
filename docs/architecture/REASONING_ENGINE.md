@@ -1222,6 +1222,177 @@ router-unavailable fail-closed case. All 10 pass against live testnet. The unit 
 - Concentrated-liquidity pool-level interaction remains unimplemented (unchanged from the
   framework build) — no requirement has surfaced needing it.
 
+## Phoenix Protocol Adapter (`protocolAdapters/phoenix/`) — FROZEN
+
+A `ProtocolAdapter` implementation for the Phoenix DeFi Hub, built on the unmodified Protocol
+Adapter Framework and `ProtocolRegistry` (same interfaces as Blend/Soroswap/Aquarius). Function
+shapes are sourced from the real `Phoenix-Protocol-Group/phoenix-contracts` GitHub repository
+(fetched during development, not guessed): `multihop.swap`/`multihop.simulate_swap`,
+`factory.query_all_pools_details`/`factory.query_for_pool_by_token_pair`,
+`pool.provide_liquidity`/`pool.withdraw_liquidity`. No live testnet verification was performed for
+this adapter (unlike the Aquarius real-integration pass) — this build mirrors Aquarius's initial
+framework-only phase: real signatures, deterministic test doubles, no concrete Soroban RPC/HTTP
+client wired in yet.
+
+### Architectural difference from Aquarius (by design, not an inconsistency)
+
+Aquarius has one Router as its single integration point for everything, including liquidity.
+Phoenix's real architecture has **two** on-chain integration points instead:
+- `multihop` contract — swaps and multi-hop routing (`SWAP`, `SWAP_CHAINED`).
+- `factory` contract — pool discovery (`POOL_DISCOVERY`) and pool-address resolution by token
+  pair, used to route `DEPOSIT`/`WITHDRAW` to the correct **individual pool contract** — Phoenix
+  has no liquidity router, so `provide_liquidity`/`withdraw_liquidity` are called on the pool
+  itself. `buildTransaction()`'s `contractId` reflects this: the multihop contract for swaps, the
+  specific discovered pool contract for liquidity actions.
+
+Capabilities (matches what was requested — no reward claiming, unlike Aquarius): swaps, multi-hop
+swaps, liquidity deposit, liquidity withdrawal, pool discovery.
+
+### Validation
+
+Same checks as Aquarius, plus a Phoenix-specific one: supported action/asset/network, router
+(multihop) health (`UNAVAILABLE`/`UNKNOWN` fail closed, `DEGRADED` still permits), slippage limit,
+token ordering for `SWAP_CHAINED`, trustline requirements, **and liquidity** — every swap/deposit
+hop is checked against the factory's real pool listing (`checkLiquidity`); a token pair with no
+existing pool is rejected before any quote/simulation is attempted, not discovered as a confusing
+downstream failure. Pool type (`xyk`/`stable`, matching Phoenix's real `PoolType`) is validated
+too.
+
+### Testing
+
+`backend/src/__tests__/phoenixAdapter.test.ts` (48 tests): registration/capabilities; quote
+generation (direct + multi-hop); swap (`buildTransaction` routes through `multihop.swap`); liquidity
+operations (`provide_liquidity`/`withdraw_liquidity` routed to the correct pool contract, rejected
+when no pool exists for the pair); pool discovery; simulation (validation failure, Soroban RPC
+failure surfaced gracefully, router-unavailable fail-closed, `DEGRADED` permitted); unsupported
+assets/actions; invalid routes (short path, wrong starting hop, repeated hop, no-liquidity hop,
+invalid pool type); malformed responses (factory/multihop client failures surfaced gracefully, not
+crashed on); deterministic quote/transaction/simulation hashing (incl. 500x replay); `execute()`
+always throws; and 10/50/100-way concurrent simulate/quote calls with a single deterministic hash
+across all of them.
+
+**Bugs found and fixed by production audit (before this adapter was frozen):**
+1. `simulate()` resolved `contractId` for `DEPOSIT`/`WITHDRAW` (calling
+   `factoryClient.findPoolByPair`) **before** entering the try/catch meant to catch exactly this
+   kind of client failure — a factory error there propagated as an uncaught rejection instead of
+   a graceful `SimulationResult`. Also called `findPoolByPair` twice for the same `DEPOSIT`
+   request (once for `contractId`, once inside the try). Fixed by moving all contractId
+   resolution inside the try block and reusing a single lookup.
+2. `validateRequest`'s `checkLiquidity` helper called `factoryClient.findPoolByPair` with no
+   error handling at all — a factory failure during *validation* (called by `simulate`, `quote`,
+   and `buildTransaction`, all three) threw uncaught, before code even reached fix #1's try block.
+   This is the same bug class as the Aquarius real-integration's `simulate()`-throws fix, caught
+   here purely by production-audit code review rather than live network testing. Fixed by wrapping
+   the factory call in `checkLiquidity` itself, so a factory failure becomes a validation error
+   string, never a thrown exception.
+
+### Explicitly out of scope
+
+Blend, Soroswap, Aquarius (unaffected — this build touched no shared framework file, only
+additive files under `phoenix/`), any concrete Soroban RPC/HTTP client (test doubles only, same
+scoping as Aquarius's first build phase), and actual transaction execution
+(`execute()` always throws `PhoenixExecutionNotImplementedError`).
+
+### FINAL Production Audit (post-freeze adversarial pass)
+
+A second, adversarial audit (fuzzing with malformed amounts, malformed client responses, and a
+throwing health check — not just extending the existing test cases) found **4 more real bugs**
+in the code that had just been "frozen" above. All fixed, all with regression tests, before this
+adapter is now genuinely production-ready for its (simulation-only) scope.
+
+1. **Critical — `amount` was never validated.** `"abc"`, `"NaN"`, `""`, and negative values all
+   passed `validate()` cleanly and produced `estimatedFees: "NaN"` / a negative fee inside an
+   otherwise `success: true` `SimulationResult` — indistinguishable from a real, trustworthy
+   result. Fixed with a `checkAmount` validator requiring a non-negative finite decimal string,
+   wired into every action's validation path.
+2. **High — malformed multihop-client responses were trusted blindly.** A `simulateSwap()`
+   response with a missing/non-numeric `outputAmount` (or `spreadAmount`/`totalCommission`)
+   produced a `success: true` quote/simulation with the output silently absent (dropped by JSON
+   serialization, never surfaced as an error). Fixed with `assertValidMultihopResult()`, checked
+   before any multihop response is used.
+3. **High — malformed factory-client responses were trusted blindly.** A `findPoolByPair()`
+   response with a missing/non-string `poolId` produced a `success: true` DEPOSIT simulation and
+   a `buildTransaction()` result whose `contractId` was silently missing entirely — a caller could
+   receive an unusable transaction description with no indication anything was wrong. Fixed with
+   `assertValidPool()`, checked at both call sites (`simulate`'s DEPOSIT branch and
+   `buildTransaction`'s DEPOSIT branch).
+4. **High — a throwing `onHealth` crashed `validate()`/`simulate()`/`quote()`/`buildTransaction()`
+   entirely**, rather than being treated as the `UNAVAILABLE` status it represents. A real health
+   check (an RPC call) failing is an expected, recoverable condition, not a reason for every
+   adapter method to reject with an uncaught exception. Fixed by wrapping `adapterHealth()`'s call
+   to `options.onHealth()` in a try/catch that maps any thrown error to `UNAVAILABLE`.
+
+None of these 4 were found by the original 48-test suite or the first production audit — all 4
+were found by actively trying non-numeric/negative/infinite amounts and malformed client
+responses against the running adapter, per this audit's explicit instruction to attempt to break
+quote generation, transaction building, simulation, malformed responses, and router failures.
+`backend/src/__tests__/phoenixAdapter.test.ts` is now 59 tests (11 new regression tests added).
+
+### Production readiness
+
+✅ **Phoenix Adapter Production Ready** (within its declared, simulation-only scope). 59/59 unit
+tests pass, tsc clean, full repo regression 933/943 (10 intentionally-skipped Aquarius
+integration tests). Two full adversarial audit passes have now been conducted; both found real
+bugs, both sets are fixed with regression tests, and a fresh adversarial retest after the second
+pass's fixes found no further issues. Real Soroban/HTTP client wiring (mirroring the Aquarius
+real-integration pass) remains explicit future work, not part of this scope — production
+readiness here means "the adapter logic is sound, deterministic, and fails closed against every
+adversarial input tried," not "verified against live Phoenix contracts."
+
+## Protocol Layer — FINAL Production Audit (Blend/Soroswap/Aquarius/Phoenix scope)
+
+A cross-adapter audit was requested covering Blend, Soroswap, Aquarius, and Phoenix. **Scope
+correction**: only the Aquarius and Phoenix adapters exist in this codebase — no Blend or
+Soroswap adapter has ever been implemented (`protocolAdapters/` has no `blend/` or `soroswap/`
+directory; earlier references to them "already existing" were an incorrect premise, corrected at
+the time). This audit therefore covers the two real adapters plus the shared framework
+(`registry.ts`/`adapter.ts`/`factory.ts`) they're both built on.
+
+**3 more Critical/High bugs found, in both adapters simultaneously** (the same latent bug class
+existed in both, having been fixed in Phoenix during its own prior audit but never back-ported to
+Aquarius, and one new bug class neither adapter had):
+
+1. **Critical — Aquarius had the identical unvalidated-`amount` bug already fixed in Phoenix.**
+   `"abc"`, `"NaN"`, `"Infinity"`, negative values all passed `validate()` and produced
+   `estimatedFees: "NaN"`/`"Infinity"`/negative fees inside `success: true` results. Fixed with
+   the same `checkAmount` validator Phoenix already had, plus a **new** decimal-precision check
+   in both adapters (amounts with more than 7 decimal places — not a value that could exist for a
+   real Stellar asset — are now rejected in both).
+2. **High — Aquarius also lacked the try/catch around a throwing `onHealth`** that Phoenix's own
+   final audit had already fixed. A real health check whose own RPC call fails previously crashed
+   `validate()`/`simulate()` entirely instead of degrading to `UNAVAILABLE`. Fixed identically in
+   Aquarius.
+3. **High — neither adapter rejected a circular route.** `SWAP_CHAINED` path validation only
+   checked *adjacent* repeated hops (`['XLM','XLM','USDC']`) — a path revisiting an earlier asset
+   non-adjacently (`['XLM','USDC','XLM']`) passed validation in both adapters. Fixed in both with
+   a full-path uniqueness check (`new Set(path).size !== path.length`).
+
+**Regression tests added**: 16 across both adapters (Aquarius: 61 tests total, up from 49;
+Phoenix: 64 tests, up from 59) covering the amount/decimal/circular-route/health-throw cases in
+both adapters identically.
+
+**Verified, not just assumed**: hash-tamper resistance (forging a `Quote`'s `outputAmount` and
+recomputing its hash produces a *different* hash — confirmed for Aquarius, same mechanism in
+Phoenix), 10/50/100/250-way concurrency (extended from 100 to 250 in both suites, still a single
+deterministic hash across all runs, no shared mutable state in either adapter file), and adapter
+interface consistency (`Quote`/`SimulationResult`/`TransactionBuilder`/`ValidationResult` are the
+same shared types from `protocolAdapters/types.ts` for both adapters — enforced by TypeScript
+itself, not just convention).
+
+**Performance** (deterministic test doubles, so this measures adapter overhead only — a real
+client's network/RPC latency will dominate in production): both adapters average well under
+0.02ms per `simulate()`/`quote()` call, P99 under 0.05ms, throughput >90,000/s. Aquarius and
+Phoenix are within noise of each other; neither is meaningfully slower.
+
+**Remaining technical debt (both adapters, unchanged from prior audits)**: no real Soroban
+RPC/backend API client wired in for Phoenix (Aquarius has one, built and live-verified in an
+earlier phase); no request-level timeout/cancellation concept in the `SorobanRpcClient` interface
+for either adapter — a real client hanging indefinitely has no adapter-level guard (would need an
+`AbortController`-based real client implementation, not an adapter-logic change); Aquarius has no
+explicit validate()-time liquidity/pool-existence check the way Phoenix does (Aquarius relies on
+the router's own simulate-time failure) — a real architectural difference between the two
+protocols' capabilities, not a bug, but worth noting for consistency-review purposes.
+
 ## CandidateDecision
 
 An immutable, structured proposal — never an execution instruction. Fields: `decisionId`,
