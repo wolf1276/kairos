@@ -4,6 +4,8 @@ export { getBlendPoolContractId, getSorobanRpcUrl, getMinHealthFactor } from './
 export { hashTransaction } from './hashing.js';
 export { BLEND_ACTIONS } from './types.js';
 export { createDeterministicBlendPoolClient, createDeterministicSorobanRpcClient } from './testDoubles.js';
+export { buildRealBlendTransaction, verifyUnsignedXdr } from './realTransactionBuilder.js';
+export { buildBlendOperation, getNetworkPassphrase, simulateCall, toStroops, REQUEST_TYPE_DISCRIMINANT } from './invocation.js';
 
 export type { BlendAdapterOptions } from './adapter.js';
 export type { BlendNetwork } from './config.js';
@@ -18,3 +20,5 @@ export type {
   BlendPoolClient,
   SorobanRpcClient,
 } from './types.js';
+export type { RealTransactionDetail, RealResourceEstimate } from './realTransactionBuilder.js';
+export type { InvocationOptions, AssetResolver } from './invocation.js';
