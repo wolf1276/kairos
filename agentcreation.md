@@ -19,7 +19,7 @@ These block production readiness.
 
 ## Agent Creation
 
-- [ ] Complete end-to-end browser verification of the entire Agent Creation workflow. (IN PROGRESS — session 2026-07-09: instrumented Playwright run with real Ed25519 signing against the live testnet backend; only reached the Agents page / Connect step before this pass was cut short. Steps 4-19 of the checklist not yet driven live — see apps/web/e2e/live-qa.spec.ts.)
+- [ ] Complete end-to-end browser verification of the entire Agent Creation workflow. (IN PROGRESS — session 2026-07-09: fixed the Playwright wallet mock (rewrote it to emulate Freighter's real window.postMessage protocol instead of a webpack-chunk replacement, since the app runs on Turbopack). Verified live through wizard Step 5 of 9 (Review Plan / AI Plan) with real intent-parse backend calls. Steps for Smart Wallet creation onward (on-chain deploy, delegation signing, final submit, Mission Control, Start/Stop) NOT yet verified live — see apps/web/e2e/live-qa.spec.ts.)
 - [x] Verify no Freighter popup occurs when simply opening the Agents page. (2026-07-09: live network capture on http://localhost:3000/dashboard/agents showed zero calls to /api/auth/challenge or /api/auth/verify before the user clicked "Connect Freighter" — confirms no auto sign/connect prompt fires just from loading the page. See apps/web/e2e/live-qa.spec.ts test "1-3".)
 - [ ] Verify no runtime exceptions occur during Create Agent.
 - [ ] Verify no 404s anywhere in the wizard.
@@ -126,7 +126,7 @@ Implement runtime enforcement for every persisted policy.
 
 Add Playwright coverage for:
 
-- [ ] Connect Wallet
+- [x] Connect Wallet (2026-07-09: apps/web/e2e/live-qa.spec.ts test "1-3" passes live against real backend/testnet — real Ed25519 signing via window.postMessage Freighter-protocol mock, real /api/auth/challenge + /api/auth/verify round trip.)
 - [ ] Smart Wallet
 - [ ] Create Agent
 - [ ] Delegation

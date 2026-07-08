@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Asset } from "@stellar/stellar-sdk";
 import { fetchSmartWalletTokenBalance, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
 
@@ -30,10 +30,14 @@ export function useSmartWalletBalances(
   const [usdcBalance, setUsdcBalance] = useState(0);
   const [loading, setLoading] = useState(address ? true : false);
   const [error, setError] = useState<string | null>(null);
+  const hasLoadedOnce = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!address || !networkPassphrase) return;
-    setLoading(true);
+    // Only show a loading state on the very first fetch — background polls that re-set
+    // loading=true on every cycle transiently disable gated UI (e.g. the wizard's Continue
+    // button) every POLL_MS even though a known-good balance is already displayed.
+    if (!hasLoadedOnce.current) setLoading(true);
     setError(null);
     try {
       const nativeSacId = Asset.native().contractId(networkPassphrase);
@@ -44,6 +48,7 @@ export function useSmartWalletBalances(
       ]);
       setXlmBalance(parseFloat(xlm));
       setUsdcBalance(parseFloat(usdc));
+      hasLoadedOnce.current = true;
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -52,6 +57,7 @@ export function useSmartWalletBalances(
   }, [address, networkPassphrase, sorobanRpcUrl]);
 
   useEffect(() => {
+    hasLoadedOnce.current = false;
     if (!address || !networkPassphrase) {
       setXlmBalance(0);
       setUsdcBalance(0);

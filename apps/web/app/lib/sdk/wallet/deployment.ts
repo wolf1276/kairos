@@ -21,8 +21,10 @@ export async function prepareSmartWalletDeploy(ownerAddress: string): Promise<Pr
   const funder = getFunderKeypair();
   // Fund (and wait for Soroban RPC to see) the funder account before deploying — a fresh
   // funder or one that hasn't propagated yet would otherwise fail deploy with an opaque
-  // "account not found" error.
+  // "account not found" error. The owner also needs a visible classic account ledger entry
+  // before Soroban can validate their address-credentials auth entry on the CreateContract op.
   await client.ensureFundedTestnetAccount(funder.publicKey());
+  await client.ensureFundedTestnetAccount(ownerAddress);
   return client.wallet.prepareSponsoredDeploy(funder.publicKey(), ownerAddress, getContractConfig().customAccountWasmHash);
 }
 

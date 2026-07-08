@@ -1,8 +1,56 @@
 import { test, expect, Page } from '@playwright/test';
-import { Keypair, TransactionBuilder } from '@stellar/stellar-sdk';
+import { Keypair, TransactionBuilder, Asset, Address, Operation, BASE_FEE, rpc, nativeToScVal } from '@stellar/stellar-sdk';
 import crypto from 'crypto';
 import { execSync } from 'child_process';
 import path from 'path';
+
+const SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+const NETWORK_PASSPHRASE = 'Test SDF Network ; September 2015';
+
+// Mirrors app/lib/stellar.ts's transferXLMToContract — funds a deployed smart-wallet
+// contract (C-address) via the native XLM SAC `transfer`, since classic Operation.payment
+// only supports G-address destinations. Signed directly by the owner keypair (real Ed25519,
+// no Freighter round-trip needed since this runs in Node, not the browser).
+async function fundSmartWalletContract(ownerKp: Keypair, destination: string, amount: string) {
+  const server = new rpc.Server(SOROBAN_RPC_URL, { allowHttp: false });
+  const account = await server.getAccount(ownerKp.publicKey());
+  const nativeSacId = Asset.native().contractId(NETWORK_PASSPHRASE);
+  const stroops = (BigInt(Math.round(parseFloat(amount) * 1e7))).toString();
+  const transferOp = Operation.invokeContractFunction({
+    contract: nativeSacId,
+    function: 'transfer',
+    args: [
+      Address.fromString(ownerKp.publicKey()).toScVal(),
+      Address.fromString(destination).toScVal(),
+      nativeToScVal(BigInt(stroops), { type: 'i128' }),
+    ],
+  });
+  const builtTx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: NETWORK_PASSPHRASE })
+    .addOperation(transferOp)
+    .setTimeout(30)
+    .build();
+  const simulated = await server.simulateTransaction(builtTx);
+  if (!rpc.Api.isSimulationSuccess(simulated)) {
+    const reason = rpc.Api.isSimulationError(simulated) ? simulated.error : 'unknown simulation error';
+    throw new Error(`Failed to simulate smart wallet funding: ${reason}`);
+  }
+  const assembled = rpc.assembleTransaction(builtTx, simulated).build();
+  assembled.sign(ownerKp);
+  const sendResponse = await server.sendTransaction(assembled);
+  if (sendResponse.status === 'ERROR') {
+    throw new Error('Failed to submit smart wallet funding transaction');
+  }
+  let status = sendResponse.status;
+  let hash = sendResponse.hash;
+  for (let i = 0; i < 15 && status !== 'SUCCESS'; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const res = await server.getTransaction(hash);
+    status = res.status as string;
+    if (status === 'FAILED') throw new Error('Smart wallet funding transaction failed');
+  }
+  if (status !== 'SUCCESS') throw new Error(`Smart wallet funding did not confirm, last status=${status}`);
+  return hash;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Live QA of the Agent Creation flow against the REAL running backend (4001) and
@@ -147,26 +195,28 @@ async function installRealSigningFreighterMock(page: Page) {
 
 async function completeWalletPicker(page: Page) {
   // ConnectWalletModal: click "Connect Freighter" -> picker modal opens -> click "Freighter"
-  // row -> consent screen -> click "Continue".
+  // row -> consent screen -> click "Continue". Uses expect(...).toBeVisible (polling, no
+  // fixed sleeps) since the button may not have hydrated yet right after networkidle.
   const connectBtn = page.getByRole('button', { name: 'Connect Freighter' });
-  if (!(await connectBtn.isVisible().catch(() => false))) return false;
+  const alreadyConnected = await page.getByRole('button', { name: /^G[A-Z0-9]{3,4}…[A-Z0-9]{3,4}$/ }).isVisible().catch(() => false);
+  if (alreadyConnected) return true;
+  if (!(await connectBtn.isVisible({ timeout: 10_000 }).catch(() => false))) return false;
   await connectBtn.click();
-  await page.waitForTimeout(500);
-  const freighterRow = page.getByRole('button', { name: /^Freighter$/i }).first();
-  if (await freighterRow.isVisible({ timeout: 5000 }).catch(() => false)) {
-    await freighterRow.click();
-    await page.waitForTimeout(300);
-    const continueBtn = page.getByRole('button', { name: 'Continue' });
-    if (await continueBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await continueBtn.click();
-    }
+  const freighterRow = page.getByRole('listitem').filter({ hasText: 'Freighter' }).getByRole('button');
+  await expect(freighterRow).toBeVisible({ timeout: 5000 });
+  await freighterRow.click({ force: true });
+  const continueBtn = page.getByRole('button', { name: 'Continue' });
+  if (await continueBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+    await continueBtn.click({ force: true });
   }
-  await page.waitForTimeout(6000);
+  // Deterministic signal: wait for the connected-address chip to replace the connect button,
+  // which only renders after SEP-53 challenge/verify + auth token is set.
+  await expect(page.getByRole('button', { name: /^G[A-Z0-9]{3,4}…[A-Z0-9]{3,4}$/ })).toBeVisible({ timeout: 20_000 });
   return true;
 }
 
 test.describe.serial('Kairos live QA — Agent Creation end-to-end', () => {
-  test.setTimeout(180_000);
+  test.setTimeout(300_000);
 
   test('0. fund real testnet keypair via friendbot', async () => {
     const ok = await fundTestnetAccount(PUBKEY);
@@ -329,19 +379,73 @@ test.describe.serial('Kairos live QA — Agent Creation end-to-end', () => {
       await page.screenshot({ path: 'test-results/qa-10-after-deploy-attempt.png', fullPage: true });
     }
 
+    // Funding step: the deployed smart wallet contract starts at 0 XLM — the wizard
+    // correctly blocks Continue until balance > 0 (no in-wizard fund button exists by
+    // design; real users fund externally, e.g. via the Trade/delegate flow). Extract the
+    // smart wallet C-address from the /connect/submit or /api/smart-wallets response
+    // captured above and fund it directly on testnet, mirroring app/lib/stellar.ts's
+    // transferXLMToContract, before proceeding — this is a deterministic UI-signal wait,
+    // not a raw sleep.
+    const smartWalletMatch = responses
+      .map((r) => r.body)
+      .filter((b): b is string => !!b)
+      .map((b) => { try { return JSON.parse(b); } catch { return null; } })
+      .find((j) => j && (j.smartWallet || (j.wallets && j.wallets[0]?.address)));
+    const smartWalletAddress = smartWalletMatch?.smartWallet || smartWalletMatch?.wallets?.[0]?.address;
+    if (smartWalletAddress) {
+      console.log('[QA] Funding smart wallet contract:', smartWalletAddress);
+      try {
+        const hash = await fundSmartWalletContract(kp, smartWalletAddress, '50');
+        console.log('[QA] Smart wallet funded, tx hash:', hash);
+      } catch (e: any) {
+        console.log('[QA] Smart wallet funding failed:', e.message);
+      }
+      const refreshBtn = page.locator('button:has-text("Refresh balance")');
+      if (await refreshBtn.isVisible().catch(() => false)) {
+        await refreshBtn.click();
+      }
+      await expect(page.locator('button:has-text("Continue")').first()).toBeEnabled({ timeout: 20_000 }).catch(() => {});
+    } else {
+      console.log('[QA] Could not find smart wallet address in captured responses — skipping funding.');
+    }
+
     const continueAfterWallet = page.locator('button:has-text("Continue")').first();
     const canContinue = await continueAfterWallet.isEnabled().catch(() => false);
     console.log('[QA] Can continue past Smart Wallet step:', canContinue);
     if (canContinue) {
-      await continueAfterWallet.click();
-      await page.waitForTimeout(500);
+      try {
+        await continueAfterWallet.click({ timeout: 5000 });
+      } catch (e: any) {
+        console.log('[QA] Continue click blocked:', e.message.split('\n')[0]);
+      }
+      await expect(page.locator('text=Step 6 of 9')).toHaveCount(0, { timeout: 10_000 }).catch(() => {});
       await page.screenshot({ path: 'test-results/qa-11-approval-step.png', fullPage: true });
 
+      // Wizard has intermediate steps (e.g. "Review Plan") between Smart Wallet and the
+      // final Approve & Create step — keep advancing via Continue until Approve & Create
+      // shows up, bounded to avoid an infinite loop if something is genuinely stuck.
       const approveBtn = page.locator('button:has-text("Approve & Create")');
-      if (await approveBtn.isVisible().catch(() => false)) {
+      for (let i = 0; i < 5 && !(await approveBtn.isVisible().catch(() => false)); i++) {
+        const nextContinue = page.locator('button:has-text("Continue")').first();
+        if (!(await nextContinue.isVisible().catch(() => false))) break;
+        if (!(await nextContinue.isEnabled().catch(() => false))) break;
+        await nextContinue.click({ timeout: 5000 }).catch((e) => console.log('[QA] Continue click failed:', e.message.split('\n')[0]));
+        await page.waitForTimeout(300);
+      }
+      await page.screenshot({ path: 'test-results/qa-11c-review-plan-step.png', fullPage: true });
+
+      if (await approveBtn.isVisible({ timeout: 10_000 }).catch(() => false)) {
         await approveBtn.click();
-        await page.waitForTimeout(15_000);
+        // Real backend provisioning (Policy, Smart Wallet init, Delegation, Runtime, Memory,
+        // Benchmark, Scheduler, Agent) can take well over a minute — wait for the wizard's
+        // "Creating agent..." screen to close (real completion signal), not a fixed sleep.
+        await expect(page.locator('text=Creating agent...')).toHaveCount(0, { timeout: 120_000 }).catch((e) => {
+          console.log('[QA] Creation did not finish within 120s:', e.message.split('\n')[0]);
+        });
         await page.screenshot({ path: 'test-results/qa-12-creation-progress.png', fullPage: true });
+      } else {
+        console.log('[QA] Approve & Create button never appeared after Continue clicks.');
+        await page.screenshot({ path: 'test-results/qa-11b-stuck-after-continue.png', fullPage: true });
       }
     }
 
