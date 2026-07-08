@@ -3,10 +3,10 @@
 // /api/delegate-sdk (a Next.js API route proxying the Kairos SDK), this talks directly to
 // that standalone service over HTTP.
 
-import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType } from '@kairos/types';
+import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult } from '@kairos/types';
 import { getAgentsBackendBase } from '@/app/lib/backendBase';
 
-export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType };
+export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult };
 
 export interface StrategyMeta {
   id: string;
@@ -196,6 +196,31 @@ export async function createAgentWallet(
 export async function listAgentWallets(owner: string): Promise<AgentSummary[]> {
   const data = await request<{ agents: AgentSummary[] }>(`/api/agents?owner=${encodeURIComponent(owner)}`);
   return data.agents;
+}
+
+/** Step 1 of Agent Creation (agentcreation.md): sends the user's natural-language goal to the
+ *  backend Intent Parser — the single production parser/prompt/schema for Agent Creation — and
+ *  returns the raw AgentSpec result. Unlike `request()`, this does not throw on a non-2xx status:
+ *  a 502 here still carries a real IntentParseResult body (status: 'failed') that the wizard needs
+ *  to render, not just a generic error. */
+export async function parseAgentIntent(goal: string): Promise<IntentParseResult> {
+  const res = await fetch(backendUrl("/api/agents/parse-intent"), {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: JSON.stringify({ goal }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    authToken = null;
+    clearAllStoredSessionTokens();
+  }
+  if (!data || typeof data.status !== "string") {
+    throw new Error(data?.error || `Agent backend request failed (${res.status})`);
+  }
+  return data as IntentParseResult;
 }
 
 export async function getBackendHealth(): Promise<boolean> {

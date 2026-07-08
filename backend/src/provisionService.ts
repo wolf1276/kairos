@@ -71,7 +71,7 @@ export async function provisionSingleRoleAgent(owner: string, role: AgentRole, o
   });
   // Paper mode has no funds at risk — start it ticking immediately. Live mode waits for a
   // delegation to be attached and started explicitly (see routes/agents.ts POST /:id/start).
-  if (mode === 'paper') startAgent(created.id);
+  if (mode === 'paper') await startAgent(created.id);
   return getAgent(created.id)!;
 }
 

@@ -3,7 +3,8 @@
 // Guided agent-creation flow — implements the 9-step journey documented in agentcreation.md:
 // Describe Goal → AI Understanding → Capital & Safety → Permissions → AI Plan → Smart Wallet
 // Validation → Delegation Approval → Agent Creation → Success. Nothing here mocks data: the AI
-// Understanding step calls the real /api/intent/parse route, the balance/validation steps read
+// Understanding step calls the backend Intent Parser (POST /api/agents/parse-intent — the single
+// production parser/prompt/AgentSpec schema for Agent Creation), the balance/validation steps read
 // the live smart-wallet balance, and creation provisions a real role agent + funds it from the
 // smart wallet. The user describes *what* they want; Kairos maps it to a role/strategy/funding.
 
@@ -20,10 +21,12 @@ import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { withdrawFromSmartWallet } from "@/app/lib/stellar";
 import {
   getAgentsSummary,
+  parseAgentIntent,
   provisionSingleRoleAgent,
   type AgentRole,
   type AgentSummary,
 } from "@/app/lib/agentsBackend";
+import type { RiskLevel as BackendRiskLevel } from "@kairos/types";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-white/5 bg-bg-elevated px-2.5 py-2 font-mono text-xs text-text-primary transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
@@ -64,15 +67,18 @@ function inferRole(goal: string): AgentRole {
   return "strategic";
 }
 
-type Risk = "LOW" | "MODERATE" | "HIGH";
-const RISK_LABEL: Record<Risk, string> = { LOW: "Conservative", MODERATE: "Balanced", HIGH: "Aggressive" };
+type Risk = BackendRiskLevel;
+const RISK_LABEL: Record<Risk, string> = { conservative: "Conservative", balanced: "Balanced", aggressive: "Aggressive" };
 
+// Mirrors @kairos/types AgentSpec — the single schema the backend Intent Parser produces and this
+// wizard edits. No fields invented here beyond what the parser (or the user, via editing) stated.
 interface ParsedSpec {
-  status: string;
-  goal: string;
-  riskTolerance: Risk;
-  investmentHorizon: "SHORT" | "MEDIUM" | "LONG";
-  requiredInformation?: string[];
+  mission: string;
+  objective: string;
+  riskLevel: Risk;
+  executionStyle: "autonomous" | "guided";
+  suggestedCapital: string | null;
+  confidence: number;
 }
 
 type CapitalMode = "entire" | "percentage" | "fixed";
@@ -167,7 +173,7 @@ export function AgentCreationWizard({
 
   const role: AgentRole = useMemo(() => {
     if (templateId && templateId !== "custom") return TEMPLATES.find((t) => t.id === templateId)!.role;
-    return inferRole(spec?.goal ?? goalText);
+    return inferRole(spec?.objective ?? goalText);
   }, [templateId, spec, goalText]);
 
   const balances = useSmartWalletBalances(delegatorWallet, networkPassphrase, sorobanRpcUrl);
@@ -187,21 +193,27 @@ export function AgentCreationWizard({
     setError(null);
     setParsing(true);
     try {
-      const res = await fetch("/api/intent/parse", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: goalText.trim() }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Could not understand that goal — try rephrasing.");
-      const src = (data.profile ?? data.extracted ?? {}) as Record<string, unknown>;
-      const risk = (String(src.riskTolerance ?? "MODERATE").toUpperCase() as Risk);
+      const result = await parseAgentIntent(goalText.trim());
+      if (result.status === "failed") {
+        throw new Error(result.error || "Could not understand that goal — try rephrasing.");
+      }
+      if (result.status === "needs_clarification" || !result.spec) {
+        // Doc: "If required information is missing, ask clarification questions. Never invent
+        // values." — stay on Step 1 and surface the parser's own follow-up questions.
+        throw new Error(
+          result.clarifyingQuestions.length > 0
+            ? result.clarifyingQuestions.join(" ")
+            : "Could you say more about what you want this agent to do?"
+        );
+      }
+      const s = result.spec;
       setSpec({
-        status: String(data.status ?? "READY"),
-        goal: String(src.goal ?? goalText.trim()),
-        riskTolerance: ["LOW", "MODERATE", "HIGH"].includes(risk) ? risk : "MODERATE",
-        investmentHorizon: (String(src.investmentHorizon ?? "MEDIUM").toUpperCase() as ParsedSpec["investmentHorizon"]),
-        requiredInformation: Array.isArray(data.requiredInformation) ? data.requiredInformation : undefined,
+        mission: s.mission,
+        objective: s.objective,
+        riskLevel: s.riskLevel,
+        executionStyle: s.executionStyle,
+        suggestedCapital: s.suggestedCapital,
+        confidence: s.confidence,
       });
       setStep(1);
     } catch (e) {
@@ -332,33 +344,31 @@ export function AgentCreationWizard({
                 <h2 className="font-display text-base font-medium text-text-primary">Here&apos;s what Kairos understood</h2>
                 <p className="mt-1 text-xs text-text-muted">Nothing has been created yet. Edit anything below before continuing.</p>
               </div>
-              {spec.requiredInformation && spec.requiredInformation.length > 0 && (
-                <div className="rounded-xl border border-warning/20 bg-warning/[0.06] px-3 py-2 text-[11px] text-warning/90">
-                  Kairos needs a bit more detail on: {spec.requiredInformation.join(", ")}. Adjust the fields below or go back and refine your goal.
-                </div>
-              )}
               <div className="grid grid-cols-2 gap-3">
-                <Field label="Mission"><span className="text-xs text-text-primary">{ROLE_MISSION[role]}</span></Field>
-                <Field label="Execution"><span className="text-xs text-text-primary">Autonomous</span></Field>
+                <div className="col-span-2">
+                  <Field label="Mission">
+                    <input value={spec.mission} onChange={(e) => setSpec({ ...spec, mission: e.target.value })} className={INPUT_CLS} />
+                  </Field>
+                </div>
                 <div className="col-span-2">
                   <Field label="Objective">
-                    <input value={spec.goal} onChange={(e) => setSpec({ ...spec, goal: e.target.value })} className={INPUT_CLS} />
+                    <input value={spec.objective} onChange={(e) => setSpec({ ...spec, objective: e.target.value })} className={INPUT_CLS} />
                   </Field>
                 </div>
                 <Field label="Risk Level">
-                  <select value={spec.riskTolerance} onChange={(e) => setSpec({ ...spec, riskTolerance: e.target.value as Risk })} className={INPUT_CLS}>
-                    <option value="LOW">Conservative</option>
-                    <option value="MODERATE">Balanced</option>
-                    <option value="HIGH">Aggressive</option>
+                  <select value={spec.riskLevel} onChange={(e) => setSpec({ ...spec, riskLevel: e.target.value as Risk })} className={INPUT_CLS}>
+                    <option value="conservative">Conservative</option>
+                    <option value="balanced">Balanced</option>
+                    <option value="aggressive">Aggressive</option>
                   </select>
                 </Field>
-                <Field label="Horizon">
-                  <select value={spec.investmentHorizon} onChange={(e) => setSpec({ ...spec, investmentHorizon: e.target.value as ParsedSpec["investmentHorizon"] })} className={INPUT_CLS}>
-                    <option value="SHORT">Short Term</option>
-                    <option value="MEDIUM">Medium Term</option>
-                    <option value="LONG">Long Term</option>
+                <Field label="Execution">
+                  <select value={spec.executionStyle} onChange={(e) => setSpec({ ...spec, executionStyle: e.target.value as ParsedSpec["executionStyle"] })} className={INPUT_CLS}>
+                    <option value="autonomous">Autonomous</option>
+                    <option value="guided">Guided</option>
                   </select>
                 </Field>
+                <Field label="Confidence"><span className="text-xs text-text-primary">{Math.round(spec.confidence * 100)}%</span></Field>
               </div>
             </div>
           )}
@@ -390,12 +400,12 @@ export function AgentCreationWizard({
               <div className="space-y-3">
                 <p className="text-[10px] font-mono uppercase tracking-widest text-text-muted">Safety</p>
                 <div className="flex gap-2">
-                  {(["LOW", "MODERATE", "HIGH"] as Risk[]).map((r) => (
+                  {(["conservative", "balanced", "aggressive"] as Risk[]).map((r) => (
                     <button
                       key={r}
-                      onClick={() => setSpec((s) => (s ? { ...s, riskTolerance: r } : s))}
+                      onClick={() => setSpec((s) => (s ? { ...s, riskLevel: r } : s))}
                       className={`flex-1 rounded-lg border px-2 py-2 text-xs transition-colors ${
-                        spec?.riskTolerance === r ? "border-accent/40 bg-accent-muted/30 text-text-primary" : "border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
+                        spec?.riskLevel === r ? "border-accent/40 bg-accent-muted/30 text-text-primary" : "border-white/5 bg-white/[0.02] text-text-secondary hover:text-text-primary"
                       }`}
                     >
                       {RISK_LABEL[r]}
@@ -439,8 +449,8 @@ export function AgentCreationWizard({
               <ul className="space-y-2">
                 {[
                   `Manage ${capitalSummary.toLowerCase()}`,
-                  `Pursue: ${spec?.goal ?? goalText}`,
-                  `Operate at a ${RISK_LABEL[spec?.riskTolerance ?? "MODERATE"].toLowerCase()} risk level`,
+                  `Pursue: ${spec?.objective ?? goalText}`,
+                  `Operate at a ${RISK_LABEL[spec?.riskLevel ?? "balanced"].toLowerCase()} risk level`,
                   ...approvedCaps.map((c) => c.label),
                   `Never exceed a ${maxAllocationPct}% allocation`,
                   ...(caps.leverage ? [] : ["Never use leverage"]),
@@ -531,7 +541,7 @@ export function AgentCreationWizard({
                   <Field label="Managed Capital"><span className="font-mono text-xs text-accent">{fmtXlm(managedCapital)}</span></Field>
                   <Field label="Max Allocation"><span className="font-mono text-xs text-text-primary">{maxAllocationPct}%</span></Field>
                   <Field label="Leverage"><span className="font-mono text-xs text-text-primary">{caps.leverage ? "Enabled" : "Disabled"}</span></Field>
-                  <Field label="Risk"><span className="font-mono text-xs text-text-primary">{RISK_LABEL[spec?.riskTolerance ?? "MODERATE"]}</span></Field>
+                  <Field label="Risk"><span className="font-mono text-xs text-text-primary">{RISK_LABEL[spec?.riskLevel ?? "balanced"]}</span></Field>
                 </div>
               </div>
             </div>

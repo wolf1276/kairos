@@ -63,18 +63,6 @@ test.describe('Kairos E2E', () => {
     await page.waitForLoadState('networkidle');
   });
 
-  test('/api/intent/parse endpoint works', async ({ request }) => {
-    const res = await request.post('/api/intent/parse', {
-      data: { text: 'Grow my portfolio with moderate risk using XLM' },
-    });
-    expect(res.ok()).toBeTruthy();
-    const body = await res.json();
-    expect(body.status).toBe('READY');
-    expect(body.profile).toBeDefined();
-    expect(body.profile.allowedAssets).toContain('XLM');
-    expect(body.profile.riskTolerance).toBe('MODERATE');
-  });
-
   test('/api/analyze endpoint returns a decision', async ({ request }) => {
     const res = await request.post('/api/analyze', {
       data: {

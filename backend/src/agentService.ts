@@ -1,9 +1,10 @@
-import { Keypair } from '@stellar/stellar-sdk';
+import { Asset, Keypair } from '@stellar/stellar-sdk';
 import type { Signer } from '@wolf1276/kairos-sdk';
 import { TurnkeySigner } from '@wolf1276/kairos-turnkey-signer';
 import { randomUUID } from 'crypto';
 import os from 'os';
 import { getDb, getWalletDelegation, upsertWalletDelegation, setWalletDelegationDisabled, type AgentRow, type AgentMode, type AgentRole } from './db.js';
+import { listSmartWallets } from './smartWalletsDb.js';
 import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
@@ -180,14 +181,81 @@ export function setStrategy(id: string, strategy: StrategyConfig): AgentSummary 
   return getAgent(id)!;
 }
 
-export function startAgent(id: string): AgentSummary {
+export interface StartValidationResult {
+  ok: boolean;
+  reason?: string;
+}
+
+/** Extracts the strategy's per-action spend amount regardless of type — the field name differs
+ *  per StrategyConfig variant (amountPerTick/amountPerTrade/quantity) but the rule applied to it
+ *  ("must be greater than zero") is the same for every type. */
+function strategySpendAmount(strategy: StrategyConfig): number {
+  switch (strategy.type) {
+    case 'dca':
+      return Number(strategy.amountPerTick);
+    case 'quant':
+    case 'role':
+      return Number(strategy.amountPerTrade);
+    case 'limit':
+      return Number(strategy.quantity);
+  }
+}
+
+/**
+ * Single prerequisite gate for every live agent type (dca/quant/limit/role) before it can
+ * transition to 'running'. Money always flows User Wallet → Smart Wallet → Delegation → Agent
+ * → Protocols — the agent's own account is never the thing that needs funds, so this checks
+ * the *Smart Wallet's* balance, never the agent's. Paper mode never calls this (see startAgent).
+ */
+export async function validateStartPrerequisites(row: AgentRow, strategy: StrategyConfig): Promise<StartValidationResult> {
+  const spendAmount = strategySpendAmount(strategy);
+  if (!Number.isFinite(spendAmount) || spendAmount <= 0) {
+    return { ok: false, reason: 'Agent is not fully configured — spending limit must be greater than 0' };
+  }
+
+  if (!row.delegator) {
+    return { ok: false, reason: 'No Smart Wallet attached — connect a Smart Wallet before starting this agent' };
+  }
+
+  const smartWallets = await listSmartWallets(row.owner);
+  if (!smartWallets.some((w) => w.address === row.delegator)) {
+    return { ok: false, reason: 'Smart Wallet not found for this account' };
+  }
+
+  const delegationRow = getWalletDelegation(row.delegator, row.public_key);
+  if (!delegationRow) {
+    return { ok: false, reason: 'No delegation found — attach a delegation before starting this agent' };
+  }
+  if (delegationRow.disabled) {
+    return { ok: false, reason: 'Delegation is inactive — re-enable it before starting this agent' };
+  }
+
+  try {
+    const client = getKairosClient();
+    const nativeContractId = Asset.native().contractId(client.networkPassphrase);
+    const balance = await client.wallet.balance(row.delegator, nativeContractId);
+    if (balance <= 0n) {
+      return { ok: false, reason: 'Smart Wallet has no funds — deposit funds before starting this agent' };
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: `Unable to verify Smart Wallet balance — ${message}` };
+  }
+
+  return { ok: true };
+}
+
+export async function startAgent(id: string): Promise<AgentSummary> {
   const row = getAgentRow(id);
   if (!row) throw new Error('Agent not found');
   if (!row.strategy_config_json) throw new Error('Configure a strategy before starting this agent');
   const strategy = JSON.parse(row.strategy_config_json) as StrategyConfig;
-  if (strategy.type === 'dca' && !getActiveDelegationForAgent(row)) {
-    throw new Error('Attach a delegation before starting this agent');
+
+  if (row.mode === 'live') {
+    const result = await validateStartPrerequisites(row, strategy);
+    if (!result.ok) throw new Error(result.reason);
   }
+
   getDb().prepare("UPDATE agents SET status = 'running', last_error = NULL, started_at = ? WHERE id = ?").run(Date.now(), id);
   logEvent({
     agentId: id,

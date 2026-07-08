@@ -19,6 +19,7 @@ import { executeQuantTrade } from '../tick.js';
 import { executePaperQuantTrade } from '../paperExecutor.js';
 import { recordCompletedTrade } from '../executionEngine.js';
 import { getWalletDelegation } from '../db.js';
+import { parseIntent } from '../intentParser.js';
 import type { QuantStrategyConfig } from '../types.js';
 
 export const agentsRouter = Router();
@@ -46,6 +47,24 @@ const createAgentSchema = z.object({
   mode: z.enum(['paper', 'live']).optional(),
   capital: z.string().optional(),
   riskLevel: z.string().optional(),
+});
+
+const parseIntentSchema = z.object({
+  goal: z.string(),
+});
+
+// Step 1 of Agent Creation (agentcreation.md): Natural Language -> AgentSpec only. Creates
+// nothing — no agent, no Smart Wallet, no Delegation.
+agentsRouter.post('/parse-intent', async (req, res) => {
+  const parsed = parseIntentSchema.safeParse(req.body ?? {});
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+  try {
+    const result = await parseIntent(parsed.data.goal);
+    if (result.status === 'failed') return res.status(502).json(result);
+    res.json(result);
+  } catch (error) {
+    handleError(res, error);
+  }
 });
 
 agentsRouter.post('/', async (req, res) => {
@@ -163,10 +182,10 @@ agentsRouter.post('/:id/strategy', (req, res) => {
   }
 });
 
-agentsRouter.post('/:id/start', (req, res) => {
+agentsRouter.post('/:id/start', async (req, res) => {
   if (!loadOwnedAgent(req, res)) return;
   try {
-    res.json({ success: true, agent: startAgent(req.params.id) });
+    res.json({ success: true, agent: await startAgent(req.params.id) });
   } catch (error) {
     handleError(res, error);
   }

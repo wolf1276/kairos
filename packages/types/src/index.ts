@@ -266,3 +266,34 @@ export interface AgentDashboard {
   currentStrategy: string | null;
   lastDecisionTime: number | null;
 }
+
+// ── Agent Creation: Intent Parser (see agentcreation.md) ──
+// Single schema shared by the backend Intent Parser (source of truth) and the frontend
+// wizard (thin client) — one AgentSpec shape, no duplicate parsing schemas.
+
+export const RISK_LEVELS = ['conservative', 'balanced', 'aggressive'] as const;
+export type RiskLevel = (typeof RISK_LEVELS)[number];
+
+export const EXECUTION_STYLES = ['autonomous', 'guided'] as const;
+export type ExecutionStyle = (typeof EXECUTION_STYLES)[number];
+
+/** The editable Agent Specification shown/edited in Step 2 of the wizard. Every field the user
+ *  sees must trace back to something the model actually said (or the user's own text) — never a
+ *  default invented here. */
+export interface AgentSpec {
+  mission: string;
+  objective: string;
+  riskLevel: RiskLevel;
+  suggestedCapital: string | null;
+  executionStyle: ExecutionStyle;
+  confidence: number;
+}
+
+export interface IntentParseResult {
+  status: 'ok' | 'needs_clarification' | 'failed';
+  spec: AgentSpec | null;
+  /** Populated when status !== 'ok'. Never fabricated — these are the model's own follow-up
+   *  questions (or, for 'failed', a description of why parsing could not proceed). */
+  clarifyingQuestions: string[];
+  error?: string;
+}

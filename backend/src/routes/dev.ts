@@ -207,14 +207,14 @@ export function createDevRouter(config: DevRouterConfig = {}): Router {
     }
   });
 
-  router.post('/paper/resume', (req, res) => {
+  router.post('/paper/resume', async (req, res) => {
     const parsed = paperTargetSchema.safeParse(req.body ?? {});
     if (!parsed.success || !parsed.data.agentId) {
       return res.status(400).json({ success: false, error: 'agentId is required' });
     }
     if (!loadOwnedAgent(parsed.data.agentId, req, res)) return;
     try {
-      const agent = startAgent(parsed.data.agentId);
+      const agent = await startAgent(parsed.data.agentId);
       res.json({ success: true, agent });
     } catch (error) {
       res.status(400).json({ success: false, error: errorMessage(error) });
