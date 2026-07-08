@@ -76,7 +76,7 @@ flowchart TD
         Oracle[GraphQL price API]
     end
     subgraph Backend
-        API[REST API<br/>auth: wallet signature]
+        API[REST API<br/>auth: SEP-53 wallet signature]
         Engines[Reasoning, Context, Memory,<br/>Strategy & Protocol engines]
         Store[(Persistence)]
     end
@@ -164,7 +164,7 @@ pnpm --filter app dev                              # dashboard at http://localho
 
 ### Configure
 
-Copy `.env.example` and set the Stellar network, the deployed contract IDs (from `configs/contracts.testnet.json`), and `AUTH_JWT_SECRET`. Reasoning-provider configuration is documented in [AI_PIPELINE.md](./AI_PIPELINE.md) and [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md).
+Copy `.env.example` and set the Stellar network, the deployed contract IDs (from `configs/contracts.testnet.json`), and `AUTH_JWT_SECRET` (used after the SEP-53 challenge/verify handshake). Reasoning-provider configuration is documented in [AI_PIPELINE.md](./AI_PIPELINE.md) and [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md).
 
 ### Test & benchmark
 
@@ -260,7 +260,7 @@ Every workspace unit and major subsystem has its own README:
 - SDK with on-chain-valid delegations, wallet/delegation/policy/execution/events/registry modules.
 - Context, Memory, Strategy, and Reasoning engines; Provider and Protocol layers.
 - Benchmark framework, paper-trading terminal, and Next.js dashboard.
-- Freighter onboarding, wallet-signature session auth, and Developer Mode.
+- Freighter onboarding, SEP-53 wallet-signature session auth, and Developer Mode.
 
 ### In Progress
 
