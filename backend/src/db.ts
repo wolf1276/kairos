@@ -59,6 +59,10 @@ export interface AgentRow {
   started_at: number | null;
   lock_token: string | null;
   lock_expires_at: number | null;
+  /** JSON-encoded AgentPolicy (capabilities + safety limits) collected in the Permissions /
+   *  Capital & Safety wizard steps — see @kairos/types AgentPolicy. Null for agents created
+   *  before this column existed, or created without explicit policy input. */
+  policy_json: string | null;
 }
 
 export interface UserRow {
@@ -419,9 +423,12 @@ function addForeignKeys(db: Database.Database): void {
       table: 'audit_log',
       columns:
         'id, agent_id, owner, event_type, mode, strategy_id, mpc_account, pair, market_snapshot_json, indicators_json, signal, policy_validation_json, delegation_validation_json, execution_status, tx_hash, position_after_json, pnl_after_json, message, created_at',
+      // CASCADE, not RESTRICT: audit_log is a log, not evidence like trades/decisions — an
+      // agent that was only ever provisioned (never traded) must stay deletable. See
+      // migrateAuditLogFkToCascade below for DBs that already got the old RESTRICT version.
       createSql: `CREATE TABLE audit_log_new (
         id TEXT PRIMARY KEY,
-        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE RESTRICT,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
         owner TEXT NOT NULL,
         event_type TEXT NOT NULL,
         mode TEXT,
@@ -486,6 +493,58 @@ function addForeignKeys(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_log(owner, created_at);
     CREATE INDEX IF NOT EXISTS idx_perf_agent ON performance_snapshots(agent_id, created_at);
+  `);
+}
+
+/**
+ * `addForeignKeys` originally gave audit_log an ON DELETE RESTRICT FK (same as trades/
+ * decisions) — but audit_log is just a log, not evidence of real activity: a role agent that
+ * was only ever provisioned (one `agent_provisioned` audit row, zero trades) could never be
+ * deleted, and the resulting 409 misleadingly claimed "trade/decision history". `hasFk` in
+ * addForeignKeys only checks *whether* a FK exists, not its ON DELETE action, so it won't
+ * re-run for DBs that already got the RESTRICT version — this migration specifically rebuilds
+ * audit_log to CASCADE if it's still RESTRICT. No-op on fresh DBs, which get CASCADE directly
+ * from the createSql above.
+ */
+function migrateAuditLogFkToCascade(db: Database.Database): void {
+  const fks = db.prepare('PRAGMA foreign_key_list(audit_log)').all() as { table: string; on_delete: string }[];
+  const agentsFk = fks.find((fk) => fk.table === 'agents');
+  if (!agentsFk || agentsFk.on_delete !== 'RESTRICT') return; // already CASCADE, or no FK yet (addForeignKeys will add CASCADE directly)
+
+  db.pragma('foreign_keys = OFF');
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE audit_log_new (
+        id TEXT PRIMARY KEY,
+        agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+        owner TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        mode TEXT,
+        strategy_id TEXT,
+        mpc_account TEXT,
+        pair TEXT,
+        market_snapshot_json TEXT,
+        indicators_json TEXT,
+        signal TEXT,
+        policy_validation_json TEXT,
+        delegation_validation_json TEXT,
+        execution_status TEXT,
+        tx_hash TEXT,
+        position_after_json TEXT,
+        pnl_after_json TEXT,
+        message TEXT,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    db.exec(`INSERT INTO audit_log_new SELECT * FROM audit_log WHERE agent_id IN (SELECT id FROM agents)`);
+    db.exec('DROP TABLE audit_log');
+    db.exec('ALTER TABLE audit_log_new RENAME TO audit_log');
+  });
+  migrate();
+  db.pragma('foreign_keys = ON');
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_audit_owner ON audit_log(owner, created_at);
   `);
 }
 
@@ -759,8 +818,13 @@ export function getDb(): Database.Database {
   }
 
 
+  if (!columns.some((c) => c.name === 'policy_json')) {
+    db.exec('ALTER TABLE agents ADD COLUMN policy_json TEXT');
+  }
+
   migrateWalletDelegationsToPerAgent(db);
   addForeignKeys(db);
+  migrateAuditLogFkToCascade(db);
 
   return db;
 }

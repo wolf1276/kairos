@@ -4,7 +4,7 @@
 // an owner-scoped router (mounted at /api).
 import { Router } from 'express';
 import { z } from 'zod';
-import { getAgentRow } from '../agentService.js';
+import { getAgentRow, setPolicy } from '../agentService.js';
 import { provisionRoleAgents, provisionSingleRoleAgent } from '../provisionService.js';
 import { listDecisionsForAgent, listDecisionsForOwner, getDecision } from '../decisionService.js';
 import { listPerformanceForAgent } from '../performanceService.js';
@@ -38,9 +38,27 @@ function ensureOwned(req: import('express').Request, res: import('express').Resp
   return true;
 }
 
+// Mirrors the AgentPolicy shape in @kairos/types — the Permissions/Capital & Safety wizard
+// steps (agentcreation.md §3/§4), previously collected in the UI but never sent here.
+const agentPolicySchema = z.object({
+  capabilities: z.object({
+    swap: z.boolean(),
+    yield: z.boolean(),
+    rebalance: z.boolean(),
+    dca: z.boolean(),
+    holdStable: z.boolean(),
+    borrow: z.boolean(),
+    leverage: z.boolean(),
+  }),
+  maxAllocationPct: z.number().min(0).max(100),
+  maxDailyTrades: z.number().int().min(0),
+  maxSlippagePct: z.number().min(0).max(100),
+});
+
 const provisionSchema = z.object({
   mode: z.enum(['paper', 'live']).optional(),
   capital: z.string().optional(),
+  policy: agentPolicySchema.optional(),
 });
 
 // POST /api/agents/provision — idempotently create + start the 3 role agents for the caller.
@@ -49,6 +67,9 @@ autonomousAgentRouter.post('/provision', async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
     const agents = await provisionRoleAgents(req.auth!.publicKey, parsed.data);
+    if (parsed.data.policy) {
+      for (const a of agents) setPolicy(a.id, parsed.data.policy);
+    }
     res.json({ success: true, agents });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
@@ -59,6 +80,7 @@ const provisionRoleSchema = z.object({
   role: z.enum(['strategic', 'yield', 'balancer']),
   mode: z.enum(['paper', 'live']).optional(),
   capital: z.string().optional(),
+  policy: agentPolicySchema.optional(),
 });
 
 // POST /api/agents/provision-role — idempotently create + (paper mode only) start a single
@@ -68,7 +90,11 @@ autonomousAgentRouter.post('/provision-role', async (req, res) => {
   const parsed = provisionRoleSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
   try {
-    const agent = await provisionSingleRoleAgent(req.auth!.publicKey, parsed.data.role, parsed.data);
+    let agent = await provisionSingleRoleAgent(req.auth!.publicKey, parsed.data.role, parsed.data);
+    // setPolicy every call (not just on first creation) so re-submitting the wizard for an
+    // already-provisioned role agent still applies the caller's latest Permissions/Safety
+    // choices, rather than being silently ignored once the agent already exists.
+    if (parsed.data.policy) agent = setPolicy(agent.id, parsed.data.policy);
     res.json({ success: true, agent });
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });

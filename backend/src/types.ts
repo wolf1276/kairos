@@ -6,6 +6,7 @@ export {
   RoleStrategyConfig,
   StrategyConfig,
   AgentSummary,
+  AgentPolicy,
   TradeRow,
   PositionRow,
   PnlSummary,

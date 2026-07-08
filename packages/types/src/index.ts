@@ -47,6 +47,25 @@ export type AgentMode = 'paper' | 'live';
 export type AgentRole = 'yield' | 'strategic' | 'balancer';
 export type AgentStatus = 'new' | 'running' | 'stopped' | 'error';
 
+/** Permissions + safety limits the user approves in the Agent Creation wizard's "Permissions"
+ *  and "Capital & Safety" steps (agentcreation.md §4/§3). Stored on the agent and returned in
+ *  AgentSummary so it's no longer collected in the UI and silently discarded — see
+ *  backend/src/routes/agents.ts POST / and POST /:id/policy. */
+export interface AgentPolicy {
+  capabilities: {
+    swap: boolean;
+    yield: boolean;
+    rebalance: boolean;
+    dca: boolean;
+    holdStable: boolean;
+    borrow: boolean;
+    leverage: boolean;
+  };
+  maxAllocationPct: number;
+  maxDailyTrades: number;
+  maxSlippagePct: number;
+}
+
 export interface AgentSummary {
   id: string;
   owner: string;
@@ -64,6 +83,7 @@ export interface AgentSummary {
   capital: string | null;
   riskLevel: string | null;
   startedAt: number | null;
+  policy: AgentPolicy | null;
 }
 
 // ── Trades ──

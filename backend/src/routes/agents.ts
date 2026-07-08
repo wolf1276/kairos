@@ -8,6 +8,7 @@ import {
   getAgentRow,
   listAgents,
   revokeWalletDelegation,
+  setPolicy,
   setStrategy,
   startAgent,
   stopAgent,
@@ -43,10 +44,26 @@ function loadOwnedAgent(req: import('express').Request, res: import('express').R
   return row;
 }
 
+const agentPolicySchema = z.object({
+  capabilities: z.object({
+    swap: z.boolean(),
+    yield: z.boolean(),
+    rebalance: z.boolean(),
+    dca: z.boolean(),
+    holdStable: z.boolean(),
+    borrow: z.boolean(),
+    leverage: z.boolean(),
+  }),
+  maxAllocationPct: z.number().min(0).max(100),
+  maxDailyTrades: z.number().int().min(0),
+  maxSlippagePct: z.number().min(0).max(100),
+});
+
 const createAgentSchema = z.object({
   mode: z.enum(['paper', 'live']).optional(),
   capital: z.string().optional(),
   riskLevel: z.string().optional(),
+  policy: agentPolicySchema.optional(),
 });
 
 const parseIntentSchema = z.object({
@@ -77,6 +94,7 @@ agentsRouter.post('/', async (req, res) => {
         mode: parsed.data.mode,
         capital: parsed.data.capital,
         riskLevel: parsed.data.riskLevel,
+        policy: parsed.data.policy,
       }),
     });
   } catch (error) {
@@ -166,6 +184,20 @@ agentsRouter.post('/:id/delegation/revoke', (req, res) => {
   try {
     revokeWalletDelegation(row.delegator, row.public_key);
     res.json({ success: true, agent: getAgent(req.params.id) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+// Updates Permissions/Capital & Safety for an already-provisioned agent (e.g. the role agent
+// is minted first, then the wizard sets its policy from the same step) — see @kairos/types
+// AgentPolicy and agentcreation.md §3/§4.
+agentsRouter.post('/:id/policy', (req, res) => {
+  if (!loadOwnedAgent(req, res)) return;
+  const parsed = agentPolicySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.message });
+  try {
+    res.json({ success: true, agent: setPolicy(req.params.id, parsed.data) });
   } catch (error) {
     handleError(res, error);
   }
@@ -271,8 +303,10 @@ agentsRouter.delete('/:id', (req, res) => {
   try {
     deleteAgent(req.params.id);
   } catch (error) {
-    // trades/decisions/audit_log reference agents(id) ON DELETE RESTRICT — an agent with real
-    // trade/decision history can't be deleted (would orphan or silently erase that history).
+    // trades/decisions reference agents(id) ON DELETE RESTRICT — an agent with real trade/
+    // decision history can't be deleted (would orphan or silently erase that history).
+    // audit_log is ON DELETE CASCADE (see db.ts migrateAuditLogFkToCascade) — a provisioned-
+    // but-never-traded agent (only an `agent_provisioned` audit row) is deletable.
     if (error instanceof Error && /FOREIGN KEY constraint failed/.test(error.message)) {
       return res.status(409).json({ error: 'Cannot delete an agent with existing trade/decision history' });
     }

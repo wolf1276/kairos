@@ -9,7 +9,7 @@ import { decryptSecret } from './crypto.js';
 import { getKairosClient } from './kairos.js';
 import { getNetwork } from './config.js';
 import { getTurnkeyClient, getTurnkeyOrganizationId } from './turnkey.js';
-import type { AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.js';
+import type { AgentPolicy, AgentSummary, JsonSafeDelegation, StrategyConfig } from './types.js';
 import { logEvent } from './auditService.js';
 
 function toSummary(row: AgentRow): AgentSummary {
@@ -31,6 +31,7 @@ function toSummary(row: AgentRow): AgentSummary {
     capital: row.capital,
     riskLevel: row.risk_level,
     startedAt: row.started_at,
+    policy: row.policy_json ? (JSON.parse(row.policy_json) as AgentPolicy) : null,
   };
 }
 
@@ -50,7 +51,7 @@ export function getActiveDelegationForAgent(row: AgentRow): JsonSafeDelegation |
  * agent's key can never be used to sign for another, and each can be revoked independently
  * (via Turnkey, in addition to revoking its Kairos delegation on-chain).
  */
-export async function createAgent(owner: string, options?: { mode?: AgentMode; capital?: string; riskLevel?: string; role?: AgentRole }): Promise<AgentSummary> {
+export async function createAgent(owner: string, options?: { mode?: AgentMode; capital?: string; riskLevel?: string; role?: AgentRole; policy?: AgentPolicy }): Promise<AgentSummary> {
   const id = randomUUID();
   const signer = await TurnkeySigner.forNewAgent(getTurnkeyClient(), getTurnkeyOrganizationId(), id);
 
@@ -83,14 +84,33 @@ export async function createAgent(owner: string, options?: { mode?: AgentMode; c
     started_at: null,
     lock_token: null,
     lock_expires_at: null,
+    policy_json: options?.policy ? JSON.stringify(options.policy) : null,
   };
   getDb()
     .prepare(
-      `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, created_at, mode, capital, risk_level, started_at)
-       VALUES (@id, @owner, @public_key, @role, @encrypted_secret, @turnkey_private_key_id, @status, @created_at, @mode, @capital, @risk_level, @started_at)`
+      `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, created_at, mode, capital, risk_level, started_at, policy_json)
+       VALUES (@id, @owner, @public_key, @role, @encrypted_secret, @turnkey_private_key_id, @status, @created_at, @mode, @capital, @risk_level, @started_at, @policy_json)`
     )
     .run(row);
   return toSummary(row);
+}
+
+/** Updates the stored Permissions/Safety policy for an existing agent (e.g. provisioned before
+ *  the caller had computed policy, or edited after creation). Doesn't retroactively enforce
+ *  anything for trades already in flight. */
+export function setPolicy(id: string, policy: AgentPolicy): AgentSummary {
+  getDb().prepare('UPDATE agents SET policy_json = ? WHERE id = ?').run(JSON.stringify(policy), id);
+  return getAgent(id)!;
+}
+
+/** Counts trades this agent has executed since UTC midnight — used to enforce
+ *  `policy.maxDailyTrades` (agentcreation.md §3 "Maximum Daily Trades"). */
+export function tradesToday(agentId: string): number {
+  const startOfDayMs = new Date(new Date().toDateString()).getTime();
+  const row = getDb()
+    .prepare('SELECT COUNT(*) as n FROM trades WHERE agent_id = ? AND created_at >= ?')
+    .get(agentId, startOfDayMs) as { n: number };
+  return row.n;
 }
 
 export function listAgents(owner: string): AgentSummary[] {

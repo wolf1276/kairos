@@ -3,10 +3,10 @@
 // /api/delegate-sdk (a Next.js API route proxying the Kairos SDK), this talks directly to
 // that standalone service over HTTP.
 
-import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult } from '@kairos/types';
+import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentPolicy, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult } from '@kairos/types';
 import { getAgentsBackendBase } from '@/app/lib/backendBase';
 
-export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult };
+export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentPolicy, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType, IntentParseResult };
 
 export interface StrategyMeta {
   id: string;
@@ -402,7 +402,7 @@ export async function provisionRoleAgents(opts?: { mode?: AgentMode; capital?: s
 
 /** Idempotently creates (and, in paper mode, starts) a single role agent — lets the UI offer
  *  "pick one role, then set its delegation" instead of minting all three roles at once. */
-export async function provisionSingleRoleAgent(opts: { role: AgentRole; mode?: AgentMode; capital?: string }): Promise<AgentSummary> {
+export async function provisionSingleRoleAgent(opts: { role: AgentRole; mode?: AgentMode; capital?: string; policy?: AgentPolicy }): Promise<AgentSummary> {
   const data = await request<{ agent: AgentSummary }>("/api/agents/provision-role", {
     method: "POST",
     body: JSON.stringify(opts),

@@ -1,644 +1,217 @@
-# Kairos Agent Creation Flow
+# Kairos Engineering Pending
 
-Version: 1.0
+Status: Active
 
----
+This document tracks all remaining engineering work required before Kairos reaches v1.0.
 
-# Philosophy
+Rules
 
-Creating an agent should feel like **hiring an autonomous portfolio manager**, not configuring a trading bot.
-
-The user describes **what** they want to achieve.
-
-Kairos determines **how** to achieve it.
-
-The user should never need to understand:
-
-- Smart Contracts
-- Delegation Framework
-- Runtime
-- Pipelines
-- Memory
-- Strategies
-- Protocol Selection
-
-Kairos handles those automatically.
+- Never implement mocked functionality.
+- Backend is the source of truth.
+- Every completed task must be removed from this file.
+- Every new feature must have runtime verification before being marked complete.
 
 ---
 
-# User Journey
+# P0 — Critical
 
-```
-Connect Wallet
+These block production readiness.
 
-↓
+## Agent Creation
 
-Create Agent
-
-↓
-
-Describe Goal
-
-↓
-
-AI Understanding
-
-↓
-
-Capital & Safety
-
-↓
-
-Permissions
-
-↓
-
-Review Plan
-
-↓
-
-Smart Wallet Validation
-
-↓
-
-Delegation Approval
-
-↓
-
-Agent Creation
-
-↓
-
-Mission Control
-```
+- [ ] Complete end-to-end browser verification of the entire Agent Creation workflow. (IN PROGRESS — session 2026-07-09: instrumented Playwright run with real Ed25519 signing against the live testnet backend; only reached the Agents page / Connect step before this pass was cut short. Steps 4-19 of the checklist not yet driven live — see apps/web/e2e/live-qa.spec.ts.)
+- [x] Verify no Freighter popup occurs when simply opening the Agents page. (2026-07-09: live network capture on http://localhost:3000/dashboard/agents showed zero calls to /api/auth/challenge or /api/auth/verify before the user clicked "Connect Freighter" — confirms no auto sign/connect prompt fires just from loading the page. See apps/web/e2e/live-qa.spec.ts test "1-3".)
+- [ ] Verify no runtime exceptions occur during Create Agent.
+- [ ] Verify no 404s anywhere in the wizard.
+- [ ] Verify review → Smart Wallet → Delegation → Agent Creation completes successfully.
 
 ---
 
-# Step 1 — Describe Your Goal
+## Policy Enforcement
 
-The first screen asks only one question.
+Implement runtime enforcement for every persisted policy.
 
-## Question
+### Allocation
 
-> **What do you want this agent to accomplish?**
+- [x] Enforce maxAllocationPct. (backend/src/tick.ts `allocationGate`, backend/src/validation.ts `validatePolicy` — blocks any single trade that would commit more than maxAllocationPct of the agent's capital, across dca/quant/limit/role tick paths.)
 
-Large natural language input.
+### Capabilities
 
-Examples
+- [x] Enforce Swap permission. (quant + limit ticks + strategic role — backend/src/tick.ts `capabilityGate`, backend/src/validation.ts `ROLE_CAPABILITY`.)
+- [x] Enforce Yield permission. (yield role tick.)
+- [x] Enforce Rebalance permission. (balancer role tick.)
+- [x] Enforce DCA permission. (dca tick.)
+- [ ] Enforce Hold Stable Assets permission. (no runtime path currently reads/writes stable-asset holding behavior — needs a strategy/decision hook before this can be gated, not just a policy check.)
 
-- Grow my XLM over the long term.
-- Maximize yield while keeping risk low.
-- Preserve my capital.
-- Generate passive income.
-- Rebalance my portfolio automatically.
+### Future Capabilities
 
----
+- [ ] Enforce Borrow permission. (no borrow execution path exists yet.)
+- [ ] Enforce Leverage permission. (no leverage execution path exists yet.)
 
-## Quick Templates
+### Slippage
 
-```
-🌾 Yield Optimizer
-
-📈 Growth
-
-📊 Portfolio Manager
-
-🛡 Capital Preservation
-
-💵 Passive Income
-
-✨ Custom
-```
-
-Templates simply pre-fill the prompt.
+- [x] Apply maxSlippagePct consistently across every execution path. (executeQuantTrade already took this; role-tick quant trades share the same executor.)
 
 ---
 
-# Step 2 — AI Understanding
+## Runtime
 
-Kairos analyzes the request.
-
-Nothing is created yet.
-
-Generate an editable Agent Specification.
-
-Display
-
-```
-Mission
-
-Objective
-
-Risk Level
-
-Suggested Capital
-
-Execution Style
-
-Confidence
-```
-
-Example
-
-```
-Mission
-
-Yield Optimization
-
-Objective
-
-Long-term Growth
-
-Risk
-
-Balanced
-
-Execution
-
-Autonomous
-
-Confidence
-
-94%
-```
-
-Allow the user to edit every field.
-
-If required information is missing,
-
-ask clarification questions.
-
-Never invent values.
+- [ ] Verify every execution path goes through PolicyEngine.
+- [ ] Verify no execution path bypasses policy validation.
+- [ ] Verify fail-closed behavior.
 
 ---
 
-# Step 3 — Capital & Safety
+# P1 — High
 
-## Capital
+## Mission Control
 
-What should this agent manage?
-
-```
-○ Entire Smart Wallet
-
-○ Percentage of Smart Wallet
-
-○ Fixed Amount
-```
-
-If Percentage
-
-```
-30%
-```
-
-If Fixed Amount
-
-```
-500 XLM
-```
+- [ ] Replace placeholder metrics with real data.
+- [ ] Remove any remaining fake values.
+- [ ] Verify lifecycle states.
+- [ ] Improve empty/loading states.
 
 ---
 
-## Safety
+## Dashboard
 
-Keep this human-readable.
-
-```
-Risk
-
-○ Conservative
-
-● Balanced
-
-○ Aggressive
-
-────────────────────────
-
-Maximum Allocation
-
-20%
-
-────────────────────────
-
-Maximum Daily Trades
-
-5
-
-────────────────────────
-
-Maximum Slippage
-
-0.5%
-```
-
-Never expose backend configuration.
+- [ ] Implement real Portfolio Allocation.
+- [ ] Implement portfolio history backend.
+- [ ] Verify Recent Activity accuracy.
 
 ---
 
-# Step 4 — Permissions
+## Smart Wallet
 
-The user approves capabilities.
-
-Not protocols.
-
-Example
-
-```
-Allow this agent to:
-
-☑ Swap Assets
-
-☑ Earn Yield
-
-☑ Rebalance Portfolio
-
-☑ Dollar Cost Average (DCA)
-
-☑ Hold Stable Assets
-
-☐ Borrow Assets
-
-☐ Use Leverage
-```
-
-Permissions become the Delegation Policy.
+- [ ] Browser verification of:
+  - Deposit
+  - Withdraw
+  - Refresh
+  - Explorer
+  - Registry recovery
 
 ---
 
-# Step 5 — AI Plan
+## Delegation
 
-Kairos explains the generated plan.
-
-Example
-
-```
-Kairos will:
-
-✓ Manage 30% of your Smart Wallet
-
-✓ Search for the best available yield
-
-✓ Automatically rebalance
-
-✓ Never use leverage
-
-✓ Never exceed your allocation limit
-
-✓ Stay within your approved permissions
-```
-
-This is a review screen.
-
-Nothing has been created yet.
+- [ ] Verify delegation creation.
+- [ ] Verify delegation recovery.
+- [ ] Verify revoke flow.
+- [ ] Verify on-chain state.
 
 ---
 
-# Step 6 — Smart Wallet Validation
+## Runtime Validation
 
-Verify
-
-```
-Connected Wallet
-
-↓
-
-Smart Wallet Exists?
-```
+- [ ] Verify Runtime registration.
+- [ ] Verify Memory initialization.
+- [ ] Verify Benchmark initialization.
+- [ ] Verify Scheduler registration.
 
 ---
 
-If Smart Wallet exists
+# P2 — Medium
 
-```
-✓ Smart Wallet Found
+## Cleanup
 
-Balance
-
-1250 XLM
-
-Continue
-```
+- [ ] Remove dead parser files.
+- [ ] Remove unused endpoints.
+- [ ] Remove unused components.
+- [ ] Remove duplicate polling.
+- [ ] Consolidate duplicated runtime logic.
 
 ---
 
-If Smart Wallet does not exist
+## Testing
 
-```
-No Smart Wallet Found
+Add Playwright coverage for:
 
-Create Smart Wallet
-```
-
-Create
-
-↓
-
-Wait for confirmation
-
-↓
-
-Refresh
-
-↓
-
-Continue
+- [ ] Connect Wallet
+- [ ] Smart Wallet
+- [ ] Create Agent
+- [ ] Delegation
+- [ ] Start Agent
+- [ ] Stop Agent
+- [ ] Logout/Login
+- [ ] Refresh
+- [ ] Browser reload
 
 ---
 
-If balance is insufficient
+## Performance
 
-```
-Smart Wallet requires funds.
-
-Deposit funds before this agent can begin autonomous execution.
-
-[Deposit]
-
-[Refresh Balance]
-```
-
-Never continue until requirements are satisfied.
+- [ ] Reduce unnecessary polling.
+- [ ] Optimize runtime refresh.
+- [ ] Cache safe read-only data.
 
 ---
 
-# Step 7 — Delegation Approval
+# P3 — Polish
 
-Present a human-readable approval.
+## UI
 
-Example
-
-```
-You are authorizing Kairos to:
-
-✓ Swap Assets
-
-✓ Earn Yield
-
-✓ Rebalance Portfolio
-
-Maximum Managed Capital
-
-30%
-
-Maximum Allocation
-
-20%
-
-Leverage
-
-Disabled
-```
-
-User must explicitly approve.
-
-No blockchain terminology unless required.
+- [ ] Improve animations.
+- [ ] Improve loading transitions.
+- [ ] Improve success screens.
+- [ ] Improve error messages.
+- [ ] Improve mobile responsiveness.
 
 ---
 
-# Step 8 — Agent Creation
+# Security
 
-Display progress.
-
-```
-Creating Agent...
-
-✓ Policy
-
-✓ Smart Wallet
-
-✓ Delegation
-
-✓ Runtime
-
-✓ Memory
-
-✓ Benchmark
-
-✓ Scheduler
-
-✓ Agent
-```
-
-Everything is automatic.
+- [ ] Rotate all production secrets.
+- [ ] Verify no secrets are committed.
+- [ ] Audit JWT configuration.
+- [ ] Audit Smart Wallet permissions.
+- [ ] Audit Delegation permissions.
 
 ---
 
-# Step 9 — Success
+# Production Readiness Checklist
 
-```
-Yield Optimizer
+## Backend
 
-Ready
-
-Status
-
-Stopped
-
-Managed Capital
-
-375 XLM
-
-────────────────────────
-
-Open Mission Control
-
-Create Another Agent
-```
-
-The runtime remains stopped until the user explicitly starts it.
+- [x] Authentication
+- [x] Intent Parser
+- [x] Agent Lifecycle
+- [x] Smart Wallet
+- [x] Registry
+- [x] Delegation
+- [x] Policy Persistence
+- [ ] Policy Enforcement
+- [ ] Full Runtime Verification
 
 ---
 
-# Backend Flow
+## Frontend
 
-```
-Natural Language
-
-↓
-
-Intent Parser
-
-↓
-
-AgentSpec
-
-↓
-
-Validation
-
-↓
-
-Policy Generator
-
-↓
-
-Risk Configuration
-
-↓
-
-Delegation Generator
-
-↓
-
-Smart Wallet Validation
-
-↓
-
-Delegation Creation
-
-↓
-
-Runtime Registration
-
-↓
-
-Memory Initialization
-
-↓
-
-Benchmark Initialization
-
-↓
-
-Agent Creation
-
-↓
-
-Mission Control
-```
+- [x] Dashboard
+- [x] Smart Wallet Panel
+- [x] Agent Creation UI
+- [ ] Browser Verification
+- [ ] Mission Control Polish
+- [ ] End-to-End Tests
 
 ---
 
-# Data Generated Automatically
+## Launch Criteria
 
-The user never manually configures:
+Kairos is ready for v1.0 when:
 
-- Runtime
-- Scheduler
-- Memory
-- Benchmark
-- Strategy Registry
-- Decision Engine
-- Pipeline
-- Execution Engine
-
-Kairos generates them from the approved AgentSpec.
-
----
-
-# Failure Handling
-
-## Parser Failure
-
-Ask clarification.
-
-Never guess.
+- [ ] No mocked values remain.
+- [ ] No fake progress indicators remain.
+- [ ] All policies are enforced.
+- [ ] All execution paths are verified.
+- [ ] Smart Wallet flow is verified.
+- [ ] Delegation flow is verified.
+- [ ] Agent Creation is fully verified.
+- [ ] Mission Control is production-ready.
+- [ ] Playwright E2E passes.
+- [ ] Secrets rotated.
+- [ ] Production deployment verified.
 
 ---
 
-## Smart Wallet Missing
-
-Create Smart Wallet.
-
-Retry automatically.
-
----
-
-## Smart Wallet Not Funded
-
-Prompt user to deposit funds.
-
-Wait for confirmation.
-
----
-
-## Delegation Rejected
-
-Stop the workflow.
-
-Do not partially create resources.
-
----
-
-## Agent Creation Failure
-
-Rollback where safe.
-
-Display the failure.
-
-Allow retry.
-
----
-
-## Network Failure
-
-Display retry.
-
-Never fabricate success.
-
----
-
-# Design Principles
-
-Natural language first.
-
-AI understands intent.
-
-Human reviews.
-
-Human approves.
-
-Kairos builds everything else.
-
-Never expose unnecessary blockchain complexity.
-
-Never expose internal architecture.
-
-Never use mocked values.
-
-Never create duplicate Smart Wallets.
-
-Never create duplicate Delegations.
-
-Always fail safely.
-
----
-
-# Future Enhancements
-
-These are intentionally **out of scope** for Version 1.0:
-
-- Multi-agent templates
-- Strategy marketplace
-- Protocol preferences
-- Advanced execution preferences
-- Scheduled execution windows
-- Multi-wallet management
-- Shared agent templates
-
----
-
-# Success Criteria
-
-A new user should be able to:
-
-- Connect a wallet.
-- Describe a financial goal in plain English.
-- Review the AI-generated plan.
-- Approve permissions.
-- Automatically configure Smart Wallet and Delegation.
-- Create an autonomous agent.
-- Reach Mission Control.
-
-Without needing to understand:
-
-- DeFi protocols
-- Smart contracts
-- Delegation Framework
-- Runtime configuration
-- Pipelines
-- Memory systems
-- Strategy engines
-
-Kairos handles all technical complexity automatically.
+Last Updated: July 2026
+Owner: Kairos Engineering

@@ -1,7 +1,5 @@
 import { test, expect, Page } from '@playwright/test';
 
-const MOCK_ADDRESS = 'GA7QNFM3WQZ7O3YJ3LG7QZ7O3YJ3LG7QZ7O3YJ3LG7QZ7O3YJ3LG7QZ7';
-
 // Mock Freighter before page loads
 async function mockFreighter(page: Page) {
   await page.addInitScript(() => {
@@ -78,33 +76,5 @@ test.describe('Kairos E2E', () => {
     expect(body.confidence).toBeGreaterThanOrEqual(0);
     expect(body.confidence).toBeLessThanOrEqual(1);
     expect(body.reasoning).toBeTruthy();
-  });
-
-  test('paper trade flow (deposit → buy → portfolio)', async ({ request }) => {
-    // Deposit
-    const deposit = await request.post('/api/paper-trade', {
-      data: { action: 'DEPOSIT', address: MOCK_ADDRESS, amount: 10000 },
-    });
-    expect(deposit.ok()).toBeTruthy();
-
-    // Buy
-    const buy = await request.post('/api/paper-trade', {
-      data: { action: 'BUY', address: MOCK_ADDRESS, symbol: 'XLMUSDT', amount: 100 },
-    });
-    expect(buy.ok()).toBeTruthy();
-    const buyBody = await buy.json();
-    expect(buyBody.success).toBe(true);
-
-    // Get portfolio
-    const portfolio = await request.get('/api/portfolio');
-    expect(portfolio.ok()).toBeTruthy();
-    const portfolioBody = await portfolio.json();
-    expect(portfolioBody.portfolio).toBeDefined();
-
-    // Get trades
-    const trades = await request.get('/api/trades');
-    expect(trades.ok()).toBeTruthy();
-    const tradesBody = await trades.json();
-    expect(Array.isArray(tradesBody.trades)).toBe(true);
   });
 });

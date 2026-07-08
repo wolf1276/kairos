@@ -74,7 +74,7 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     const positionBefore = getPosition(row.id, config.pair) ?? null;
 
     // 4–6. Validation pipeline: policy → delegation → risk.
-    const policy = validatePolicy(config, decision);
+    const policy = validatePolicy(config, decision, row);
     logEvent({ agentId: row.id, owner: row.owner, eventType: 'policy_check', mode: row.mode, mpcAccount: row.public_key, pair: config.pair, policyValidation: policy, message: `Policy ${policy.ok ? 'passed' : `blocked: ${policy.reason}`}` });
 
     const delegation = validateDelegation(row);

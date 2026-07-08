@@ -4,7 +4,16 @@
 // failing stage aborts execution before any funds move.
 import { getActiveDelegationForAgent } from './agentService.js';
 import type { AgentRow } from './db.js';
-import type { AgentDecision, MarketContext, RoleStrategyConfig } from './types.js';
+import type { AgentDecision, AgentPolicy, MarketContext, RoleStrategyConfig } from './types.js';
+
+/** Role → capability mapping for the Permissions wizard step (agentcreation.md §4): the
+ *  strategic role trades via spot swaps, yield reallocates into yield venues, and balancer
+ *  rebalances the portfolio toward its targets. */
+const ROLE_CAPABILITY: Record<RoleStrategyConfig['role'], keyof AgentPolicy['capabilities']> = {
+  strategic: 'swap',
+  yield: 'yield',
+  balancer: 'rebalance',
+};
 
 export interface ValidationResult {
   ok: boolean;
@@ -29,14 +38,34 @@ export interface RiskResult extends ValidationResult {
 const MAX_DRAWDOWN_PCT = 20;
 
 /** Policy check: the decision must clear the agent's minimum confidence and name a concrete,
- *  executable action. HOLD is always policy-valid (it just means "do nothing this tick"). */
-export function validatePolicy(config: RoleStrategyConfig, decision: AgentDecision): ValidationResult {
+ *  executable action, the role's capability must be granted, and the trade must not exceed
+ *  maxAllocationPct of capital (agentcreation.md §3/§4). HOLD is always policy-valid (it just
+ *  means "do nothing this tick"). `row` supplies the persisted AgentPolicy + capital; no policy
+ *  on record means no capability/allocation restriction. */
+export function validatePolicy(config: RoleStrategyConfig, decision: AgentDecision, row?: AgentRow): ValidationResult {
   if (decision.action === 'hold') return { ok: true };
   if (decision.confidence < config.minConfidence) {
     return { ok: false, reason: `Confidence ${decision.confidence.toFixed(2)} below policy minimum ${config.minConfidence}` };
   }
   if (BigInt(config.amountPerTrade) <= 0n) {
     return { ok: false, reason: 'Per-trade size is zero — nothing to execute' };
+  }
+  const policy = row?.policy_json ? (JSON.parse(row.policy_json) as AgentPolicy) : null;
+  if (policy) {
+    const capability = ROLE_CAPABILITY[config.role];
+    if (!policy.capabilities[capability]) {
+      return { ok: false, reason: `Capability "${capability}" is disabled by this agent's policy` };
+    }
+    if (row?.capital) {
+      const capital = parseFloat(row.capital);
+      if (capital > 0) {
+        const amountUnits = Number(BigInt(config.amountPerTrade)) / 1e7;
+        const pct = (amountUnits / capital) * 100;
+        if (pct > policy.maxAllocationPct) {
+          return { ok: false, reason: `Trade would commit ${pct.toFixed(1)}% of capital, exceeding the ${policy.maxAllocationPct}% maxAllocationPct policy` };
+        }
+      }
+    }
   }
   return { ok: true };
 }

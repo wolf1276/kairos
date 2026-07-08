@@ -5,24 +5,32 @@
 // Validation → Delegation Approval → Agent Creation → Success. Nothing here mocks data: the AI
 // Understanding step calls the backend Intent Parser (POST /api/agents/parse-intent — the single
 // production parser/prompt/AgentSpec schema for Agent Creation), the balance/validation steps read
-// the live smart-wallet balance, and creation provisions a real role agent + funds it from the
-// smart wallet. The user describes *what* they want; Kairos maps it to a role/strategy/funding.
+// the live smart-wallet balance, and creation provisions a real role agent, attaches a real
+// on-chain delegation (signed in the Approval step, per agentcreation.md §7), and funds it from
+// the smart wallet. Permissions + Capital & Safety limits are sent as the agent's AgentPolicy
+// (POST /api/agents/provision-role's `policy`) and enforced server-side (see backend/src/tick.ts)
+// — not just displayed and discarded. The user describes *what* they want; Kairos maps it to a
+// role/strategy/policy/delegation/funding.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   X, ChevronRight, ChevronLeft, Check, Sprout, TrendingUp, PieChart, ShieldCheck,
   Coins, Sparkles, AlertTriangle, RefreshCw, Rocket, ArrowRight,
 } from "lucide-react";
+import { Asset } from "@stellar/stellar-sdk";
 import { Badge } from "@/app/components/ui/Badge";
 import { Spinner } from "@/app/components/ui/Spinner";
 import { WalletPicker } from "@/app/components/WalletPicker";
 import type { SmartWalletInfo } from "@/app/hooks/useSmartWallet";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
+import { useCreateDelegation } from "@/app/hooks/useCreateDelegation";
 import { withdrawFromSmartWallet } from "@/app/lib/stellar";
 import {
+  attachAgentDelegation,
   getAgentsSummary,
   parseAgentIntent,
   provisionSingleRoleAgent,
+  type AgentPolicy,
   type AgentRole,
   type AgentSummary,
 } from "@/app/lib/agentsBackend";
@@ -108,9 +116,12 @@ const STEPS = [
   "Smart Wallet", "Approval", "Creating", "Ready",
 ] as const;
 
-// Progress checklist for the creation step (doc §8) — each entry is tied to a real await below,
-// none are cosmetic.
-const CREATION_TASKS = ["Policy", "Smart Wallet", "Delegation", "Runtime", "Memory", "Benchmark", "Scheduler", "Agent"] as const;
+// Progress checklist for the creation step (doc §8). Each entry maps to exactly one real await
+// in runCreation below — no cosmetic/decorative entries. "Runtime"/"Memory"/"Benchmark"/
+// "Scheduler" from the doc's illustrative list aren't separate backend steps in this
+// implementation (see backend/src/provisionService.ts — a role agent's runtime/memory/
+// benchmark bookkeeping is implicit in "Agent"), so they're omitted rather than faked.
+const CREATION_TASKS = ["Agent", "Policy", "Delegation", "Funding"] as const;
 type TaskState = "pending" | "active" | "done";
 
 function fmtXlm(n: number): string {
@@ -120,6 +131,7 @@ function fmtXlm(n: number): string {
 export function AgentCreationWizard({
   smartWalletAddress,
   smartWallets,
+  walletOwner,
   networkPassphrase,
   sorobanRpcUrl,
   deploying,
@@ -130,6 +142,7 @@ export function AgentCreationWizard({
 }: {
   smartWalletAddress: string | null;
   smartWallets: SmartWalletInfo[];
+  walletOwner: string;
   networkPassphrase: string;
   sorobanRpcUrl?: string;
   deploying: boolean;
@@ -177,6 +190,7 @@ export function AgentCreationWizard({
   }, [templateId, spec, goalText]);
 
   const balances = useSmartWalletBalances(delegatorWallet, networkPassphrase, sorobanRpcUrl);
+  const { createDelegation } = useCreateDelegation(networkPassphrase, walletOwner);
 
   const managedCapital = useMemo(() => {
     const bal = balances.xlmBalance;
@@ -230,29 +244,63 @@ export function AgentCreationWizard({
     setStep(7);
     const init: Record<string, TaskState> = {};
     CREATION_TASKS.forEach((t) => (init[t] = "pending"));
-    init["Smart Wallet"] = "done"; // validated in step 6
-    init["Policy"] = "active";
+    init["Agent"] = "active";
     setTasks({ ...init });
     try {
-      // Guard against duplicate provisioning/funding: if this owner already has this role agent,
-      // reuse it and skip the funding transfer (doc: "Never create duplicate ... Always fail safely").
+      const policy: AgentPolicy = {
+        capabilities: caps,
+        maxAllocationPct: parseFloat(maxAllocationPct) || 0,
+        maxDailyTrades: parseInt(maxDailyTrades, 10) || 0,
+        maxSlippagePct: parseFloat(maxSlippagePct) || 0,
+      };
+      // One rounded amount used for every step below (provision, delegation spend-limit,
+      // funding) — previously provision and withdraw each rounded `managedCapital` differently,
+      // sending two different amount strings for the "same" capital.
+      const capitalAmount = Math.round(managedCapital * 1e7) / 1e7; // Stellar's native 7dp precision
+      const capitalStr = String(capitalAmount);
+
+      // Guard against duplicate provisioning/delegating/funding: if this owner already has this
+      // role agent, reuse it and skip delegation + funding (doc: "Never create duplicate
+      // Delegations ... Always fail safely").
       const existing = await getAgentsSummary().catch(() => []);
       const already = existing.find((d) => d.role === role);
 
-      const agent = await provisionSingleRoleAgent({ role, mode: "live", capital: String(Math.round(managedCapital)) });
-      for (const t of ["Policy", "Runtime", "Memory", "Benchmark", "Scheduler", "Agent"] as const) {
-        init[t] = "done";
-      }
+      // Permissions (doc §4) become this policy, sent + persisted in the same call that mints
+      // the agent — previously collected in the UI and silently discarded.
+      let agent = await provisionSingleRoleAgent({ role, mode: "live", capital: capitalStr, policy });
+      init["Agent"] = "done";
+      init["Policy"] = "done";
       setTasks({ ...init });
 
       if (!already) {
-        // Fund the live agent from the smart wallet — the real mechanism that puts capital under
-        // management for a role agent (requires an explicit wallet signature = the user's approval).
+        // Delegation Approval (doc §7): a real on-chain delegation, signed by the user's
+        // wallet — required for a live agent to ever pass the backend's start gate
+        // (validateStartPrerequisites). Previously skipped entirely, leaving wizard-created
+        // agents unable to start.
         init["Delegation"] = "active";
         setTasks({ ...init });
-        await withdrawFromSmartWallet(delegatorWallet, String(managedCapital), networkPassphrase, sorobanRpcUrl, agent.publicKey);
+        const result = await createDelegation(agent.publicKey, delegatorWallet, [
+          {
+            type: "spend-limit",
+            token: Asset.native().contractId(networkPassphrase),
+            spendLimit: BigInt(Math.round(capitalAmount * 10_000_000)).toString(),
+            period: "86400",
+          },
+        ]);
+        if (!result) throw new Error("Delegation was not approved.");
+        agent = await attachAgentDelegation(agent.id, result.delegation);
+        init["Delegation"] = "done";
+        setTasks({ ...init });
+
+        // Funding: transfers the managed capital into the agent's own account — the mechanism
+        // role agents actually trade from (see backend/src/provisionService.ts).
+        init["Funding"] = "active";
+        setTasks({ ...init });
+        await withdrawFromSmartWallet(delegatorWallet, capitalStr, networkPassphrase, sorobanRpcUrl, agent.publicKey);
+      } else {
+        init["Delegation"] = "done";
       }
-      init["Delegation"] = "done";
+      init["Funding"] = "done";
       setTasks({ ...init });
 
       setCreatedAgent(agent);
@@ -264,7 +312,7 @@ export function AgentCreationWizard({
     } finally {
       setCreating(false);
     }
-  }, [delegatorWallet, role, managedCapital, networkPassphrase, sorobanRpcUrl]);
+  }, [delegatorWallet, role, managedCapital, networkPassphrase, sorobanRpcUrl, caps, maxAllocationPct, maxDailyTrades, maxSlippagePct, createDelegation]);
 
   const capitalSummary =
     capitalMode === "entire" ? "Entire smart wallet"
@@ -529,7 +577,7 @@ export function AgentCreationWizard({
             <div className="space-y-4">
               <div>
                 <h2 className="font-display text-base font-medium text-text-primary">You are authorizing Kairos to…</h2>
-                <p className="mt-1 text-xs text-text-muted">Approving transfers the managed capital into this agent from your smart wallet. You&apos;ll confirm in your wallet.</p>
+                <p className="mt-1 text-xs text-text-muted">Approving signs an on-chain delegation from your smart wallet to this agent, then transfers the managed capital. You&apos;ll confirm both in your wallet.</p>
               </div>
               <div className="space-y-2 rounded-xl border border-white/5 bg-bg-elevated p-4">
                 {approvedCaps.map((c) => (

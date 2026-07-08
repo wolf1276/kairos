@@ -31,10 +31,11 @@ export function insertAgent(
     started_at: overrides.started_at ?? Date.now(),
     lock_token: overrides.lock_token ?? null,
     lock_expires_at: overrides.lock_expires_at ?? null,
+    policy_json: overrides.policy_json ?? null,
   };
   db.prepare(
-    `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, delegator, strategy, strategy_config_json, last_tick_at, last_result, last_error, created_at, mode, capital, risk_level, started_at)
-     VALUES (@id, @owner, @public_key, @role, @encrypted_secret, @turnkey_private_key_id, @status, @delegator, @strategy, @strategy_config_json, @last_tick_at, @last_result, @last_error, @created_at, @mode, @capital, @risk_level, @started_at)`
+    `INSERT INTO agents (id, owner, public_key, role, encrypted_secret, turnkey_private_key_id, status, delegator, strategy, strategy_config_json, last_tick_at, last_result, last_error, created_at, mode, capital, risk_level, started_at, policy_json)
+     VALUES (@id, @owner, @public_key, @role, @encrypted_secret, @turnkey_private_key_id, @status, @delegator, @strategy, @strategy_config_json, @last_tick_at, @last_result, @last_error, @created_at, @mode, @capital, @risk_level, @started_at, @policy_json)`
   ).run(row);
   return row;
 }

@@ -1,10 +1,10 @@
 import { Address, Asset, BASE_FEE, Horizon, Operation, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { signTransaction } from '@wolf1276/kairos-sdk';
 import { getKairosClient } from './kairos.js';
-import { getAgentSigner, getActiveDelegationForAgent, recordTick, stopAgent } from './agentService.js';
+import { getAgentSigner, getActiveDelegationForAgent, recordTick, stopAgent, tradesToday } from './agentService.js';
 import { mapExecutionError, mapThrownError } from './errors.js';
 import type { AgentRow } from './db.js';
-import type { DcaStrategyConfig, JsonSafeDelegation, LimitStrategyConfig, QuantStrategyConfig, RoleStrategyConfig } from './types.js';
+import type { AgentPolicy, DcaStrategyConfig, JsonSafeDelegation, LimitStrategyConfig, QuantStrategyConfig, RoleStrategyConfig } from './types.js';
 import { getCandles, getLatestPrice, TESTNET_USDC_ISSUER } from './priceHistory.js';
 import { getStrategy } from './strategies/index.js';
 import { getNetwork } from './config.js';
@@ -13,6 +13,40 @@ import { executePaperQuantTrade, executePaperLimitOrder } from './paperExecutor.
 import { recordCompletedTrade } from './executionEngine.js';
 
 const HORIZON_TESTNET_URL = 'https://horizon-testnet.stellar.org';
+
+/** Reads the agent's stored policy, if any. No policy on record (agents created before this
+ *  existed, or without explicit policy input) is treated as unrestricted. */
+function getPolicy(row: AgentRow): AgentPolicy | null {
+  return row.policy_json ? (JSON.parse(row.policy_json) as AgentPolicy) : null;
+}
+
+/** Enforces the Permissions wizard step (agentcreation.md §4): blocks a tick outright if the
+ *  capability it would exercise was never granted. Returns a block reason, or null if clear. */
+export function capabilityGate(row: AgentRow, capability: keyof AgentPolicy['capabilities']): string | null {
+  const policy = getPolicy(row);
+  if (!policy) return null;
+  if (!policy.capabilities[capability]) {
+    return `Capability "${capability}" is disabled by this agent's policy`;
+  }
+  return null;
+}
+
+/** Enforces the Capital & Safety wizard step's "Maximum Allocation" limit (agentcreation.md
+ *  §3): a single trade may not commit more than maxAllocationPct of the agent's allocated
+ *  capital. No policy, or no capital on record, means no cap (e.g. paper agents predating
+ *  policy persistence). `tradeAmountUnits` is in the pair's natural (decimal) units, matching
+ *  `row.capital`'s convention. */
+export function allocationGate(row: AgentRow, tradeAmountUnits: number): string | null {
+  const policy = getPolicy(row);
+  if (!policy || !row.capital) return null;
+  const capital = parseFloat(row.capital);
+  if (!(capital > 0)) return null;
+  const pct = (tradeAmountUnits / capital) * 100;
+  if (pct > policy.maxAllocationPct) {
+    return `Trade would commit ${pct.toFixed(1)}% of capital, exceeding the ${policy.maxAllocationPct}% maxAllocationPct policy`;
+  }
+  return null;
+}
 
 function deserializeDelegation(d: JsonSafeDelegation) {
   return {
@@ -40,6 +74,18 @@ export async function runAgentTick(row: AgentRow): Promise<void> {
     return; // not due yet
   }
 
+  // Enforces the wizard's Capital & Safety "Maximum Daily Trades" limit (agentcreation.md §3)
+  // for every strategy type — previously collected in the UI but never sent to or checked by
+  // the backend. No policy on record (agents created before this existed, or without explicit
+  // policy input) means no cap.
+  if (row.policy_json) {
+    const policy = JSON.parse(row.policy_json) as AgentPolicy;
+    if (policy.maxDailyTrades > 0 && tradesToday(row.id) >= policy.maxDailyTrades) {
+      recordTick(row.id, { ok: true, message: `Daily trade limit reached (${policy.maxDailyTrades}) — skipping until tomorrow` });
+      return;
+    }
+  }
+
   if (strategy.type === 'role') {
     // Autonomous role agents (yield/strategic/balancer) run their own decision pipeline.
     const { runRoleTick } = await import('./roleTick.js');
@@ -61,6 +107,18 @@ export async function runAgentTick(row: AgentRow): Promise<void> {
 }
 
 async function runDcaTick(row: AgentRow, strategy: DcaStrategyConfig): Promise<void> {
+  const capBlock = capabilityGate(row, 'dca');
+  if (capBlock) {
+    recordTick(row.id, { ok: true, message: capBlock });
+    return;
+  }
+  const amountUnits = Number(BigInt(strategy.amountPerTick)) / 1e7;
+  const allocBlock = allocationGate(row, amountUnits);
+  if (allocBlock) {
+    recordTick(row.id, { ok: true, message: allocBlock });
+    return;
+  }
+
   // Re-checked every tick (not just at attach time) so a mid-flight revoke or pause takes
   // effect on the next tick, not just at start-up.
   const delegationJson = getActiveDelegationForAgent(row);
@@ -128,6 +186,17 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
       return;
     }
 
+    const capBlock = capabilityGate(row, 'swap');
+    if (capBlock) {
+      recordTick(row.id, { ok: true, message: capBlock });
+      return;
+    }
+    const allocBlock = allocationGate(row, Number(BigInt(strategy.amountPerTrade)) / 1e7);
+    if (allocBlock) {
+      recordTick(row.id, { ok: true, message: allocBlock });
+      return;
+    }
+
     if (row.mode === 'live' && !getActiveDelegationForAgent(row)) {
       logEvent({ agentId: row.id, owner: row.owner, eventType: 'delegation_invalid', mode: row.mode, mpcAccount: row.public_key, pair: strategy.pair, message: 'Live quant agent has no active delegation — cannot trade without on-chain authority' });
       recordTick(row.id, { ok: false, message: 'No active delegation — attach one before starting a live quant agent' });
@@ -158,10 +227,11 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
     // natural units (7dp), so convert once here and use the converted value everywhere below.
     const amount = (BigInt(strategy.amountPerTrade) / 10_000_000n).toString() + '.' + (BigInt(strategy.amountPerTrade) % 10_000_000n).toString().padStart(7, '0');
 
+    const policy = row.policy_json ? (JSON.parse(row.policy_json) as AgentPolicy) : null;
     const txHash =
       row.mode === 'paper'
         ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal)
-        : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal, price);
+        : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal, price, policy?.maxSlippagePct);
 
     recordCompletedTrade({
       row,
@@ -210,6 +280,17 @@ export async function runLimitTick(row: AgentRow, strategy: LimitStrategyConfig)
       signal: strategy.side,
       message: `Limit trigger met: price ${price} vs ${strategy.triggerComparator} ${trigger}`,
     });
+
+    const capBlock = capabilityGate(row, 'swap');
+    if (capBlock) {
+      recordTick(row.id, { ok: true, message: capBlock });
+      return;
+    }
+    const allocBlock = allocationGate(row, parseFloat(strategy.quantity));
+    if (allocBlock) {
+      recordTick(row.id, { ok: true, message: allocBlock });
+      return;
+    }
 
     if (row.mode === 'live' && !getActiveDelegationForAgent(row)) {
       logEvent({ agentId: row.id, owner: row.owner, eventType: 'delegation_invalid', mode: row.mode, mpcAccount: row.public_key, pair: strategy.pair, message: 'Live limit agent has no active delegation — cannot trade without on-chain authority' });
@@ -272,7 +353,10 @@ export async function executeQuantTrade(
   row: AgentRow,
   strategy: { pair: string; amountPerTrade: string },
   side: 'buy' | 'sell',
-  price: number
+  price: number,
+  // Overrides QUANT_TRADE_SLIPPAGE when the agent has a Capital & Safety "Maximum Slippage"
+  // policy (agentcreation.md §3) — previously collected in the wizard but never enforced here.
+  maxSlippagePct?: number
 ): Promise<string> {
   if (strategy.pair !== 'XLM/USDC') {
     throw new Error(`Unsupported pair for trading: ${strategy.pair}`);
@@ -299,7 +383,8 @@ export async function executeQuantTrade(
   // USDC -> XLM divides by price; XLM -> USDC multiplies (same convention as executeLimitOrder).
   const sendAmountNum = parseFloat(amount);
   const expectedDest = side === 'buy' ? sendAmountNum / price : sendAmountNum * price;
-  const destMin = (expectedDest * (1 - QUANT_TRADE_SLIPPAGE)).toFixed(7);
+  const slippage = maxSlippagePct !== undefined ? maxSlippagePct / 100 : QUANT_TRADE_SLIPPAGE;
+  const destMin = (expectedDest * (1 - slippage)).toFixed(7);
 
   const needsUsdcTrustline = !hasTrustline(account, usdcAsset);
 

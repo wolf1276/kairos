@@ -485,6 +485,7 @@ export default function AgentsPage() {
         <AgentCreationWizard
           smartWalletAddress={smartWalletAddress}
           smartWallets={smartWallets}
+          walletOwner={walletOwner}
           networkPassphrase={networkPassphrase}
           sorobanRpcUrl={wallet?.sorobanRpcUrl}
           deploying={deploying}
