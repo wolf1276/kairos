@@ -4,6 +4,7 @@
 // that standalone service over HTTP.
 
 import type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType } from '@kairos/types';
+import { getAgentsBackendBase } from '@/app/lib/backendBase';
 
 export type { DcaStrategyConfig, QuantStrategyConfig, LimitStrategyConfig, AgentMode, AgentRole, AgentSummary, TradeRow, PositionRow, PnlSummary, AuditEventType };
 
@@ -126,12 +127,8 @@ export interface PortfolioOverview {
   yieldVenues: YieldVenue[];
 }
 
-function backendBase(): string {
-  return process.env.NEXT_PUBLIC_AGENTS_BACKEND_URL || "http://localhost:4001";
-}
-
 function backendUrl(path: string): string {
-  return `${backendBase()}${path}`;
+  return `${getAgentsBackendBase()}${path}`;
 }
 
 // Set once per session by the wallet-signature login handshake (see lib/agentsAuth.ts) and
@@ -282,7 +279,7 @@ export async function deleteAgentWallet(id: string): Promise<void> {
  *  /api/strategies, not under /api/agents, so it does not go through `backendUrl`'s
  *  `/api/agents`-relative helpers directly (it still shares the same backend base URL). */
 export async function listStrategies(): Promise<StrategyMeta[]> {
-  const res = await fetch(`${backendBase()}/api/strategies`, {
+  const res = await fetch(`${getAgentsBackendBase()}/api/strategies`, {
     headers: { "Content-Type": "application/json" },
   });
   const data = await res.json().catch(() => ({}));

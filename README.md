@@ -181,6 +181,8 @@ Core environment variables (see `.env.example` for the complete list):
 | `FUNDER_SECRET_KEY` | Funded testnet keypair for sponsored/on-chain operations |
 | `HUGGINGFACE_API_KEY` | LLM token for reasoning/intent parsing (optional — deterministic fallback otherwise) |
 | `DATABASE_URL` | Backend persistence (SQLite by default) |
+| `NEXT_PUBLIC_AGENTS_BACKEND_URL` | Public URL of the deployed agents backend (see `backend/`). **Read at Next.js *build* time, not runtime** — the browser calls this directly for wallet-signature login and Smart Wallet lookup/registration, so an unset value at build time silently bakes in a `localhost:4001` fallback that no visiting browser can reach. |
+| `ALLOWED_ORIGIN` | Backend-side CORS allowlist (`backend/.env.example`) — set to the deployed frontend's exact origin, or requests from it get CORS-blocked. |
 
 ### Run the backend (paper mode)
 
@@ -201,9 +203,18 @@ npx tsx scripts/deploy-testnet.ts            # deploy contracts (one-time)
 FUNDER_SECRET_KEY=SC… npx tsx scripts/demo-e2e.ts        # end-to-end delegation demo
 ```
 
+### Deploy the backend to Render
+
+`render.yaml` at repo root is a Render Blueprint for `backend/` (Docker-built, health-checked at `/health`, with a persistent Disk mounted at `AGENTS_DB_PATH` so the SQLite DB — including `smart_wallets` rows — survives redeploys instead of silently resetting). In the Render dashboard: **New +** → **Blueprint** → point at this repo. Fields marked `sync: false` in `render.yaml` must be filled in manually in the dashboard (they're secrets/deploy-specific values, not committed to git) — notably `ALLOWED_ORIGIN` (the deployed frontend's exact origin) and the contract IDs from `configs/contracts.testnet.json`.
+
+Requires at least Render's Starter (paid) plan — the free tier has no persistent Disk, so the SQLite DB is wiped on every redeploy/restart regardless of what `render.yaml` declares.
+
 ### Deploy to Vercel
 
 This is a pnpm monorepo with the Next.js app in `apps/web/`. Import the repo, set **Root Directory** to `apps/web/`, add the environment variables above, and deploy — the root `vercel.json` wires up the SDK build.
+
+> [!IMPORTANT]
+> Set `NEXT_PUBLIC_AGENTS_BACKEND_URL` to the Render backend's public URL (from the step above) in **Project Settings → Environment Variables**, scoped to every environment you deploy (Production, and Preview if preview deployments should also reach a live backend). It's a `NEXT_PUBLIC_` var, which Next.js inlines into the client bundle at *build* time — Vercel does expose Project env vars to the build step automatically, but only if they're added before the build runs and the deployment target (Production/Preview) matches. Leaving it unset doesn't fail the build; it silently ships a bundle where every browser tries to reach `localhost:4001` for wallet login and Smart Wallet lookup/creation — which fails in every visitor's browser with no useful error, while working fine in local dev (where that fallback happens to be correct).
 
 ---
 

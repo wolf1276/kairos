@@ -98,6 +98,10 @@ pnpm --filter @wolf1276/kairos-agent-backend benchmark    # reasoning benchmark 
 pnpm --filter @wolf1276/kairos-agent-backend benchmark:e2e # end-to-end determinism/concurrency/reliability/performance
 ```
 
+## Deployment
+
+Render Blueprint at [`../render.yaml`](../render.yaml) (Docker-built from `backend/Dockerfile`, health-checked at `/health`, persistent Disk mounted at `AGENTS_DB_PATH`). See the root [README's Render section](../README.md#deploy-the-backend-to-render) for setup steps — critically, `ALLOWED_ORIGIN` must be set to the deployed frontend's exact origin, and a paid (Disk-capable) plan is required or the SQLite DB — including `smart_wallets` — resets on every redeploy.
+
 ## Security notes
 
 - `AUTH_JWT_SECRET` signs every session token — treat it as a root credential. Anyone holding it can mint a valid session for any wallet address without ever signing in Freighter.

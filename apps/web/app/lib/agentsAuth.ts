@@ -3,10 +3,7 @@
 // string, and yields a bearer token used by every subsequent agentsBackend.ts call.
 
 import { kitSignMessage } from "@/app/lib/walletKit";
-
-function backendBase(): string {
-  return process.env.NEXT_PUBLIC_AGENTS_BACKEND_URL || "http://localhost:4001";
-}
+import { getAgentsBackendBase } from "@/app/lib/backendBase";
 
 function sessionKey(publicKey: string): string {
   return `kairos:session:${publicKey}`;
@@ -55,7 +52,7 @@ export async function challengeAndVerify(publicKey: string, networkPassphrase: s
 }
 
 async function runChallengeAndVerify(publicKey: string, networkPassphrase: string): Promise<string> {
-  const base = backendBase();
+  const base = getAgentsBackendBase();
 
   const challengeRes = await fetchWithTimeout(`${base}/api/auth/challenge`, {
     method: "POST",

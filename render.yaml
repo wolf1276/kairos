@@ -1,0 +1,65 @@
+# Render Blueprint for the Kairos agents backend (backend/) — the Express API the Vercel-hosted
+# frontend (apps/web) talks to via NEXT_PUBLIC_AGENTS_BACKEND_URL. Deploy: Render dashboard ->
+# "New +" -> "Blueprint" -> point at this repo. See README.md's "Deploy" sections for the
+# matching Vercel-side setup and the full list of what each var does.
+#
+# Verify this against Render's current Blueprint spec (https://render.com/docs/blueprint-spec)
+# before relying on it in a real deploy — field names occasionally change across Render's docs
+# revisions and this was written without access to a live Render account to test against.
+services:
+  - type: web
+    name: kairos-agent-backend
+    runtime: docker
+    dockerfilePath: backend/Dockerfile
+    dockerContext: .
+    # Free plan containers have no persistent disk — the SQLite DB below would be silently wiped
+    # on every redeploy/restart (see apps/web/app/hooks/useSmartWallets.ts's comment on exactly
+    # this failure mode for Smart Wallet rows). A disk-backed plan is required for `disk:` below
+    # to actually persist anything.
+    plan: starter
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: agents-data
+      mountPath: /app/backend/data
+      sizeGB: 1
+    envVars:
+      # Render injects its own PORT at runtime; keep this in sync with the Dockerfile's EXPOSE
+      # and getPort()'s default (backend/src/config.ts) in case Render's PORT isn't set locally.
+      - key: PORT
+        value: 4001
+      - key: AGENTS_DB_PATH
+        value: /app/backend/data/agents.db
+      - key: STELLAR_NETWORK
+        value: testnet
+      # Must equal the deployed Vercel frontend's exact origin (scheme + host, no trailing
+      # slash) — e.g. https://kairos.vercel.app. Left blank here deliberately; CORS defaults to
+      # `*` in code (backend/src/config.ts getAllowedOrigin) only when this is unset entirely, so
+      # an empty string here would be worse than omitting it. Set this in the Render dashboard.
+      - key: ALLOWED_ORIGIN
+        sync: false
+      - key: AUTH_JWT_SECRET
+        generateValue: true
+      - key: DELEGATION_MANAGER_CONTRACT_ID
+        sync: false
+      - key: POLICY_CONTRACT_ID
+        sync: false
+      - key: CUSTOM_ACCOUNT_CONTRACT_ID
+        sync: false
+      # Turnkey MPC custody — set these directly rather than TURNKEY_CREDENTIALS_FILE, since
+      # Render's Disk feature is one mount path (already used for AGENTS_DB_PATH above) and
+      # env vars avoid needing a second mounted secrets file.
+      - key: TURNKEY_ORGANIZATION_ID
+        sync: false
+      - key: TURNKEY_API_PUBLIC_KEY
+        sync: false
+      - key: TURNKEY_API_PRIVATE_KEY
+        sync: false
+      - key: DEV_ALLOWLIST
+        value: ""
+      - key: SCHEDULER_INTERVAL_MS
+        value: 30000
+      - key: REASONING_PROVIDER
+        value: openrouter
+      - key: OPENROUTER_API_KEY
+        sync: false
