@@ -73,6 +73,11 @@ export async function kitGetNetwork(): Promise<{ network: string; networkPassphr
   return kit.getNetwork();
 }
 
+export async function kitSetNetwork(network: "PUBLIC" | "TESTNET"): Promise<void> {
+  const { StellarWalletsKit, Networks: KitNetworks } = await import("@creit.tech/stellar-wallets-kit");
+  StellarWalletsKit.setNetwork(network === "PUBLIC" ? KitNetworks.PUBLIC : KitNetworks.TESTNET);
+}
+
 export async function kitSignTransaction(
   xdr: string,
   opts: { networkPassphrase: string; address: string }

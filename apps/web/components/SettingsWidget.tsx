@@ -4,15 +4,31 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Settings } from "lucide-react";
 import { Badge } from "@/app/components/ui/Badge";
 import { useWalletContext } from "@/app/contexts/WalletContext";
+import { useMode, type AppMode } from "@/app/contexts/ModeContext";
+import { kitSetNetwork } from "@/app/lib/walletKit";
 
 function shortAddress(addr: string) {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+const MODE_OPTIONS: { value: AppMode; label: string }[] = [
+  { value: "paper", label: "Paper" },
+  { value: "testnet", label: "Testnet" },
+  { value: "mainnet", label: "Mainnet" },
+];
+
+const MODE_COLORS: Record<AppMode, string> = {
+  paper: "bg-amber-500/10 text-amber-400 border-amber-500/15",
+  testnet: "bg-accent-muted/70 text-accent border-accent/10",
+  mainnet: "bg-emerald-500/10 text-emerald-400 border-emerald-500/15",
+};
+
 export function SettingsWidget() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const { wallet, connected, walletOwner, smartWalletAddress, smartWallets } = useWalletContext();
+  const { mode, setMode } = useMode();
+  const [switching, setSwitching] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -32,6 +48,15 @@ export function SettingsWidget() {
 
   const toggle = useCallback(() => setOpen((v) => !v), []);
 
+  const handleModeChange = useCallback(async (m: AppMode) => {
+    setSwitching(true);
+    setMode(m);
+    if (m !== "paper") {
+      await kitSetNetwork(m === "mainnet" ? "PUBLIC" : "TESTNET");
+    }
+    setSwitching(false);
+  }, [setMode]);
+
   return (
     <div ref={ref} className="relative">
       <button
@@ -43,23 +68,46 @@ export function SettingsWidget() {
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-64 rounded-xl border border-white/[0.06] bg-[#0d0d0f] shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)] backdrop-blur-xl">
+        <div className="absolute right-0 top-full mt-2 w-72 rounded-xl border border-white/[0.06] bg-[#0d0d0f]/80 shadow-[0_16px_48px_-12px_rgba(0,0,0,0.7)] backdrop-blur-xl">
           <div className="border-b border-white/[0.04] px-4 py-2.5">
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.12em] text-text-muted">Settings</p>
           </div>
 
-          <div className="space-y-2 px-4 py-3">
+          <div className="space-y-3 px-4 py-3">
+            <Section label="Mode">
+              <div className="flex gap-1 rounded-lg border border-white/[0.04] bg-black/20 p-0.5">
+                {MODE_OPTIONS.map((opt) => {
+                  const active = opt.value === mode;
+                  return (
+                    <button
+                      key={opt.value}
+                      onClick={() => handleModeChange(opt.value)}
+                      disabled={switching}
+                      className={`flex-1 rounded-md px-2 py-1 text-[11px] font-medium transition-all duration-200 ${
+                        active
+                          ? MODE_COLORS[opt.value] + " shadow-sm"
+                          : "text-text-muted hover:text-text-secondary"
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </Section>
+
             <Section label="Wallet">
-              {!connected ? (
-                <p className="text-xs text-text-muted">Not connected</p>
+              {!connected || mode === "paper" ? (
+                <p className="text-xs text-text-muted">
+                  {mode === "paper" ? "Paper mode — no wallet needed" : "Not connected"}
+                </p>
               ) : (
                 <div className="space-y-1.5">
                   <InfoRow label="Status" value={<Badge tone="success" dot>Connected</Badge>} />
                   <InfoRow label="Network" value={<Badge tone="accent">{wallet?.isTestnet ? "Testnet" : "Mainnet"}</Badge>} />
                   <InfoRow label="Owner" value={walletOwner ? shortAddress(walletOwner) : "—"} />
                   {smartWalletAddress && <InfoRow label="Smart Wallet" value={shortAddress(smartWalletAddress)} />}
-                  <InfoRow label="Deployed" value={smartWallets.length > 0 ? `${smartWallets.length}` : "None"} />
-                </div>
+                  </div>
               )}
             </Section>
 

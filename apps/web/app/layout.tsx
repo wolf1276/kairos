@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Navbar } from "@/components/Navbar";
 import { ShaderBackground } from "@/components/ShaderBackground";
 import { WalletProvider } from "@/app/contexts/WalletContext";
+import { ModeProvider } from "@/app/contexts/ModeContext";
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'});
 const inter = Inter({subsets:['latin'],variable:'--font-body'});
@@ -53,10 +54,12 @@ export default function RootLayout({
       </head>
       <body className="min-h-full bg-bg-primary text-text-primary antialiased">
         <ShaderBackground />
-        <WalletProvider>
-          <Navbar />
-          {children}
-        </WalletProvider>
+        <ModeProvider>
+          <WalletProvider>
+            <Navbar />
+            {children}
+          </WalletProvider>
+        </ModeProvider>
       </body>
     </html>
   );
