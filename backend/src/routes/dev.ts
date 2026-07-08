@@ -5,18 +5,23 @@
 // runner's last-result accessor). Mounted at /api/dev behind `requireAuth, requireDev` in
 // index.ts — requireDev already 403s unauthorized callers before any handler here runs.
 //
-// Honesty note (see AutonomousRuntime — runtime/autonomousRuntime/index.ts): no AutonomousRuntime
-// instance is wired into this process today (same caveat documented in routes/dashboard.ts and
-// routes/monitoring.ts). This router follows the exact same "config injection, report null/503
-// instead of fabricating" convention as those routers for the parts of Developer Mode that would
-// depend on that runtime (e.g. distinct PAUSED-state pause/resume). Paper-trading start/stop are
+// Honesty note (see AutonomousRuntime — runtime/autonomousRuntime/index.ts): a single, process-
+// wide AutonomousRuntime instance is now wired via runtime/runtimeSingleton.ts, started from
+// index.ts's app.listen callback. It runs against a 'replay' ExecutionTarget only (never real
+// capital) and an empty ProtocolRegistry (no real protocol adapter is registered yet — see that
+// file's header for why). GET /runtime and POST /validation/run below read `getRuntime()`/
+// `runOnce()` and report `wired: false` / 503 honestly if boot-time init hasn't completed yet
+// (it never blocks server boot on failure). This router still follows the same "config
+// injection, report null/503 instead of fabricating" convention as routes/dashboard.ts and
+// routes/monitoring.ts for the parts of Developer Mode that would depend on that runtime (e.g.
+// distinct PAUSED-state pause/resume — no such state exists in the wired agent model). Paper-trading start/stop are
 // implemented against the actually-wired per-agent lifecycle (`agentService.startAgent/stopAgent`
 // + `provisionService`), since that is the real, persisted control surface for agents in this
 // deployment. Pause/resume reuse those same two functions (no separate PAUSED state exists in
 // the wired agent model) — see the file-level comment on the pause/resume handlers below.
 import { Router } from 'express';
 import { z } from 'zod';
-import { getAgentRow, startAgent, stopAgent } from '../agentService.js';
+import { getAgentRow, startAgent, stopAgent, listRunningAgents } from '../agentService.js';
 import { provisionRoleAgents, provisionSingleRoleAgent } from '../provisionService.js';
 import { buildMonitoringSnapshot } from '../monitoring/index.js';
 import type { MonitoringConfig } from '../monitoring/index.js';
@@ -26,6 +31,8 @@ import { computeTradingMetrics } from '../benchmarkCore/tradingMetrics.js';
 import type { BenchmarkStore, BenchmarkExecutionRecord } from '../benchmarkCore/types.js';
 import { listAuditForOwner, auditEvents } from '../auditService.js';
 import { computePipelineLatencyReport } from '../runtimeAnalytics/analytics.js';
+import { getRuntime, runOnce } from '../runtime/runtimeSingleton.js';
+import { getNetwork } from '../config.js';
 
 export interface DevRouterConfig {
   /** Defaults to a fresh SqliteBenchmarkStore, same DB file Benchmark Core writes to — same
@@ -86,10 +93,40 @@ export function createDevRouter(config: DevRouterConfig = {}): Router {
     res.json({ success: true, enabled: true });
   });
 
+  // `runtime` (below) is the pre-existing monitoring snapshot (process/GPU/decision-model
+  // metrics) — unrelated to the composed AutonomousRuntime. `autonomousRuntime` is the new,
+  // separate field for that: null until runtime/runtimeSingleton.ts's initRuntime() has actually
+  // completed in this process (see index.ts's app.listen callback). Every field below is read
+  // straight off the live AutonomousRuntime/pipelineRunner — nothing here is fabricated.
+  //   - executionTarget is always 'replay' (see runtimeSingleton.ts) — this process never
+  //     executes against real capital.
+  //   - provider/model are only populated if a decisionIntelligenceConfig override was supplied
+  //     to the composition; the singleton does not set one (falls back to
+  //     getProviderConfigFromEnv() inside createPipelineStages), so these report the heartbeat's
+  //     own provider/model, which will be null unless AutonomousRuntimeOptions.providerName/model
+  //     were set — they are not set by runtimeSingleton.ts today.
+  //   - benchmarkSession is always null: no accessor exists for "the currently active benchmark
+  //     session" and Benchmark Core (frozen) is never modified to add one.
   router.get('/runtime', async (_req, res) => {
     try {
       const monitoring = await buildMonitoringSnapshot(config.monitoring);
-      res.json({ success: true, runtime: monitoring });
+      const runtime = getRuntime();
+      const autonomousRuntime = runtime
+        ? {
+            wired: true,
+            state: runtime.getState(),
+            heartbeat: runtime.getHeartbeat(),
+            uptimeMs: runtime.getHeartbeat().uptimeMs,
+            lastExecutionAt: runtime.getHeartbeat().lastExecutionAt,
+            activeAgentCount: listRunningAgents().length,
+            executionTarget: { kind: 'replay', note: 'dev/introspection runtime — never executes against real capital' },
+            network: getNetwork(),
+            provider: runtime.getHeartbeat().provider,
+            model: runtime.getHeartbeat().model,
+            benchmarkSession: null,
+          }
+        : { wired: false, note: 'AutonomousRuntime has not initialized in this process yet (see runtime/runtimeSingleton.ts).' };
+      res.json({ success: true, runtime: monitoring, autonomousRuntime });
     } catch (error) {
       res.status(500).json({ success: false, error: errorMessage(error) });
     }
@@ -191,11 +228,20 @@ export function createDevRouter(config: DevRouterConfig = {}): Router {
   // into this process (see file-level note), this reports 503 rather than fabricating a result —
   // same convention as routes/benchmark.ts's /reports and /compare when buildReportBundle is
   // unconfigured.
-  router.post('/validation/run', (_req, res) => {
-    res.status(503).json({
-      success: false,
-      error: 'No PipelineRunner/BenchmarkSession is wired into this process yet — validation runs must be triggered through the composed runtime (runtime/pipelineComposition) once a deployment wires one up.',
-    });
+  router.post('/validation/run', async (_req, res) => {
+    if (!getRuntime()) {
+      res.status(503).json({
+        success: false,
+        error: 'No PipelineRunner/BenchmarkSession is wired into this process yet — validation runs must be triggered through the composed runtime (runtime/pipelineComposition) once a deployment wires one up.',
+      });
+      return;
+    }
+    try {
+      const result = await runOnce();
+      res.json({ success: true, result });
+    } catch (error) {
+      res.status(500).json({ success: false, error: errorMessage(error) });
+    }
   });
 
   router.get('/benchmark', (_req, res) => {

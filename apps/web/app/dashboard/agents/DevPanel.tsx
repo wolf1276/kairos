@@ -189,6 +189,29 @@ export function DevPanel({ agent }: { agent: AgentSummary }) {
 
           <section className="space-y-2">
             <h5 className="font-mono text-[10px] uppercase tracking-widest text-text-muted">Runtime Inspector</h5>
+            {(() => {
+              const ar = (runtime as { autonomousRuntime?: Record<string, unknown> } | null)?.autonomousRuntime;
+              if (!ar || ar.wired !== true) {
+                return (
+                  <p className="text-[11px] text-text-muted">
+                    {(ar?.note as string | undefined) ?? "AutonomousRuntime is not initialized in this process yet."}
+                  </p>
+                );
+              }
+              const heartbeat = ar.heartbeat as { executionCount?: number; failureCount?: number; nextExecutionAt?: number | null } | undefined;
+              return (
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  <Stat label="State" value={String(ar.state ?? "unknown")} />
+                  <Stat label="Uptime" value={`${Math.round(Number(ar.uptimeMs ?? 0) / 1000)}s`} />
+                  <Stat label="Last Execution" value={ar.lastExecutionAt ? fmtClock(Number(ar.lastExecutionAt)) : "never"} />
+                  <Stat label="Active Agents" value={String(ar.activeAgentCount ?? 0)} />
+                  <Stat label="Execution Target" value={String((ar.executionTarget as { kind?: string } | undefined)?.kind ?? "unknown")} />
+                  <Stat label="Network" value={String(ar.network ?? "unknown")} />
+                  <Stat label="Executions / Failures" value={`${heartbeat?.executionCount ?? 0} / ${heartbeat?.failureCount ?? 0}`} />
+                  <Stat label="Provider / Model" value={`${ar.provider ?? "none"} / ${ar.model ?? "none"}`} />
+                </div>
+              );
+            })()}
             <pre className="max-h-40 overflow-auto rounded-lg bg-bg-elevated p-2.5 text-[10px] text-text-secondary">
               {runtime ? JSON.stringify(runtime, null, 2) : "No runtime snapshot available."}
             </pre>

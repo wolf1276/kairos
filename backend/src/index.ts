@@ -17,6 +17,7 @@ import { buildReportBundle } from './benchmarkReports/index.js';
 import { createDevRouter } from './routes/dev.js';
 import { requireAuth, requireDev } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
+import { initRuntime } from './runtime/runtimeSingleton.js';
 import { startContextMonitor } from './agentContext/monitor.js';
 import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
@@ -98,5 +99,11 @@ app.listen(port, () => {
       startScheduler();
       getPriceFeedService().start();
       startContextMonitor();
+      // Composed AutonomousRuntime (runtime/pipelineComposition) — dev/introspection runtime,
+      // executes against a replay ExecutionTarget only (never real capital, see
+      // runtime/runtimeSingleton.ts). Must never crash server boot on failure.
+      initRuntime()
+        .then(() => console.log('[startup] autonomous runtime initialized (replay execution target)'))
+        .catch((error) => console.error('[startup] autonomous runtime init failed:', error));
     });
 });
