@@ -31,6 +31,7 @@ import {
   getAgentDecisions,
   getAgentPerformance,
   getAgentAuditLog,
+  provisionRoleAgents,
   getRuntimeStatus,
   getRuntimeHealth,
   getRuntimeMetrics,
@@ -109,6 +110,8 @@ export default function AgentsPage() {
   const [recentAudit, setRecentAudit] = useState<AuditLogRow[]>([]);
   const [search, setSearch] = useState("");
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     if (!walletOwner) return;
@@ -145,6 +148,23 @@ export default function AgentsPage() {
     const id = setInterval(() => { ensureAgentAuth(false).then(refresh); }, 8000);
     return () => clearInterval(id);
   }, [walletOwner, ensureAgentAuth, refresh]);
+
+  // Idempotently mints the 3 fixed role agents (yield/strategic/balancer) — there's no
+  // per-strategy creation flow in this UI, so "Create Agent" just provisions whichever of the
+  // three roles the caller doesn't already have.
+  const handleCreateAgent = useCallback(async () => {
+    setCreating(true);
+    setCreateError(null);
+    try {
+      await ensureAgentAuth();
+      await provisionRoleAgents();
+      await refresh();
+    } catch (e) {
+      setCreateError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setCreating(false);
+    }
+  }, [ensureAgentAuth, refresh]);
 
   const agents = useMemo(() => dashboards.map((d) => d.agent), [dashboards]);
 
@@ -248,13 +268,14 @@ export default function AgentsPage() {
           <button className="rounded-lg border border-white/5 bg-white/[0.02] p-2 text-text-secondary transition-colors hover:text-text-primary" title="Notifications">
             <Bell className="h-4 w-4" />
           </button>
-          <a
-            href="/dashboard/trade"
-            className="flex items-center gap-1.5 rounded-xl bg-accent/80 px-3.5 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent"
+          <button
+            onClick={handleCreateAgent}
+            disabled={creating || !walletOwner}
+            className="flex items-center gap-1.5 rounded-xl bg-accent/80 px-3.5 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
-            Create Agent
-          </a>
+            {creating ? "Creating…" : "Create Agent"}
+          </button>
           {walletOwner && (
             <span className="hidden items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-[11px] text-text-secondary md:flex">
               <Wallet className="h-3.5 w-3.5 text-text-muted" />
@@ -293,6 +314,11 @@ export default function AgentsPage() {
               <p className="text-xs text-error/90">{listError}</p>
             </div>
           )}
+          {createError && (
+            <div className="rounded-xl border border-error/15 bg-error/6 px-4 py-3">
+              <p className="text-xs text-error/90">{createError}</p>
+            </div>
+          )}
 
           {loadingAgents && dashboards.length === 0 ? (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -304,7 +330,11 @@ export default function AgentsPage() {
             <Card className="card-matte">
               <CardBody className="py-10 text-center">
                 <p className="text-sm text-text-muted">
-                  No agents yet — launch a strategy from the <a href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</a> to get started.
+                  No agents yet —{" "}
+                  <button onClick={handleCreateAgent} disabled={creating} className="text-accent/80 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50">
+                    {creating ? "creating…" : "create your agent fleet"}
+                  </button>{" "}
+                  to get started.
                 </p>
               </CardBody>
             </Card>
