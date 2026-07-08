@@ -7,10 +7,27 @@ import path from 'path';
 // ─────────────────────────────────────────────────────────────────────────────
 // Live QA of the Agent Creation flow against the REAL running backend (4001) and
 // REAL Stellar testnet. Freighter itself can't be automated headlessly, so this
-// intercepts the exact webpack chunk that bundles @creit.tech/stellar-wallets-kit's
-// freighter module and replaces it with a shim that performs REAL Ed25519 signing
-// (via a fresh, friendbot-funded testnet keypair) through page.exposeFunction —
-// i.e. signatures are cryptographically real, verified server-side by the same
+// emulates the Freighter browser extension's actual content-script protocol:
+// @stellar/freighter-api (which @creit.tech/stellar-wallets-kit's FreighterModule
+// calls into) talks to the real extension purely via `window.postMessage` with
+// `source: "FREIGHTER_EXTERNAL_MSG_REQUEST"` / `"FREIGHTER_EXTERNAL_MSG_RESPONSE"`
+// envelopes (see @stellar/freighter-api's build/index.min.js) — there is no chunk
+// to intercept and no `window.freighterApi` object to stub; the extension injects
+// nothing but a content-script message listener plus `window.freighter = true`.
+//
+// NOTE: an earlier version of this file tried to replace the webpack chunk that
+// bundles the freighter module (`page.route(/freighter_module/i, ...)`) with a
+// hand-written ESM shim. That assumed webpack's per-chunk `export` syntax; this
+// app runs on Next.js 16 with Turbopack, whose dev-server chunk format is not
+// plain top-level ESM the way the shim assumed, so the browser choked on the
+// injected chunk with `Unexpected token 'export'` before anything downstream of
+// Connect Wallet could run. Stubbing the extension's actual message protocol
+// (via `page.addInitScript`) sidesteps bundler chunk formats entirely, so it
+// works the same under webpack or Turbopack.
+//
+// Signing itself is REAL Ed25519 crypto via a fresh, friendbot-funded testnet
+// keypair, done in Node and returned into the page through `page.exposeFunction`
+// — i.e. signatures are cryptographically real, verified server-side by the same
 // authService.ts / custom-account contract code path a real user would hit.
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -46,44 +63,85 @@ async function installRealSigningFreighterMock(page: Page) {
     return kp.sign(hash).toString('base64');
   });
 
-  // Replace the exact webpack chunk that bundles
-  // @creit.tech/stellar-wallets-kit/.../modules/freighter.module.js (confirmed via
-  // network trace: filename contains "freighter_module"). We can't intercept the
-  // inner @stellar/freighter-api import separately because webpack inlines it into
-  // this same chunk in dev mode, so we replace the whole chunk with a compatible
-  // FreighterModule implementation.
-  await page.route(/freighter_module/i, async (route) => {
-    const body = `
-      const w = window;
-      export const FREIGHTER_ID = "freighter";
-      export class FreighterModule {
-        constructor() {
-          this.moduleType = "hot_wallet";
-          this.productId = FREIGHTER_ID;
-          this.productName = "Freighter";
-          this.productUrl = "https://freighter.app";
-          this.productIcon = "https://stellar.creit.tech/wallet-icons/freighter.png";
+  // Emulate the real Freighter extension's content-script protocol, which
+  // @stellar/freighter-api talks to purely via window.postMessage — see comment
+  // at top of file for why (Turbopack chunk-format mismatch with the previous
+  // webpack-chunk-replacement approach).
+  await page.addInitScript(() => {
+    // Short-circuits @stellar/freighter-api's isConnected() to true synchronously,
+    // matching what the real extension's content script sets on injection.
+    (window as any).freighter = true;
+
+    window.addEventListener('message', async (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || data.source !== 'FREIGHTER_EXTERNAL_MSG_REQUEST') return;
+      const { messageId, type } = data;
+      const reply = (fields: Record<string, unknown>) => {
+        window.postMessage(
+          { source: 'FREIGHTER_EXTERNAL_MSG_RESPONSE', messagedId: messageId, ...fields },
+          window.location.origin
+        );
+      };
+
+      const w = window as any;
+      try {
+        switch (type) {
+          case 'REQUEST_ACCESS':
+          case 'REQUEST_PUBLIC_KEY': {
+            const publicKey = await w.__kairosGetAddress();
+            reply({ publicKey });
+            break;
+          }
+          case 'REQUEST_ALLOWED_STATUS': {
+            reply({ isAllowed: true });
+            break;
+          }
+          case 'REQUEST_CONNECTION_STATUS': {
+            reply({ isConnected: true });
+            break;
+          }
+          case 'REQUEST_NETWORK_DETAILS': {
+            reply({
+              networkDetails: {
+                network: 'TESTNET',
+                networkPassphrase: 'Test SDF Network ; September 2015',
+              },
+            });
+            break;
+          }
+          case 'SUBMIT_TRANSACTION': {
+            const signedTransaction = await w.__kairosSignTransaction(
+              data.transactionXdr,
+              data.networkPassphrase
+            );
+            const signerAddress = await w.__kairosGetAddress();
+            reply({ signedTransaction, signerAddress });
+            break;
+          }
+          case 'SUBMIT_BLOB': {
+            const signedBlob = await w.__kairosSignMessage(
+              typeof data.blob === 'string' ? data.blob : ''
+            );
+            const signerAddress = await w.__kairosGetAddress();
+            reply({ signedBlob, signerAddress });
+            break;
+          }
+          case 'SUBMIT_AUTH_ENTRY': {
+            const signedAuthEntry = await w.__kairosSignAuthEntry(data.entryXdr);
+            const signerAddress = await w.__kairosGetAddress();
+            reply({ signedAuthEntry, signerAddress });
+            break;
+          }
+          default:
+            // Unhandled message type — leave unanswered; freighter-api's own
+            // 2s timeout (for connection-status/public-key requests) or the
+            // caller's own timeout will surface it clearly in test output.
+            break;
         }
-        async isAvailable() { return true; }
-        async getAddress() { return { address: await w.__kairosGetAddress() }; }
-        async signTransaction(xdr, opts) {
-          const signedTxXdr = await w.__kairosSignTransaction(xdr, opts && opts.networkPassphrase);
-          return { signedTxXdr, signerAddress: await w.__kairosGetAddress() };
-        }
-        async signAuthEntry(authEntry, opts) {
-          const signedAuthEntry = await w.__kairosSignAuthEntry(authEntry);
-          return { signedAuthEntry, signerAddress: await w.__kairosGetAddress() };
-        }
-        async signMessage(message, opts) {
-          const signedMessage = await w.__kairosSignMessage(message);
-          return { signedMessage, signerAddress: await w.__kairosGetAddress() };
-        }
-        async getNetwork() {
-          return { network: "TESTNET", networkPassphrase: "Test SDF Network ; September 2015" };
-        }
+      } catch (e: any) {
+        reply({ apiError: e?.message || String(e) });
       }
-    `;
-    await route.fulfill({ contentType: 'application/javascript', body });
+    });
   });
 }
 
