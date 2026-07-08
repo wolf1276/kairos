@@ -1,206 +1,200 @@
-<div align="center">
-  <img src="apps/web/public/logo.png" alt="Kairos" width="84" height="84" />
+# Kairos
 
-  <h1>Kairos</h1>
+**Intent-based, non-custodial capital delegation on Stellar Soroban — AI proposes, the chain disposes.**
 
-  <p><strong>Intent-based, non-custodial capital delegation on Stellar Soroban.</strong></p>
-
-  <p>
-    Delegate <em>what</em> an agent may do — not your keys. On-chain caveats decide what actually executes.
-  </p>
-</div>
-
----
-
-Kairos is a delegation framework for Stellar's [Soroban](https://developers.stellar.org/docs/build/smart-contracts) smart-contract platform, plus an AI reasoning engine and a paper-trading terminal built on top of it. Instead of depositing funds into a bot or handing over a private key, you deploy a personal **Smart Wallet** contract and grant scoped, revocable **delegations** to automated strategies. Every delegation carries on-chain **caveats** — spend limits, asset whitelists, time windows — that the `policies` contract enforces at redemption, regardless of what any off-chain agent decides.
+Kairos lets you delegate *what* an automated agent may do with your capital — without ever handing over your keys. You deploy a personal Smart Wallet, grant scoped and revocable delegations, and an AI reasoning engine proposes trades that are enforced by on-chain policies. Agents can advise; only the chain can move funds.
 
 > [!NOTE]
-> **Project status — testnet.** The delegation framework, SDK, reasoning engine, and paper-trading
-> terminal are functional against Stellar testnet. **Live on-chain agent execution is not yet
-> wired up:** it depends on a production signing backend that is still experimental (see
-> [What works today](#what-works-today)). Paper mode runs the full decision → validation → audit
-> pipeline without signing or submitting any real transaction.
-
-## What works today
-
-| Component | Status | What it is |
-| :--- | :--- | :--- |
-| **Kairos SDK** (`packages/sdk`) | ✅ Working | Typed TypeScript client over the deployed Soroban contracts — wallet deploy, delegation sign/register, policy encoding, redemption, events, registry. |
-| **Soroban contracts** (`contracts/soroban`) | ✅ Deployed (testnet) | `DelegationManager`, `PolicyEngine`, `CustomAccount`, `Registry` — the on-chain trust boundary. |
-| **Onboarding & Smart Wallets** | ✅ Working | Freighter-signed, sponsored deploy of a per-owner `CustomAccount`; SEP-53 signature sessions. No passwords or custody. |
-| **Reasoning Engine** (`backend/src/reasoning`) | ✅ Working | Deterministic decision pipeline: Context → Memory → Decision Intelligence (LLM) → **Verification** (rule-based) → **Execution Planner**. Extensively unit-tested. |
-| **Reasoning Benchmark** (`backend/benchmarks`) | ✅ Working | Reproducible, versioned harness that scores providers/models across 13 scenarios with automatic regression tracking. |
-| **Paper trading** (`backend`) | ✅ Working | Agents run `dca` / `quant` / `limit` / `role` strategies against live market data with synthetic fills — full PnL, positions, and audit trail, no signing. |
-| **Web dashboard** (`apps/web`) | ✅ Working | Next.js app: landing, portfolio dashboard, agents console, and a Context Layer inspector. |
-| **Live on-chain execution** | 🚧 Experimental | Live-mode agents require a working key-custody signer. The current Turnkey MPC signer (`packages/turnkey-signer`) is **not functional** end-to-end; live trading is disabled in practice. |
-| **MCP agent** (`packages/mcp-agent`) | 🚧 Experimental | Depends on the same non-functional signer — not usable end-to-end today. |
+> Kairos is live on Stellar **testnet**. Paper trading runs the full decision, verification, and audit pipeline end to end. Live on-chain execution is under development.
 
 ---
+
+## Table of contents
+
+- [Mission](#mission)
+- [Why Kairos](#why-kairos)
+- [Core Concepts](#core-concepts)
+- [Key Features](#key-features)
+- [Architecture Overview](#architecture-overview)
+- [AI Decision Pipeline](#ai-decision-pipeline)
+- [Smart Wallet](#smart-wallet)
+- [SDK](#sdk)
+- [Quick Start](#quick-start)
+- [Technology Stack](#technology-stack)
+- [Repository Structure](#repository-structure)
+- [Documentation](#documentation)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
+
+## Mission
+
+Kairos exists to remove the false trade-off at the heart of DeFi automation: either click every rebalance yourself, or deposit into a custodial bot and hope its risk controls hold.
+
+The problem is that **trust lives in the wrong place** — the bot holds your keys or your funds, and its internal risk logic is opaque. Kairos moves the trust boundary onto the chain itself. You keep custody; the policy is the boundary, not the trust. Autonomous capital management matters because the strategies that protect and grow capital (rebalancing, yield rotation, volatility-aware sizing) are frequent and mechanical — yet each one is currently a custody decision. Kairos makes delegation a configuration problem, not a key-sharing problem.
 
 ## Why Kairos
 
-Traditional DeFi automation forces a bad trade-off: either you keep clicking every rebalance and yield harvest yourself, or you deposit into a custodial bot and hope its risk controls hold. Kairos removes the trade-off by making the **policy the boundary, not the trust**:
+- **You keep custody.** Funds live in *your* Smart Wallet (Soroban account abstraction). Agents never hold your keys.
+- **Delegations are scoped and revocable.** A delegation names a specific agent and a set of policies. Revoke it on-chain at any time.
+- **The chain is the final authority.** Even if every off-chain component were compromised, the policy contract still checks spend limits, asset whitelists, and time windows before a token moves.
+- **AI is advisory only.** A deterministic reasoning engine proposes actions; policy gates and on-chain caveats decide what — if anything — executes. The model never sizes or authorizes a transfer.
 
-- **You keep custody.** Funds live in *your* `CustomAccount` Smart Wallet. Agents never hold your keys.
-- **Delegations are scoped and revocable.** A delegation names a specific delegate and a set of caveats. Revoke it on-chain at any time.
-- **The chain is the final authority.** Even if every off-chain component were compromised, `redeem_delegations` still checks spend limits, asset whitelists, and time restrictions on-chain before a single token moves.
-- **AI is advisory only.** The reasoning engine proposes actions; a deterministic validation layer and on-chain caveats decide what — if anything — executes. The model never sizes or authorizes a transfer.
+## Core Concepts
 
----
+- **Delegation** — a signed, on-chain grant of authority from a wallet owner to an agent, scoped by policies.
+- **Caveats / Policies** — enforceable constraints (spend limits, asset whitelists, time windows) checked at redemption.
+- **Smart Wallet** — a per-owner Soroban account-abstraction contract that holds funds and verifies delegated authority.
+- **Advisory AI** — a reasoning engine that turns market context and memory into proposals, never into signed transactions.
 
-## Architecture
+## Key Features
 
-Kairos is a pnpm monorepo. The pieces that are live today:
+| Feature | Description |
+| :--- | :--- |
+| **Smart Wallet** | Per-owner Soroban Smart Wallet deployed and recovered via sponsored Freighter onboarding. Non-custodial. |
+| **Delegation & Policies** | Scoped, revocable, on-chain delegations with composable caveats (spend-limit, time-restriction, target-whitelist). |
+| **AI Decision Pipeline** | Deterministic pipeline from market context to a verified, plan-ready decision — only one stage calls an LLM. |
+| **Strategy Engine** | A registry of deterministic strategies (DCA, trend/mean-reversion, momentum, breakout, allocation). |
+| **Memory Engine** | Episodic, semantic, and working memory with relevance retrieval and experience intelligence. |
+| **Learning Engine** | Cohort-based learning analytics over trade outcomes (win rate, PnL, confidence, memory influence). |
+| **Protocol Layer** | Pluggable protocol adapters (Aquarius, Blend, Phoenix, Soroswap) with deterministic routing and quote validation. |
+| **Autonomous Runtime** | Orchestrates the full decision pipeline on a schedule, running against a deterministic paper execution environment. |
+| **Benchmark Framework** | Reproducible, versioned harness that scores providers and models across scenarios with regression tracking. |
+| **Dashboard** | Next.js console for portfolio, agents, delegations, and a live Context Layer inspector. |
+| **SDK** | Typed TypeScript client over the deployed Soroban contracts. |
+| **Developer Mode** | Hidden, allowlist-gated introspection surface for runtime, pipeline, and audit inspection. |
 
-```
-                     ┌───────────────────────────────────────────────┐
-                     │                  apps/web                      │
-                     │   Next.js dashboard · Freighter onboarding ·   │
-                     │   oracle GraphQL price API · agents console    │
-                     └───────────────────────┬───────────────────────┘
-                                             │ HTTP (SEP-53 JWT session)
-                     ┌───────────────────────▼───────────────────────┐
-                     │                   backend                      │
-                     │  ┌──────────────┐   ┌───────────────────────┐  │
-                     │  │ Strategy     │   │ Reasoning Engine       │  │
-                     │  │ terminal     │   │ Context → Memory →     │  │
-                     │  │ dca/quant/   │──▶│ Decision Intelligence →│  │
-                     │  │ limit/role   │   │ Verification → Planner  │  │
-                     │  │ (paper)      │   └───────────────────────┘  │
-                     │  └──────┬───────┘        SQLite persistence     │
-                     └─────────┼──────────────────────────────────────┘
-                               │ @wolf1276/kairos-sdk
-                     ┌─────────▼──────────────────────────────────────┐
-                     │           contracts/soroban (testnet)          │
-                     │  DelegationManager · PolicyEngine · Registry ·  │
-                     │  CustomAccount (your Smart Wallet)             │
-                     └────────────────────────────────────────────────┘
-```
+## Architecture Overview
 
-### The reasoning pipeline
+```mermaid
+flowchart TD
+    User([User / Freighter wallet])
+    subgraph Frontend
+        Web[Dashboard<br/>Next.js]
+        Oracle[GraphQL price API]
+    end
+    subgraph Backend
+        API[REST API<br/>auth: wallet signature]
+        Engines[Reasoning, Context, Memory,<br/>Strategy & Protocol engines]
+        Store[(Persistence)]
+    end
+    subgraph Chain
+        SDK[Kairos SDK]
+        Contracts[Soroban contracts<br/>Delegation · Policy · Wallet · Registry]
+    end
 
-Every decision an agent considers flows through a single, mostly-deterministic pipeline. Only the Decision Intelligence step calls an LLM; everything downstream is rule-based and reproducible:
-
-```
-AgentContext + MemoryPackage + UserPolicy
-        │
-        ▼
-  Decision Intelligence   ← LLM proposes an action (never sizes or authorizes it)
-        │
-        ▼
-  Verification            ← deterministic rules: schema, policy, capital, risk, evidence
-        │
-        ▼
-  Execution Planner       ← deterministic plan + prerequisite checks (no chain call)
-        │
-        ▼
-  Execution (paper today; live gated on a working signer)
-```
-
-The reasoning engine's public surface is `backend/src/reasoning/index.ts`; the full design lives in
-[`docs/architecture/REASONING_ENGINE.md`](./docs/architecture/REASONING_ENGINE.md).
-
-### Security model
-
-```
-  User intent ──▶ Reasoning Engine ──▶ Verification ──▶ On-chain caveats ──▶ CustomAccount
-                  (advisory only)      (deterministic)   (spend-limit,        (your funds,
-                                                          whitelist,          no custody)
-                                                          time-restriction)
+    User -->|connect and sign| Web
+    Web -->|HTTP| API
+    Web -->|onboarding and delegation| SDK
+    Oracle --> Web
+    API --> Engines
+    Engines --> Store
+    SDK --> Contracts
+    API --> SDK
 ```
 
-1. **AI is advisory only** — it proposes; it never sets amounts.
-2. **Verification cannot be bypassed** — every proposal passes deterministic policy/risk checks.
-3. **On-chain caveats are final** — enforced by the `policies` contract at `redeem_delegations`.
-4. **Replay protection** — monotonic per-delegator nonces.
-5. **Non-custodial** — assets never leave your `CustomAccount`; delegations are revocable on-chain.
+The backend is the authoritative decision and execution terminal. The dashboard talks to it over HTTP and to the SDK directly for onboarding and delegations. The SDK is the only component that touches the chain.
 
-See [SECURITY.md](./SECURITY.md) for the full model.
+## AI Decision Pipeline
 
----
+Every decision an agent considers flows through one mostly-deterministic pipeline. Only the **Decision** stage calls an LLM; every other stage is rule-based and reproducible.
 
-## Repository layout
-
-```
-.
-├── apps/
-│   └── web/                  # Next.js dashboard, onboarding, oracle price API  (README)
-├── backend/                  # Strategy terminal + Reasoning Engine + REST API  (README)
-│   ├── src/reasoning/        #   AI decision → verification → planning pipeline
-│   ├── src/agentContext/     #   Context Layer (market/capital/policy/system/history)
-│   ├── src/memoryLayer/      #   Memory Engine
-│   └── benchmarks/           #   Reasoning + e2e benchmark harnesses            (README)
-├── packages/
-│   ├── sdk/                  # @wolf1276/kairos-sdk — the typed contract client (README)
-│   ├── mcp-agent/            # MCP server (experimental — see status above)     (README)
-│   ├── turnkey-signer/       # MPC signer (experimental — not functional)
-│   └── types/                # Shared TypeScript types
-├── contracts/
-│   └── soroban/              # Rust contracts: delegation-manager, policies,
-│                             #   custom-account, registry
-├── scripts/                  # deploy-testnet · test-integration · demo-e2e
-├── configs/                  # contracts.testnet.json (deployed IDs)
-└── docs/                     # architecture, api, security
+```mermaid
+flowchart TD
+    Market[Market] --> Context[Context]
+    Context --> Memory[Memory]
+    Context --> Strategies[Strategies]
+    Memory --> Reasoning[Reasoning]
+    Strategies --> Reasoning
+    Reasoning --> Decision[Decision]
+    Decision --> Verification[Verification]
+    Verification -->|verified| Planning[Planning]
+    Verification -->|rejected| Learning[Learning]
+    Planning --> Routing[Routing]
+    Routing --> Execution[Execution]
+    Execution --> Learning
+    Learning --> Memory
 ```
 
----
+| Stage | What it does |
+| :--- | :--- |
+| **Market** | Live price, oracle health, trend, volatility, and regime. |
+| **Context** | An immutable snapshot of everything the agent is authorized to know right now. |
+| **Memory** | Relevant past experience — episodes, facts, and derived patterns. |
+| **Strategies** | Deterministic signals from the strategy registry. |
+| **Reasoning** | Combines context, memory, and policy into a structured prompt. |
+| **Decision** | The LLM proposes a primary action with alternatives, evidence, and confidence. |
+| **Verification** | A deterministic gate: policy, capital, risk, evidence, and consistency checks. |
+| **Planning** | Builds a hashable, replayable execution plan with rollback steps. |
+| **Routing** | Selects the best protocol for the action via deterministic ranking. |
+| **Execution** | Runs the plan with retry, rollback, and audit journaling. |
+| **Learning** | Records the outcome and feeds memory for future decisions. |
 
-## Getting started
+A decision rejected by Verification is never planned or executed. Live execution additionally requires on-chain caveat approval. Full design lives in [AI_PIPELINE.md](./AI_PIPELINE.md).
+
+## Smart Wallet
+
+Your funds live in a Smart Wallet — a Soroban account-abstraction contract that you own. Kairos never takes custody: you deploy the wallet (sponsored, so you only sign), and agents interact with it only through delegations you grant and can revoke.
+
+Each delegation carries **caveats** — spend limits, asset whitelists, and time windows — that the policy contract enforces at redemption. This is the core safety model: the chain, not the agent, decides what actually executes. See [SMART_WALLET.md](./SMART_WALLET.md).
+
+## SDK
+
+The [`@wolf1276/kairos-sdk`](./SDK.md) is the typed TypeScript client over the deployed Soroban contracts and the only component that talks to the chain. It covers wallet deployment, off-chain delegation signing, policy (caveat) encoding, execution redemption, event decoding, and on-chain wallet registry lookup. Full reference in [SDK.md](./SDK.md).
+
+## Quick Start
 
 ### Prerequisites
 
-- Node.js `>=18`
-- [pnpm](https://pnpm.io/)
+- Node.js `>=18` and [pnpm](https://pnpm.io/)
+- A [Freighter](https://www.freighter.app/) wallet
 
-### Install & build
+### Install & run
 
 ```bash
+git clone https://github.com/wolf1276/kairos.git
+cd kairos
 pnpm install
-pnpm run build   # builds the SDK
+pnpm --filter @wolf1276/kairos-sdk build
+pnpm --filter @wolf1276/kairos-agent-backend dev   # backend (paper mode)
+pnpm --filter app dev                              # dashboard at http://localhost:3000
 ```
 
-### Run the dashboard
+### Configure
+
+Copy `.env.example` and set the Stellar network, the deployed contract IDs (from `configs/contracts.testnet.json`), and `AUTH_JWT_SECRET`. Reasoning-provider configuration is documented in [AI_PIPELINE.md](./AI_PIPELINE.md) and [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md).
+
+### Test & benchmark
 
 ```bash
-cd apps/web
-cp ../../.env.example .env.local   # then fill in the values below
-pnpm run dev                       # http://localhost:3000
+pnpm --filter @wolf1276/kairos-sdk test                 # SDK unit tests
+pnpm --filter @wolf1276/kairos-agent-backend test       # backend + reasoning tests
+pnpm --filter @wolf1276/kairos-agent-backend benchmark   # reasoning benchmark
+cd contracts/soroban && cargo test                      # contract tests
 ```
 
-Core environment variables (see `.env.example` for the complete list):
+## Technology Stack
 
-| Variable | Description |
+| Layer | Technology |
 | :--- | :--- |
-| `STELLAR_NETWORK` | `testnet` or `mainnet` |
-| `STELLAR_RPC_URL` | Soroban RPC endpoint |
-| `STELLAR_NETWORK_PASSPHRASE` | Network passphrase |
-| `DELEGATION_MANAGER_CONTRACT_ID` | Deployed `DelegationManager` ID |
-| `POLICY_CONTRACT_ID` | Deployed `PolicyEngine` ID |
-| `CUSTOM_ACCOUNT_CONTRACT_ID` | Deployed `CustomAccount` ID |
-| `CUSTOM_ACCOUNT_WASM_HASH` | `CustomAccount` WASM hash |
-| `FUNDER_SECRET_KEY` | Funded testnet keypair for sponsored/on-chain operations |
-| `HUGGINGFACE_API_KEY` | LLM token for reasoning/intent parsing (optional — deterministic fallback otherwise) |
-| `DATABASE_URL` | Backend persistence (SQLite by default) |
-| `NEXT_PUBLIC_AGENTS_BACKEND_URL` | Public URL of the deployed agents backend (see `backend/`). **Read at Next.js *build* time, not runtime** — the browser calls this directly for wallet-signature login and Smart Wallet lookup/registration, so an unset value at build time silently bakes in a `localhost:4001` fallback that no visiting browser can reach. |
-| `ALLOWED_ORIGIN` | Backend-side CORS allowlist (`backend/.env.example`) — set to the deployed frontend's exact origin, or requests from it get CORS-blocked. |
+| Frontend | Next.js, React, TypeScript, Tailwind CSS, graphql-yoga, lightweight-charts. |
+| Backend | Node.js, TypeScript, Express, SQLite, Vitest. |
+| Blockchain | Stellar Soroban (Rust), `@stellar/stellar-sdk`, `@wolf1276/kairos-sdk`. |
+| AI | Configuration-driven LLM providers with structured-output enforcement and deterministic fallbacks. |
+| Deployment | Docker, Vercel, GitHub Actions CI. |
 
-### Run the backend (paper mode)
+## Repository Structure
 
-```bash
-cd backend
-cp .env.example .env               # AUTH_JWT_SECRET is required; see backend/README.md
-pnpm --filter @wolf1276/kairos-agent-backend dev
 ```
-
-### Tests, benchmarks, and the demo
-
-```bash
-pnpm test                                    # SDK unit tests
-pnpm --filter @wolf1276/kairos-agent-backend test   # backend + reasoning engine tests
-pnpm --filter @wolf1276/kairos-agent-backend benchmark   # reasoning benchmark harness
-
-npx tsx scripts/deploy-testnet.ts            # deploy contracts (one-time)
-FUNDER_SECRET_KEY=SC… npx tsx scripts/demo-e2e.ts        # end-to-end delegation demo
+apps/        Dashboard and waitlist frontends
+backend/     Agent backend: reasoning, context, memory, strategy, and protocol engines + REST API
+packages/    SDK, shared types (agent signer lives here as an internal package)
+contracts/   Soroban smart contracts (delegation, policy, wallet, registry)
+configs/     Deployed contract IDs
+scripts/     Deployment and end-to-end demo scripts
+docs/        Architecture, API, and security documentation
 ```
 
 ### Deploy the backend to Render
@@ -233,23 +227,55 @@ Source of truth: [`configs/contracts.testnet.json`](./configs/contracts.testnet.
 
 ## Documentation
 
-| Doc | Contents |
+| Document | Contents |
 | :--- | :--- |
-| [`packages/sdk/README.md`](./packages/sdk/README.md) | SDK usage, modules, request flow |
-| [`backend/README.md`](./backend/README.md) | Strategy terminal, reasoning engine, REST API, auth |
-| [`apps/web/README.md`](./apps/web/README.md) | Dashboard app, onboarding, oracle price API |
-| [`backend/benchmarks/reasoning/README.md`](./backend/benchmarks/reasoning/README.md) | Benchmark harness, scenarios, reports |
-| [`docs/architecture/REASONING_ENGINE.md`](./docs/architecture/REASONING_ENGINE.md) | Reasoning engine design |
-| [`SECURITY.md`](./SECURITY.md) | Security guarantees and architecture |
+| [ARCHITECTURE.md](./docs/architecture/ARCHITECTURE.md) | Soroban-native delegation framework design. |
+| [BACKEND.md](./BACKEND.md) | Backend engines, REST API, and auth. |
+| [FRONTEND.md](./FRONTEND.md) | Dashboard, onboarding, and price API. |
+| [AI_PIPELINE.md](./AI_PIPELINE.md) | Reasoning pipeline design. |
+| [SMART_WALLET.md](./SMART_WALLET.md) | Smart Wallet and onboarding. |
+| [SDK.md](./SDK.md) | `@wolf1276/kairos-sdk` reference. |
+| [PROTOCOLS.md](./PROTOCOLS.md) | Protocol adapters and routing. |
+| [BENCHMARK.md](./BENCHMARK.md) | Benchmark framework. |
+| [API_REFERENCE.md](./API_REFERENCE.md) | REST and GraphQL API surface. |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) | Docker, Vercel, and testnet deployment. |
+| [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) | Local development and Developer Mode. |
+| [SECURITY.md](./SECURITY.md) | Security and threat model. |
 
----
+Additional references: [`backend/README.md`](./backend/README.md), [`apps/web/README.md`](./apps/web/README.md), [`packages/sdk/README.md`](./packages/sdk/README.md), and [`docs/architecture/`](./docs/architecture).
 
 ## Roadmap
 
-- **Now (testnet):** delegation framework · reasoning engine · verification · execution planner · paper trading · reasoning benchmark.
-- **Next:** a functional key-custody signer to unlock live on-chain agent execution; wiring the Autonomous Runtime into the backend process; mainnet.
-- **Later:** multi-agent orchestration, backtesting suite, richer analytics.
+### Completed
+
+- Soroban contracts (delegation, policy, wallet, registry) — tested and deployed to testnet.
+- SDK with on-chain-valid delegations, wallet/delegation/policy/execution/events/registry modules.
+- Context, Memory, Strategy, and Reasoning engines; Provider and Protocol layers.
+- Benchmark framework, paper-trading terminal, and Next.js dashboard.
+- Freighter onboarding, wallet-signature session auth, and Developer Mode.
+
+### In Progress
+
+- Live on-chain agent execution (paper trading is fully functional today).
+- Persistent memory storage providers.
+- Mainnet deployment and contract hardening.
+
+### Planned
+
+- Multi-agent orchestration and richer analytics.
+- Backtesting suite over historical market data.
+- Observability exporters for runtime and context metrics.
+
+## Contributing
+
+Contributions are welcome. This is a pnpm monorepo; each layer has its own package and README.
+
+1. Install prerequisites (Node >=18, pnpm).
+2. `pnpm install` from the repo root.
+3. Make changes with tests that fail before and pass after. No security check may be weakened to pass a test.
+4. Run the relevant test suites and keep CI green.
+5. Update documentation when behavior changes.
 
 ## License
 
-[MIT](./LICENSE).
+Licensed under [MIT](./LICENSE).
