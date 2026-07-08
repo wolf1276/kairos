@@ -10,3 +10,4 @@ export type {
   StageFn,
   PipelineRunnerLogger,
 } from './types.js';
+export type { PipelineBenchmarkOptions } from './orchestrator.js';

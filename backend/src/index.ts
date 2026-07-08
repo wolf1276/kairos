@@ -12,6 +12,8 @@ import { smartWalletsRouter } from './routes/smartWallets.js';
 import { agentContextRouter, contextMetricsRouter } from './routes/context.js';
 import { createMonitoringRouter } from './routes/monitoring.js';
 import { createDashboardRouter } from './routes/dashboard.js';
+import { createBenchmarkRouter } from './routes/benchmark.js';
+import { buildReportBundle } from './benchmarkReports/index.js';
 import { requireAuth } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { startContextMonitor } from './agentContext/monitor.js';
@@ -33,6 +35,8 @@ app.use('/api/monitoring', createMonitoringRouter());
 // per-agent memory/learning/history reads. No AutonomousRuntime is wired into this process yet,
 // so status/health/metrics report `null` and start/stop/pause/resume report 503.
 app.use('/api/dashboard', createDashboardRouter());
+// Benchmark API (Phase 10) — read-only latest/history/comparison/reports over Benchmark Core.
+app.use('/api/benchmark', createBenchmarkRouter({ buildReportBundle }));
 app.use('/api/auth', authRouter);
 // Public — must be registered before the broad `/api` requireAuth mount below, otherwise that
 // middleware runs first and 401s every unauthenticated strategies fetch (the frontend's

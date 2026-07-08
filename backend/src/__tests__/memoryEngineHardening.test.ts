@@ -163,6 +163,14 @@ describe('frozen public contract', () => {
       'MIN_STREAK_LENGTH',
       'PROFITABLE_WIN_RATE_THRESHOLD',
       'LOSING_WIN_RATE_THRESHOLD',
+      'computeEpisodicGrowth',
+      'computeSemanticGrowth',
+      'computeEpisodicDuplicateStats',
+      'computeSemanticDuplicateStats',
+      'computeWorkingMemoryUsage',
+      'computeRetrievalPerformance',
+      'buildMemoryAnalyticsReport',
+      'getMemoryEngineMetricsSnapshot',
     ].sort();
 
     const actualExports = Object.keys(memoryLayerIndex).sort();

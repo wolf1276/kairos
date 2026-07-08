@@ -26,6 +26,8 @@ export {
 export { StrategyRegistry } from './registry.js';
 export { validateStrategySignal, assertValidStrategySignal } from './validation.js';
 export { normalizeConfidence, hashStrategySignal, sha256 } from './util.js';
+export { computeStrategyAnalytics, rankStrategies, buildStrategyRanking } from './analytics.js';
+export type { StrategyRunRecord, StrategyAnalytics, RankedStrategy } from './analytics.js';
 
 import { StrategyRegistry } from './registry.js';
 import { emaCrossStrategy } from './strategies/emaCross.js';

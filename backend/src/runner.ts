@@ -3,6 +3,10 @@ import { runAgentTick } from './tick.js';
 import { getSchedulerIntervalMs } from './config.js';
 
 let timer: NodeJS.Timeout | null = null;
+let lastCycleStartedAt: number | null = null;
+let lastCycleFinishedAt: number | null = null;
+let lastCycleDurationMs: number | null = null;
+let cycleCount = 0;
 // Guards against overlapping cycles *within this process*: each agent's own due-check reads
 // `last_tick_at` from the DB at the *start* of its tick and only writes it back once the tick
 // (oracle read + LLM call + execution) fully completes. If a cycle runs long enough to still be
@@ -26,6 +30,7 @@ export function startScheduler(): void {
   const tick = async () => {
     if (cycleInProgress) return;
     cycleInProgress = true;
+    lastCycleStartedAt = Date.now();
     try {
       const agents = listRunningAgents();
       for (const agent of agents) {
@@ -40,6 +45,9 @@ export function startScheduler(): void {
         }
       }
     } finally {
+      lastCycleFinishedAt = Date.now();
+      lastCycleDurationMs = lastCycleFinishedAt - (lastCycleStartedAt ?? lastCycleFinishedAt);
+      cycleCount += 1;
       cycleInProgress = false;
     }
   };
@@ -58,4 +66,29 @@ export function stopScheduler(): void {
  *  called and stopScheduler() hasn't since. */
 export function isSchedulerRunning(): boolean {
   return timer !== null;
+}
+
+/** Read-only scheduler telemetry for Runtime Analytics (Phase 6) — exposes exactly what this
+ *  in-process scheduler already tracks, no fabricated fields. `cycleInProgress` is exposed so a
+ *  caller can distinguish "healthy but mid-cycle" from "stuck." */
+export interface SchedulerStatus {
+  running: boolean;
+  cycleInProgress: boolean;
+  cycleCount: number;
+  lastCycleStartedAt: number | null;
+  lastCycleFinishedAt: number | null;
+  lastCycleDurationMs: number | null;
+  intervalMs: number;
+}
+
+export function getSchedulerStatus(): SchedulerStatus {
+  return {
+    running: timer !== null,
+    cycleInProgress,
+    cycleCount,
+    lastCycleStartedAt,
+    lastCycleFinishedAt,
+    lastCycleDurationMs,
+    intervalMs: getSchedulerIntervalMs(),
+  };
 }

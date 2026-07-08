@@ -88,3 +88,25 @@ export type {
   RetrievalSummary,
   MemoryIntelligencePackage,
 } from './intelligence/index.js';
+
+// Phase 4 (Memory Analytics) — pure aggregation over externally-supplied memory state; see
+// ./analytics.ts for the "no I/O" philosophy shared with strategyEngine/analytics.ts.
+export {
+  computeEpisodicGrowth,
+  computeSemanticGrowth,
+  computeEpisodicDuplicateStats,
+  computeSemanticDuplicateStats,
+  computeWorkingMemoryUsage,
+  computeRetrievalPerformance,
+  buildMemoryAnalyticsReport,
+  getMemoryEngineMetricsSnapshot,
+} from './analytics.js';
+export type {
+  GrowthStats,
+  DuplicateStats,
+  WorkingMemoryUsage,
+  RetrievalOutcomeRecord,
+  RetrievalPerformance,
+  MemoryAnalyticsInput,
+  MemoryAnalyticsReport,
+} from './analytics.js';

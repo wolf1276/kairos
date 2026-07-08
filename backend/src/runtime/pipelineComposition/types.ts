@@ -13,7 +13,7 @@ import type { UserPolicy } from '../../reasoning/index.js';
 import type { DecisionIntelligenceProviderConfig } from '../../reasoning/decisionIntelligence/requestClient.js';
 import type { BuildContextOptions } from '../../agentContext/contextBuilder.js';
 import type { RuntimeLogger, RuntimePersistenceProvider, ProviderAvailabilityCheck } from '../autonomousRuntime/index.js';
-import type { PipelineRunnerLogger } from '../pipelineRunner/index.js';
+import type { PipelineBenchmarkOptions, PipelineRunnerLogger } from '../pipelineRunner/index.js';
 import type { StrategyRegistry } from '../../strategyEngine/index.js';
 
 /** Derives the post-submission facts the Outcome Recorder needs (Phase 8, frozen) from a built
@@ -56,4 +56,8 @@ export interface KairosCompositionConfig {
 
   /** Pipeline Runner (Phase 12, frozen) wiring. */
   pipelineLogger?: PipelineRunnerLogger;
+  /** Benchmark Core (Phase 1) wiring — when supplied, every pipeline run this composition
+   *  produces is recorded into `benchmark.session`. Omitted entirely means no recording, not a
+   *  silently-fabricated session. */
+  benchmark?: PipelineBenchmarkOptions;
 }

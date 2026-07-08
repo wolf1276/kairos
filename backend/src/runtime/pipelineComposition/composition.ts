@@ -186,7 +186,7 @@ export function createPipelineStages(config: KairosCompositionConfig): PipelineS
 /** Adapts createPipelineStages() into the Pipeline Runner (Phase 12, frozen) — a single call
  *  wires and returns a ready-to-run KairosPipelineRunner. */
 export function createPipelineRunner(config: KairosCompositionConfig): KairosPipelineRunner {
-  return new KairosPipelineRunner(createPipelineStages(config), config.pipelineLogger);
+  return new KairosPipelineRunner(createPipelineStages(config), config.pipelineLogger, config.benchmark);
 }
 
 /** Wires the Pipeline Runner into the Autonomous Runtime (Phase 11, frozen). Returns a fully
