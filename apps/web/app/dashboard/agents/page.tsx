@@ -31,7 +31,6 @@ import {
   getAgentDecisions,
   getAgentPerformance,
   getAgentAuditLog,
-  provisionRoleAgents,
   getRuntimeStatus,
   getRuntimeHealth,
   getRuntimeMetrics,
@@ -55,6 +54,7 @@ import {
   type LearningSnapshot,
 } from "@/app/lib/agentsBackend";
 import { DevPanel } from "./DevPanel";
+import { AgentCreationWizard } from "./AgentCreationWizard";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-white/5 bg-bg-elevated px-2.5 py-1.5 font-mono text-xs text-text-primary transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
@@ -100,6 +100,7 @@ export default function AgentsPage() {
     smartWallets,
     deploying,
     deployError,
+    deploySmartWallet,
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
@@ -110,8 +111,8 @@ export default function AgentsPage() {
   const [recentAudit, setRecentAudit] = useState<AuditLogRow[]>([]);
   const [search, setSearch] = useState("");
   const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!walletOwner) return;
@@ -149,23 +150,18 @@ export default function AgentsPage() {
     return () => clearInterval(id);
   }, [walletOwner, ensureAgentAuth, refresh]);
 
-  // Idempotently mints the 3 fixed role agents (yield/strategic/balancer) — there's no
-  // per-strategy creation flow in this UI, so "Create Agent" just provisions whichever of the
-  // three roles the caller doesn't already have.
+  // Opens the guided agent-creation wizard (see AgentCreationWizard / agentcreation.md) — the
+  // natural-language, review-and-approve flow that provisions + funds a single agent, rather
+  // than silently minting all three role agents at once.
   const handleCreateAgent = useCallback(async () => {
-    setCreating(true);
     setCreateError(null);
     try {
       await ensureAgentAuth();
-      await provisionRoleAgents();
-      await refresh();
-      window.dispatchEvent(new Event("kairos:smart-wallet-changed"));
+      setWizardOpen(true);
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setCreating(false);
     }
-  }, [ensureAgentAuth, refresh]);
+  }, [ensureAgentAuth]);
 
   const agents = useMemo(() => dashboards.map((d) => d.agent), [dashboards]);
 
@@ -271,11 +267,11 @@ export default function AgentsPage() {
           </button>
           <button
             onClick={handleCreateAgent}
-            disabled={creating || !walletOwner}
+            disabled={!walletOwner}
             className="flex items-center gap-1.5 rounded-xl bg-accent/80 px-3.5 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
           >
             <Plus className="h-3.5 w-3.5" />
-            {creating ? "Creating…" : "Create Agent"}
+            Create Agent
           </button>
           {walletOwner && (
             <span className="hidden items-center gap-1.5 rounded-lg border border-white/5 bg-white/[0.02] px-2.5 py-1.5 font-mono text-[11px] text-text-secondary md:flex">
@@ -332,8 +328,8 @@ export default function AgentsPage() {
               <CardBody className="py-10 text-center">
                 <p className="text-sm text-text-muted">
                   No agents yet —{" "}
-                  <button onClick={handleCreateAgent} disabled={creating} className="text-accent/80 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50">
-                    {creating ? "creating…" : "create your agent fleet"}
+                  <button onClick={handleCreateAgent} className="text-accent/80 hover:text-accent">
+                    create your first agent
                   </button>{" "}
                   to get started.
                 </p>
@@ -483,6 +479,20 @@ export default function AgentsPage() {
             </>
           )}
         </>
+      )}
+
+      {wizardOpen && walletOwner && (
+        <AgentCreationWizard
+          smartWalletAddress={smartWalletAddress}
+          smartWallets={smartWallets}
+          networkPassphrase={networkPassphrase}
+          sorobanRpcUrl={wallet?.sorobanRpcUrl}
+          deploying={deploying}
+          deployError={deployError}
+          onDeploySmartWallet={() => deploySmartWallet()}
+          onClose={() => { setWizardOpen(false); refresh(); }}
+          onCreated={(agentId) => { setWizardOpen(false); refresh(); setActiveAgentId(agentId); }}
+        />
       )}
 
       {activeAgent && (
