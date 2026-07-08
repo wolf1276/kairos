@@ -128,7 +128,9 @@ export function useWallet(onResolved: (result: ConnectResult, interactive: boole
 
   const disconnect = useCallback(() => {
     setWallet(null);
-    disconnectWallet().catch(() => {});
+    disconnectWallet().catch((err) => {
+      console.error("Failed to clear wallet-kit session on disconnect:", err);
+    });
   }, []);
 
   useEffect(() => {

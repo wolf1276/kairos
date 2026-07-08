@@ -1,7 +1,6 @@
 // Centralized Feature Engine for the Agent Foundation Layer. Pure aggregation: every number here
 // is computed by an existing service — this module never recomputes indicators, prices, PnL, or
 // allocations itself. No AI, no decisions, no trade/protocol execution.
-import { getDb } from '../db.js';
 import { buildMarketContext } from '../decisionEngine.js';
 import { getActiveDelegationForAgent, getAgentRow } from '../agentService.js';
 import { computeAllocation, getTargets } from '../portfolioService.js';
@@ -23,12 +22,13 @@ export class FeatureEngineError extends Error {}
  *  actually computes; the rest await the same in-flight Promise. */
 const inFlight = new Map<string, Promise<FeatureBuildResult | null>>();
 
+/** row.delegator already *is* the smart wallet address (see wallet_delegations) — this used to
+ *  re-verify it against the SQLite smart_wallets table, but the fallback on a miss was the same
+ *  value passed in, so the lookup never changed the result. Smart-wallet ownership now lives in
+ *  Postgres (smartWalletsDb.ts), which contextBuilder's synchronous pipeline can't query inline;
+ *  simplified to what the lookup always actually returned. */
 function resolveSmartWalletAddress(row: AgentRow): string | null {
-  if (!row.delegator) return null;
-  const row_ = getDb()
-    .prepare('SELECT address FROM smart_wallets WHERE owner = ? AND address = ?')
-    .get(row.owner, row.delegator) as { address: string } | undefined;
-  return row_?.address ?? row.delegator;
+  return row.delegator ?? null;
 }
 
 /**

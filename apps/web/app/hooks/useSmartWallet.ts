@@ -9,6 +9,7 @@ import { useWallet, type ConnectResult } from "./useWallet";
 import { useAuthentication } from "./useAuthentication";
 import { useSmartWallets, type SmartWalletInfo } from "./useSmartWallets";
 import { useOnboarding } from "./useOnboarding";
+import { clearPortfolioSnapshots as clearAgentCache } from "./usePortfolioSnapshots";
 
 export type { SmartWalletInfo } from "./useSmartWallets";
 export { OnboardingStage } from "@/app/services/onboarding";
@@ -166,10 +167,12 @@ export function useSmartWallet(): SmartWalletState {
   );
 
   const disconnect = useCallback(() => {
+    const owner = walletHook.walletOwner;
     walletHook.disconnect();
-    smartWallets.reset();
+    smartWallets.reset(owner);
     onboarding.reset();
-    auth.logout();
+    auth.logout(owner);
+    if (owner) clearAgentCache(owner);
   }, [walletHook, smartWallets, onboarding, auth]);
 
   return {

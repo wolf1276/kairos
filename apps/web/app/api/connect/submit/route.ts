@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { submitSmartWalletDeploy } from "@/app/lib/sdk";
-import { registerOnChain } from "@/app/lib/sdk/registry";
+import { getContractConfig } from "@/app/lib/sdk";
+import { lookupRegistry, registerOnChain } from "@/app/lib/sdk/registry";
 import { OnboardingRequestError, registerSmartWallet, requireAuthHeader, requireOwner, withOnboardingErrors } from "../_shared";
 
 /**
  * POST /api/connect/submit — new-user onboarding step 2: submits the signed deploy from
- * /api/connect/prepare, then persists the wallet mapping via the existing smart-wallets route.
+ * /api/connect/prepare, registers + verifies the on-chain registry entry (the durable source of
+ * truth a later /api/connect/check falls back to), then persists the DB mapping.
  */
 export const POST = withOnboardingErrors(async (request: Request) => {
   const body = await request.json().catch(() => ({}));
@@ -18,18 +20,46 @@ export const POST = withOnboardingErrors(async (request: Request) => {
 
   const deployed = await submitSmartWalletDeploy(owner, saltHex, signedEntryXdr);
 
-  // Best-effort on-chain registry write — the DB write below remains the fast-path source of
-  // truth, and the registry is only consulted as a fallback in /api/connect/check, so a
-  // transient registry-write failure here must not block onboarding.
-  registerOnChain(owner, deployed.address).catch((err) => {
-    console.error("Failed to register smart wallet on-chain registry:", err);
-  });
+  // Registry write must be verified, not fire-and-forget — /api/connect/check's fallback
+  // depends on this entry existing whenever the DB row is lost, so a silent failure here would
+  // leave the wallet unrecoverable and indistinguishable from "never created". The smart wallet
+  // is already live on-chain at this point (deploy can't be undone), so we surface its address
+  // for a retry via /api/connect/register instead of reporting false success.
+  // Not every environment has the registry contract deployed yet (see getContractConfig) —
+  // in that case registerOnChain/lookupRegistry are permanent no-ops, and requiring verification
+  // would fail onboarding everywhere the registry simply isn't configured. Only enforce the
+  // verified-write invariant where the registry actually exists.
+  if (getContractConfig().registry) {
+    try {
+      await registerOnChain(owner, deployed.address);
+    } catch (err) {
+      console.error("Failed to register smart wallet on-chain registry:", err);
+      return NextResponse.json(
+        {
+          error: "Smart wallet deployed on-chain but registry registration failed — retry to re-link it",
+          smartWallet: deployed.address,
+        },
+        { status: 502 }
+      );
+    }
+    const verified = await lookupRegistry(owner);
+    if (verified !== deployed.address) {
+      console.error("Registry verification mismatch after registration", { owner, expected: deployed.address, got: verified });
+      return NextResponse.json(
+        {
+          error: "Smart wallet deployed on-chain but registry entry could not be verified — retry to re-link it",
+          smartWallet: deployed.address,
+        },
+        { status: 502 }
+      );
+    }
+  }
 
   const registerRes = await registerSmartWallet(authHeader, deployed.address);
   if (!registerRes.ok) {
-    // The smart wallet is already live on-chain at this point — surface the deployed address so
-    // the caller can retry *just* the persistence step via /api/connect/register instead of
-    // preparing/signing/submitting a brand new (and redundant) deployment.
+    // Registry entry is confirmed good — only the DB persistence step failed. Surface the
+    // deployed address so the caller can retry *just* that step via /api/connect/register
+    // instead of preparing/signing/submitting a brand new (and redundant) deployment.
     return NextResponse.json(
       {
         error: registerRes.data.error || "Smart wallet deployed on-chain but failed to save — retry to re-link it",

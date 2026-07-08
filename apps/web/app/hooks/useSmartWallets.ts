@@ -76,7 +76,11 @@ export interface UseSmartWalletsResult {
   /** Commits a resolved smart-wallet list for `wallet`, selects whichever address ends up
    *  selected (persisted selection, or the first in the list), and loads its balance. */
   applySmartWallets: (wallet: WalletState, wallets: SmartWalletInfo[]) => Promise<void>;
-  reset: () => void;
+  /** Clears in-memory state AND this owner's persisted localStorage smart-wallet cache — called
+   *  on logout. Without clearing storage, a stale cached list/selection would survive and get
+   *  re-read on the next connect before the DB/registry reconciliation in mergeSmartWallets even
+   *  runs, defeating "reconnect must restore from DB -> Registry, never browser cache". */
+  reset: (owner: string | null) => void;
 }
 
 /**
@@ -176,6 +180,7 @@ export function useSmartWallets(wallet: WalletState | null): UseSmartWalletsResu
       throw new Error(`PREPARE_WALLET_DEPLOY failed (${prepareRes.status}): ${text.slice(0, 200)}`);
     }
     const prepared = await prepareRes.json();
+    if (prepared.alreadyExists) return prepared.smartWalletAddress as string;
 
     const signedEntryXdr = await signAuthEntryWithWallet(
       prepared.unsignedEntryXdr,
@@ -216,9 +221,20 @@ export function useSmartWallets(wallet: WalletState | null): UseSmartWalletsResu
         setSmartWallets(next);
         saveWalletList(walletOwner, next);
         selectWallet(address);
-        // Best-effort — the wallet is already usable locally even if this registration fails
-        // (e.g. auth token not ready yet); it'll just be missing from other devices until retried.
-        registerSmartWallet(address, label).catch(() => {});
+        // The wallet is already live on-chain (irreversible) and usable locally, but persistence
+        // to the backend DB/registry must be verified, not fire-and-forget — a swallowed failure
+        // here would leave the wallet invisible to other devices/sessions with no signal to the
+        // user that a retry is needed. Surface it via deployError instead of reporting silent
+        // success; /api/connect/register is the retry path (see its route for the verify step).
+        try {
+          await registerSmartWallet(address, label);
+        } catch (registerErr) {
+          setDeployError(
+            `Smart wallet deployed but failed to save — retry from another action to re-link it (${
+              registerErr instanceof Error ? registerErr.message : String(registerErr)
+            })`
+          );
+        }
       } catch (e) {
         setDeployError(e instanceof Error ? e.message : String(e));
       } finally {
@@ -228,11 +244,17 @@ export function useSmartWallets(wallet: WalletState | null): UseSmartWalletsResu
     [walletOwner, wallet, deployWallet, smartWallets, selectWallet]
   );
 
-  const reset = useCallback(() => {
+  const reset = useCallback((owner: string | null) => {
     setSmartWallets([]);
     setSmartWalletAddress(null);
     setSmartWalletBalance(null);
     setDeployError(null);
+    if (owner) {
+      try {
+        localStorage.removeItem(LIST_KEY_PREFIX + owner);
+        localStorage.removeItem(SELECTED_KEY_PREFIX + owner);
+      } catch {}
+    }
   }, []);
 
   return {

@@ -37,6 +37,14 @@ function save(owner: string, snapshots: PortfolioSnapshot[]) {
   } catch {}
 }
 
+/** Drops this owner's cached portfolio-value history — called on logout so a reconnecting owner
+ *  (or a different owner on a shared device) never sees another session's stale growth graph. */
+export function clearPortfolioSnapshots(owner: string): void {
+  try {
+    localStorage.removeItem(KEY_PREFIX + owner);
+  } catch {}
+}
+
 function deriveGrowth(snapshots: PortfolioSnapshot[]): PortfolioGrowth {
   if (snapshots.length < 2) {
     return {

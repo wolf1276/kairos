@@ -199,9 +199,9 @@ docs/        Architecture, API, and security documentation
 
 ### Deploy the backend to Render
 
-`render.yaml` at repo root is a Render Blueprint for `backend/` (Docker-built, health-checked at `/health`, with a persistent Disk mounted at `AGENTS_DB_PATH` so the SQLite DB — including `smart_wallets` rows — survives redeploys instead of silently resetting). In the Render dashboard: **New +** → **Blueprint** → point at this repo. Fields marked `sync: false` in `render.yaml` must be filled in manually in the dashboard (they're secrets/deploy-specific values, not committed to git) — notably `ALLOWED_ORIGIN` (the deployed frontend's exact origin) and the contract IDs from `configs/contracts.testnet.json`.
+`render.yaml` at repo root is a Render Blueprint for `backend/` (Docker-built, health-checked at `/health`, with a persistent Disk mounted at `AGENTS_DB_PATH` for the SQLite DB — agents/trades/etc). Smart wallet ownership (`smart_wallets`) no longer lives in that SQLite file — it's a managed Postgres instance (`kairos-smart-wallets` in `render.yaml`, wired to the web service via `DATABASE_URL`), so it survives redeploys/restarts even on plans without a persistent Disk. In the Render dashboard: **New +** → **Blueprint** → point at this repo. Fields marked `sync: false` in `render.yaml` must be filled in manually in the dashboard (they're secrets/deploy-specific values, not committed to git) — notably `ALLOWED_ORIGIN` (the deployed frontend's exact origin) and the contract IDs from `configs/contracts.testnet.json`.
 
-Requires at least Render's Starter (paid) plan — the free tier has no persistent Disk, so the SQLite DB is wiped on every redeploy/restart regardless of what `render.yaml` declares.
+The web service's SQLite DB (agents/trades/everything except smart wallets) still needs at least Render's Starter (paid) plan for the Disk to persist — the free tier wipes it on every redeploy/restart. `DATABASE_URL` (smart-wallet Postgres) persists regardless of the web service's plan.
 
 ### Deploy to Vercel
 

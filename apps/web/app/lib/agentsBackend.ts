@@ -140,7 +140,9 @@ let authToken: string | null = null;
  *  called on a 401 so a rejected/expired token can't keep getting resent by ensureAgentAuth's
  *  cache-first check. Scans by prefix rather than taking a publicKey so it works regardless of
  *  which wallet's token was rejected. */
-function clearAllStoredSessionTokens(): void {
+/** Exported for logout flows (see useAuthentication.ts) that need to drop every cached session
+ *  token deterministically, not just the in-memory bearer token. */
+export function clearAllStoredSessionTokens(): void {
   try {
     const keys: string[] = [];
     for (let i = 0; i < sessionStorage.length; i++) {

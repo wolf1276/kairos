@@ -28,6 +28,13 @@ export function getDbPath(): string {
   return process.env.AGENTS_DB_PATH || './data/agents.db';
 }
 
+/** Postgres connection string for smart-wallet ownership — the production DB of record,
+ *  replacing the SQLite table that used to live alongside agents.db. Required, no fallback:
+ *  silently falling back to a local file is exactly the durability gap this migration closes. */
+export function getDatabaseUrl(): string {
+  return readRequiredEnv('DATABASE_URL');
+}
+
 /** 32-byte hex key used to encrypt agent secret keys at rest (AES-256-GCM). */
 export function getMasterKeyHex(): string {
   const key = readRequiredEnv('AGENT_MASTER_KEY');

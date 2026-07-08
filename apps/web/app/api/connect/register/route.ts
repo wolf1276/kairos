@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { registerOnChain } from "@/app/lib/sdk/registry";
+import { getContractConfig } from "@/app/lib/sdk";
+import { lookupRegistry, registerOnChain } from "@/app/lib/sdk/registry";
 import { registerSmartWallet, requireAuthHeader, requireSmartWalletAddress, withOnboardingErrors } from "../_shared";
 
 /**
@@ -18,11 +19,27 @@ export const POST = withOnboardingErrors(async (request: Request) => {
   }
 
   const owner = registerRes.data.owner;
-  if (owner) {
-    // Best-effort — same non-blocking treatment as /api/connect/submit's registry write.
-    registerOnChain(owner, smartWallet).catch((err) => {
+  // Registry write must be verified, not fire-and-forget — same invariant as /api/connect/submit.
+  // A silent failure here would leave /api/connect/check's registry fallback pointing nowhere for
+  // this owner while the DB row already reports success, so a mismatch must fail the request.
+  if (owner && getContractConfig().registry) {
+    try {
+      await registerOnChain(owner, smartWallet);
+    } catch (err) {
       console.error("Failed to register smart wallet on-chain registry:", err);
-    });
+      return NextResponse.json(
+        { error: "Wallet mapping saved but registry registration failed — retry to re-link it", smartWallet },
+        { status: 502 }
+      );
+    }
+    const verified = await lookupRegistry(owner);
+    if (verified !== smartWallet) {
+      console.error("Registry verification mismatch after registration", { owner, expected: smartWallet, got: verified });
+      return NextResponse.json(
+        { error: "Wallet mapping saved but registry entry could not be verified — retry to re-link it", smartWallet },
+        { status: 502 }
+      );
+    }
   }
 
   return NextResponse.json({ success: true, status: "created", smartWallet });

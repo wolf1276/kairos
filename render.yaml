@@ -6,16 +6,26 @@
 # Verify this against Render's current Blueprint spec (https://render.com/docs/blueprint-spec)
 # before relying on it in a real deploy — field names occasionally change across Render's docs
 # revisions and this was written without access to a live Render account to test against.
+databases:
+  # Smart wallet ownership (backend/src/smartWalletsDb.ts) — previously a table inside the SQLite
+  # file on the disk below, which free/non-disk-backed plans silently wipe on every
+  # redeploy/restart (see apps/web/app/hooks/useSmartWallets.ts's comment on exactly this failure
+  # mode). Moved to a real managed Postgres instance so wallet ownership survives redeploys
+  # regardless of web service plan/disk config.
+  - name: kairos-smart-wallets
+    plan: starter
+    postgresMajorVersion: 16
+
 services:
   - type: web
     name: kairos-agent-backend
     runtime: docker
     dockerfilePath: backend/Dockerfile
     dockerContext: .
-    # Free plan containers have no persistent disk — the SQLite DB below would be silently wiped
-    # on every redeploy/restart (see apps/web/app/hooks/useSmartWallets.ts's comment on exactly
-    # this failure mode for Smart Wallet rows). A disk-backed plan is required for `disk:` below
-    # to actually persist anything.
+    # Free plan containers have no persistent disk — the SQLite DB below (agents/trades/etc,
+    # everything except smart-wallet ownership, which now lives in the `kairos-smart-wallets`
+    # Postgres instance above) would be silently wiped on every redeploy/restart. A disk-backed
+    # plan is required for `disk:` below to actually persist anything.
     plan: starter
     healthCheckPath: /health
     autoDeploy: true
@@ -30,6 +40,10 @@ services:
         value: 4001
       - key: AGENTS_DB_PATH
         value: /app/backend/data/agents.db
+      - key: DATABASE_URL
+        fromDatabase:
+          name: kairos-smart-wallets
+          property: connectionString
       - key: STELLAR_NETWORK
         value: testnet
       # Must equal the deployed Vercel frontend's exact origin (scheme + host, no trailing

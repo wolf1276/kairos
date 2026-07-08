@@ -2,8 +2,8 @@
 
 import { useCallback } from "react";
 import type { WalletState } from "@/app/lib/stellar";
-import { challengeAndVerify, getStoredSessionToken } from "@/app/lib/agentsAuth";
-import { setAuthToken } from "@/app/lib/agentsBackend";
+import { challengeAndVerify, clearStoredSessionToken, getStoredSessionToken } from "@/app/lib/agentsAuth";
+import { clearAllStoredSessionTokens, setAuthToken } from "@/app/lib/agentsBackend";
 
 export interface LoginResult {
   authed: boolean;
@@ -23,8 +23,9 @@ export interface UseAuthenticationResult {
    *  `interactive: false` for background polling so a cleared token doesn't repeatedly pop a
    *  Freighter signature prompt unattended. */
   ensureAgentAuth: (wallet: WalletState | null, interactive?: boolean) => Promise<void>;
-  /** Drops the current bearer token — called on disconnect. */
-  logout: () => void;
+  /** Drops the current bearer token and every cached wallet-session token (sessionStorage) —
+   *  called on disconnect. Never leaves a stale session behind for reconnect to pick back up. */
+  logout: (owner: string | null) => void;
 }
 
 /**
@@ -68,8 +69,10 @@ export function useAuthentication(): UseAuthenticationResult {
     }
   }, []);
 
-  const logout = useCallback(() => {
+  const logout = useCallback((owner: string | null) => {
     setAuthToken(null);
+    if (owner) clearStoredSessionToken(owner);
+    clearAllStoredSessionTokens();
   }, []);
 
   return { login, ensureAgentAuth, logout };

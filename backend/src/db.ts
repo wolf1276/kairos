@@ -131,19 +131,9 @@ export interface AuditLogRow {
   created_at: number;
 }
 
-/** One delegation per (delegator wallet, delegate agent) pair — each agent tied to a wallet
- *  holds its own independent spend delegation, so multiple agents (e.g. the 3 autonomous role
- *  agents) can each have live spend authority from the same smart wallet simultaneously. */
-export interface SmartWalletRow {
-  owner: string;
-  address: string;
-  label: string | null;
-  /** Stellar network this smart wallet was deployed on (e.g. "testnet") — null for rows
-   *  registered before this column existed. */
-  network: string | null;
-  created_at: number;
-  updated_at: number;
-}
+/** Smart wallet ownership now lives in Postgres — see smartWalletsDb.ts. This type stays
+ *  re-exported from there for callers that only imported it from db.ts historically. */
+export type { SmartWalletRow } from './smartWalletsDb.js';
 
 export interface WalletDelegationRow {
   delegator: string;
@@ -531,16 +521,6 @@ export function getDb(): Database.Database {
   // so a power loss can lose only the last few committed transactions, never corrupt the DB.
   db.pragma('synchronous = NORMAL');
 
-  // Pre-existing databases from before the capital_wallets -> smart_wallets rename. Must run
-  // before the CREATE TABLE IF NOT EXISTS smart_wallets below, otherwise that statement creates
-  // an empty smart_wallets table first and this rename then collides with it.
-  const hasLegacyCapitalWalletsTable = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'capital_wallets'")
-    .get();
-  if (hasLegacyCapitalWalletsTable) {
-    db.exec('ALTER TABLE capital_wallets RENAME TO smart_wallets');
-  }
-
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
       id TEXT PRIMARY KEY,
@@ -567,16 +547,6 @@ export function getDb(): Database.Database {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (delegator, delegate)
     );
-    CREATE TABLE IF NOT EXISTS smart_wallets (
-      owner TEXT NOT NULL,
-      address TEXT NOT NULL,
-      label TEXT,
-      network TEXT,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL DEFAULT 0,
-      PRIMARY KEY (owner, address)
-    );
-    CREATE INDEX IF NOT EXISTS idx_smart_wallets_owner ON smart_wallets(owner);
     CREATE TABLE IF NOT EXISTS trades (
       id TEXT PRIMARY KEY,
       agent_id TEXT NOT NULL,
@@ -788,15 +758,6 @@ export function getDb(): Database.Database {
     db.exec("ALTER TABLE trades ADD COLUMN mode TEXT NOT NULL DEFAULT 'live'");
   }
 
-  // Pre-existing databases (created before onboarding recorded a network/last-updated time)
-  // won't have these from CREATE TABLE IF NOT EXISTS alone.
-  const smartWalletColumns = db.prepare("PRAGMA table_info(smart_wallets)").all() as { name: string }[];
-  if (!smartWalletColumns.some((c) => c.name === 'network')) {
-    db.exec('ALTER TABLE smart_wallets ADD COLUMN network TEXT');
-  }
-  if (!smartWalletColumns.some((c) => c.name === 'updated_at')) {
-    db.exec('ALTER TABLE smart_wallets ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0');
-  }
 
   migrateWalletDelegationsToPerAgent(db);
   addForeignKeys(db);
@@ -831,22 +792,6 @@ export function getAuthChallenge(publicKey: string): AuthChallengeRow | undefine
 
 export function deleteAuthChallenge(publicKey: string): void {
   getDb().prepare('DELETE FROM auth_challenges WHERE public_key = ?').run(publicKey);
-}
-
-export function listSmartWallets(owner: string): SmartWalletRow[] {
-  return getDb().prepare('SELECT * FROM smart_wallets WHERE owner = ? ORDER BY created_at ASC').all(owner) as SmartWalletRow[];
-}
-
-/** Idempotent — re-registering an address already on file for this owner just updates its
- *  label/network and bumps updated_at. */
-export function upsertSmartWallet(owner: string, address: string, label: string | null, network: string | null = null): void {
-  getDb()
-    .prepare(
-      `INSERT INTO smart_wallets (owner, address, label, network, created_at, updated_at)
-       VALUES (@owner, @address, @label, @network, @now, @now)
-       ON CONFLICT(owner, address) DO UPDATE SET label = @label, network = COALESCE(@network, network), updated_at = @now`
-    )
-    .run({ owner, address, label, network, now: Date.now() });
 }
 
 export function getWalletDelegation(delegator: string, delegate: string): WalletDelegationRow | undefined {

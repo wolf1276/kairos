@@ -3,6 +3,7 @@ import { Asset } from '@stellar/stellar-sdk';
 import type { Caveat, Delegation } from '@wolf1276/kairos-sdk';
 import { ROOT_AUTHORITY } from '@wolf1276/kairos-sdk';
 import { getContractConfig, getKairosClient, getFunderKeypair } from '../../lib/sdk';
+import { lookupRegistry } from '../../lib/sdk/registry';
 
 // `Delegation.salt`/`.nonce` are bigint and `Caveat.terms` is a Uint8Array — neither survives
 // `JSON.stringify` (bigint throws, Uint8Array serializes as a plain object). Convert to
@@ -49,6 +50,16 @@ export async function POST(request: Request) {
         const ownerAddress: string = body.owner;
         if (!ownerAddress) {
           return NextResponse.json({ error: 'owner address is required' }, { status: 400 });
+        }
+
+        // Hard invariant: never deploy a second smart wallet for an owner that already has
+        // one on-chain. The client's local/DB view can be stale or empty (cache cleared,
+        // DB row lost on a redeploy — see useSmartWallets.ts) even though the registry still
+        // has the mapping, so this is checked here against the registry directly rather than
+        // trusted from the caller.
+        const existing = await lookupRegistry(ownerAddress);
+        if (existing) {
+          return NextResponse.json({ success: true, alreadyExists: true, smartWalletAddress: existing });
         }
 
         // Fund (and wait for Soroban RPC to see) the funder account before deploying —
