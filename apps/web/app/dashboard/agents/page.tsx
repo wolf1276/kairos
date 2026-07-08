@@ -263,7 +263,7 @@ export default function AgentsPage() {
       </header>
 
       {!connected ? (
-        <Card>
+        <Card className="card-matte">
           <CardBody className="text-center">
             <p className="mb-3 text-xs text-text-muted">Connect Freighter to view your agent fleet.</p>
             <button
@@ -276,7 +276,7 @@ export default function AgentsPage() {
           </CardBody>
         </Card>
       ) : !smartWalletAddress ? (
-        <Card>
+        <Card className="card-matte">
           <CardBody className="text-center">
             <p className="text-xs text-text-muted">
               {deploying ? "Deploying your smart wallet…" : "Your smart wallet hasn't finished deploying yet."}
@@ -299,7 +299,7 @@ export default function AgentsPage() {
               ))}
             </div>
           ) : dashboards.length === 0 ? (
-            <Card>
+            <Card className="card-matte">
               <CardBody className="py-10 text-center">
                 <p className="text-sm text-text-muted">
                   No agents yet — launch a strategy from the <a href="/dashboard/trade" className="text-accent/80 hover:text-accent">Trade page</a> to get started.
@@ -338,7 +338,7 @@ export default function AgentsPage() {
 
               {/* ── Fleet Analytics ── */}
               <section className="grid grid-cols-1 gap-3 lg:grid-cols-3">
-                <Card className="lg:col-span-1">
+                <Card className="lg:col-span-1 card-matte">
                   <CardHeader title={<span className="flex items-center gap-2"><PieChartIcon className="h-3.5 w-3.5 text-accent" />Protocol Allocation</span>} />
                   <CardBody className="pt-2">
                     {allocationSlices.length === 0 ? (
@@ -371,7 +371,7 @@ export default function AgentsPage() {
                   </CardBody>
                 </Card>
 
-                <Card className="lg:col-span-2">
+                <Card className="lg:col-span-2 card-matte">
                   <CardHeader title={<span className="flex items-center gap-2"><BarChart3 className="h-3.5 w-3.5 text-accent" />PnL by Agent</span>} />
                   <CardBody className="pt-2">
                     {pnlByAgent.length === 0 ? (
@@ -413,7 +413,7 @@ export default function AgentsPage() {
                   </CardBody>
                 </Card>
 
-                <Card className="lg:col-span-3">
+                <Card className="lg:col-span-3 card-matte">
                   <CardHeader title={<span className="flex items-center gap-2"><Layers className="h-3.5 w-3.5 text-accent" />Fleet Distribution</span>} />
                   <CardBody className="pt-2">
                     <div className="flex flex-wrap gap-4">
@@ -432,7 +432,7 @@ export default function AgentsPage() {
               </section>
 
               {/* ── Recent Activity ── */}
-              <Card>
+              <Card className="card-matte">
                 <CardHeader title={<span className="flex items-center gap-2"><Radio className="h-3.5 w-3.5 text-accent" />Recent Activity</span>} />
                 <CardBody className="space-y-1.5 pt-2">
                   {recentAudit.length === 0 ? (
@@ -474,7 +474,7 @@ function Kpi({
   label: string; value: number; format: (n: number) => string; icon: React.ReactNode; tone?: "success" | "error" | "neutral";
 }) {
   return (
-    <Card className="p-4">
+    <Card className="p-4 card-matte">
       <div className="flex items-center justify-between">
         <p className="font-mono text-[9px] font-medium uppercase tracking-[0.14em] text-text-muted">{label}</p>
         <span className="text-text-muted">{icon}</span>
