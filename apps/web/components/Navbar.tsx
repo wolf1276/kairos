@@ -4,6 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useWalletContext } from "@/app/contexts/WalletContext";
+import { SettingsWidget } from "./SettingsWidget";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Overview", exact: true },
@@ -91,6 +92,7 @@ export function Navbar() {
 
         {isDashboard && wallet && (
           <>
+            <SettingsWidget />
             {!wallet.connected ? (
               <button
                 onClick={() => wallet.connect()}
