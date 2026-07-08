@@ -2,6 +2,10 @@
 
 The official TypeScript SDK for interacting with the **Kairos Delegation Framework** on Stellar's Soroban smart contract platform.
 
+> Part of the [Kairos monorepo](https://github.com/wolf1276/kairos). This SDK is the stable,
+> testnet-ready client the [backend](https://github.com/wolf1276/kairos/tree/main/backend) and
+> [web app](https://github.com/wolf1276/kairos/tree/main/apps/web) build on.
+
 ## Features
 
 - **Wallet Management**: Easily create, load, and interact with Custom Account smart wallets.

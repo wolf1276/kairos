@@ -1,156 +1,105 @@
 # @wolf1276/kairos-agent-backend
 
-Custodial agent-wallet runtime + Strategy Mode trading engine. Unlike `packages/mcp-agent`
-(each user runs their own local MCP server holding its own MPC-backed key), this is a
-centralized service that:
+The Kairos agent backend: a strategy-trading terminal and the AI **Reasoning Engine**, exposed over a REST API and persisted to SQLite. It runs `dca` / `quant` / `limit` / `role` strategies against live market data, scoped to a wallet authenticated by a Freighter signature session.
 
-1. Creates a Turnkey-backed Ed25519 key per agent — the private key is generated and held as
-   secret shares across Turnkey's MPC signing cluster, never assembled in this process (see
-   `src/turnkey.ts`, `@wolf1276/kairos-turnkey-signer`). Agents created before this
-   integration keep working via their legacy AES-256-GCM-encrypted secret (`AGENT_MASTER_KEY`).
-2. Lets a user attach a signed Kairos delegation to an agent (delegate = that agent's public key).
-3. Runs `dca` (delegated spend), `quant` (technical-indicator signal trading), `limit`
-   (one-shot conditional order), and `role` (LLM-advised Strategic/Yield/Balancer agents)
-   strategies, each in **paper** (simulated fill, no signing/submission) or **live** (real
-   Stellar transaction) mode, set per agent at creation.
-4. Persists every agent, trade, position, and lifecycle/execution event to SQLite, scoped to
-   the authenticated wallet — nothing lives only in frontend state.
+> [!IMPORTANT]
+> **Paper mode is the functional path today.** A paper agent runs the full pipeline — market data
+> → decision → validation → position/PnL → audit — with a synthetic fill instead of a signed
+> transaction. **Live mode requires a working key-custody signer**, and the current Turnkey MPC
+> integration (`@wolf1276/kairos-turnkey-signer`) is not functional end to end, so live on-chain
+> execution is effectively disabled. Everything else in this service works against Stellar testnet.
 
-The frontend at `/dashboard/agents` and `/dashboard/trade` talks to this service directly over
-HTTP, authenticated via a Freighter wallet-signature session token.
+The frontend at `/dashboard/agents` and `/dashboard/context` talks to this service over HTTP, authenticated with a Freighter wallet-signature session token.
 
 ## Setup
 
 ```bash
 cp .env.example .env
-# fill in DELEGATION_MANAGER_CONTRACT_ID / POLICY_CONTRACT_ID / CUSTOM_ACCOUNT_CONTRACT_ID
-# from configs/contracts.testnet.json.
+# Fill in the deployed contract IDs from ../configs/contracts.testnet.json:
+#   DELEGATION_MANAGER_CONTRACT_ID / POLICY_CONTRACT_ID / CUSTOM_ACCOUNT_CONTRACT_ID
 #
-# Turnkey (new agents' keys live here): set TURNKEY_ORGANIZATION_ID and point
-# TURNKEY_CREDENTIALS_FILE at your exported Turnkey API key JSON, e.g.
-# ../secrets/kairos-api-turnkey.json (keep it out of source control).
+# AUTH_JWT_SECRET signs the session tokens issued after wallet-signature login:
+openssl rand -hex 32
 #
-# AUTH_JWT_SECRET signs session tokens issued after wallet-signature login:
-openssl rand -hex 32
-
-# AGENT_MASTER_KEY is only needed if this DB has agents created before Turnkey integration:
-openssl rand -hex 32
+# HUGGINGFACE_API_KEY (optional) enables LLM decisions/intent parsing; a deterministic
+# fallback is used when it's unset or the API is unavailable.
 
 pnpm --filter @wolf1276/kairos-agent-backend dev
 ```
 
+## Reasoning Engine
+
+`src/reasoning/` is a mostly-deterministic decision pipeline that sits on top of the [Context Layer](../docs/architecture/CONTEXT_LAYER.md) (`src/agentContext/`) and the [Memory Engine](../docs/architecture/MEMORY_ENGINE.md) (`src/memoryLayer/`). Only the Decision Intelligence step calls an LLM; every step after it is rule-based and reproducible.
+
+```
+AgentContext + MemoryPackage + UserPolicy
+        │
+        ▼
+  Decision Intelligence   (src/reasoning/decisionIntelligence) — LLM proposes an action,
+        │                  never sizes or authorizes it
+        ▼
+  Verification            (src/reasoning/verification) — deterministic rules: schema, policy,
+        │                  capital, risk, evidence, consistency
+        ▼
+  Execution Planner       (src/reasoning/executionPlanner) — deterministic plan +
+                           prerequisite checks, no chain call
+```
+
+The public surface is `src/reasoning/index.ts`; nothing outside the engine reaches into its
+internals. Full design: [`docs/architecture/REASONING_ENGINE.md`](../docs/architecture/REASONING_ENGINE.md).
+The engine is exercised by the [reasoning benchmark harness](./benchmarks/reasoning/README.md) and
+an extensive unit-test suite (`src/__tests__/`).
+
 ## Auth
 
-Every route under `/api/agents`, `/api/positions`, `/api/audit`, `/api/agents/summary`
-requires a bearer session token, obtained via a Freighter wallet-signature challenge/response
-(no password/email — the connected Stellar address *is* the identity):
+Every route under `/api/agents`, `/api/positions`, `/api/audit`, `/api/smart-wallets` requires a bearer session token, obtained via a Freighter wallet-signature challenge/response — no password or email, the connected Stellar address *is* the identity:
 
-- `POST /api/auth/challenge { publicKey }` → `{ nonce, message }` — a short-lived (5min) nonce
-  bound to that address.
+- `POST /api/auth/challenge { publicKey }` → `{ nonce, message }` — a short-lived (5 min) nonce bound to that address.
 - Client signs `message` with Freighter's `signMessage`.
-- `POST /api/auth/verify { publicKey, signature }` → `{ token }` — verifies the ed25519
-  signature over the exact challenge message, upserts a `users` row, issues a 7-day JWT.
-- Every subsequent request sends `Authorization: Bearer <token>`. The backend derives the
-  caller's identity from this token — a client-supplied `owner` field is never trusted, and
-  every `:id`-scoped route additionally checks the agent's `owner` matches the token's
-  `publicKey` (403 otherwise).
+- `POST /api/auth/verify { publicKey, signature }` → `{ token }` — verifies the Ed25519 signature over the exact challenge, upserts a `users` row, issues a 7-day JWT.
+- Every subsequent request sends `Authorization: Bearer <token>`. Identity is derived from the token — a client-supplied `owner` is never trusted, and every `:id`-scoped route additionally checks the agent's `owner` matches the token's `publicKey` (403 otherwise).
 
-See `apps/web/app/lib/agentsAuth.ts` for the frontend side of this handshake (run once per
-Freighter connection, cached in `sessionStorage`). This is separate from the *onboarding* flow
-(deploying/checking a caller's Smart Wallet, via `apps/web/app/api/connect/*` and the
-`smart_wallets` table below) — see the root [`README.md`](../README.md#authentication--onboarding)
-for how the two fit together.
+This is separate from the *onboarding* flow (deploying/checking a Smart Wallet, via `apps/web/app/api/connect/*`) — see the root [Getting Started](../README.md#getting-started) for how the two fit together.
 
 ## Strategy execution
 
-- **Scheduler** (`src/runner.ts`): in-process `setInterval` poll, ticks every `running` agent
-  every `SCHEDULER_INTERVAL_MS`; each agent's own `intervalSeconds` further throttles it. Drives
-  `dca` fully and acts as the slow-poll fallback for `quant`/`limit` if the price stream drops.
-- **PriceFeedService** (`src/priceFeed.ts`): subscribes to Horizon's native SSE trade stream per
-  active pair and evaluates `quant`/`limit` triggers in-memory on every trade tick, so a limit
-  order or quant re-check fires near-instantly instead of waiting for the next scheduler pass.
-  Note: Horizon only pushes on actual DEX trades, not a fixed clock — thin pairs can still see
-  multi-second gaps.
-- **Paper vs. live** (`src/paperExecutor.ts` vs. the real-execution functions in `src/tick.ts`):
-  `mode` is set once at agent creation and is immutable — a paper agent never signs or submits
-  a real transaction; its trades get a synthetic `tx_hash = paper-<uuid>` but flow through the
-  exact same PnL/position/audit pipeline as a live trade.
-- **Role agents** (`src/roleTick.ts`, `src/decisionEngine.ts`): three LLM-advised agents —
-  Strategic (picks a quant strategy for the current regime and proposes buy/sell/hold, grounded
-  against that strategy's own signal), Yield (reallocates idle capital into a simulated yield
-  venue), and Portfolio Balancer (proposes a rebalance on allocation drift). Each tick runs
-  Live Oracle → Analysis → LLM Decision (`meta-llama/Llama-3.1-8B-Instruct`, deterministic
-  fallback if HF is unavailable) → `validation.ts` (policy → delegation → risk) → Execute →
-  Positions → Audit. `validation.ts` hard-blocks trades above a 12% volatility ceiling and
-  circuit-breaks the agent once cumulative loss exceeds 20% of its allocated capital.
+- **Scheduler** (`src/runner.ts`): in-process `setInterval` poll; ticks every `running` agent, throttled by each agent's own `intervalSeconds`. Drives `dca` and acts as the slow-poll fallback for `quant` / `limit`.
+- **PriceFeedService** (`src/priceFeed.ts`): subscribes to Horizon's SSE trade stream per active pair and evaluates `quant` / `limit` triggers in-memory on every trade tick — so a limit order or quant re-check fires near-instantly. (Horizon pushes on actual DEX trades, not a fixed clock, so thin pairs can still see gaps.)
+- **Paper vs. live** (`src/paperExecutor.ts` vs. the live path in `src/tick.ts`): `mode` is fixed at agent creation and immutable. A paper agent gets a synthetic `tx_hash = paper-<uuid>` but flows through the exact same PnL / position / audit pipeline as a live trade. Live execution is gated on a working signer (see the note above).
+- **Role agents** (`src/roleTick.ts`, `src/decisionEngine.ts`): Strategic, Yield, and Balancer agents, each running Context → Analysis → LLM decision (deterministic fallback if unavailable) → validation (policy → delegation → risk) → execute → positions → audit. Validation hard-blocks trades above a 12% volatility ceiling and circuit-breaks an agent once cumulative loss exceeds 20% of its allocated capital.
 
 ## Persistence
 
-SQLite (`better-sqlite3`), manual `CREATE TABLE IF NOT EXISTS` + guarded `ALTER TABLE`
-migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `trades`,
-`positions`, `audit_log`, `users`, `auth_challenges`, `smart_wallets`.
+SQLite (`better-sqlite3`), with hand-written `CREATE TABLE IF NOT EXISTS` + guarded `ALTER TABLE` migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `trades`, `positions`, `audit_log`, `users`, `auth_challenges`, `smart_wallets`.
 
-- `smart_wallets` (`src/routes/smartWallets.ts`, `listSmartWallets`/`upsertSmartWallet` in
-  `src/db.ts`) — one row per `(owner, address)`, the server-side record of which Smart Wallet
-  contract(s) an owner has deployed. This is what `apps/web/app/api/connect/*` (onboarding) reads
-  and writes; it's also how a returning owner on a new device/browser recovers their existing
-  Smart Wallet instead of being treated as a first-time user. Databases from before this table
-  was renamed (`capital_wallets`) are migrated in place on first boot.
-
-- `positions` (`src/positionService.ts`) — one row per agent+pair, upserted after every trade
-  fill using the same weighted-avg-cost math as PnL, so open positions survive a refresh
-  without replaying full trade history on every read.
-- `audit_log` (`src/auditService.ts`) — append-only lifecycle + execution trail: strategy
-  started/stopped/error, signal generated (with market snapshot/indicators), delegation/policy
-  validation, trade executed, position updated. Broader than `trades` (fills only) — this is
-  the full "why did this happen" record. Also emits on an in-process `EventEmitter` for the
-  audit SSE stream.
+- `positions` (`src/positionService.ts`) — one row per agent+pair, upserted after every fill with the same weighted-average-cost math as PnL, so open positions survive a refresh.
+- `audit_log` (`src/auditService.ts`) — append-only lifecycle + execution trail (strategy started/stopped/error, signal generated with market snapshot, validation, trade executed, position updated). Broader than `trades` (fills only) — the full "why did this happen" record. Also feeds the audit SSE stream.
+- `smart_wallets` (`src/routes/smartWallets.ts`) — one row per `(owner, address)`; the server-side record of which Smart Wallet(s) an owner has deployed, so a returning owner on a new device recovers their wallet instead of being onboarded again.
 
 ## API
 
-- `POST /api/agents { mode?, capital?, riskLevel? }` → creates an agent owned by the
-  authenticated wallet (`mode` defaults `'live'`; pass `'paper'` for simulated trading)
-- `GET /api/agents` → list the authenticated wallet's agents
-- `GET /api/agents/:id` → agent detail
-- `POST /api/agents/:id/delegation { delegation }` → attach a signed `JsonSafeDelegation`
-  (delegate must equal this agent's public key)
-- `POST /api/agents/:id/delegation/revoke`
-- `POST /api/agents/:id/strategy { type: 'dca' | 'quant' | 'limit' | 'role', ... }`
-- `POST /api/agents/:id/start` — requires a delegation (dca only) and strategy already attached
-- `POST /api/agents/:id/stop`
-- `DELETE /api/agents/:id` — must be stopped first. Only removes the local record; does **not**
-  revoke the on-chain delegation (needs the smart wallet owner's Freighter signature) — revoke
-  from `/dashboard/delegations-v2` to fully cut off access.
-- `GET /api/agents/:id/trades` → fills + PnL summary for that agent
-- `POST /api/agents/:id/trades/:tradeId/reverse` — quant only; rejects reversal across a
-  paper/live mode boundary
-- `GET /api/agents/:id/positions`, `GET /api/positions` → open positions (per-agent / all)
-- `GET /api/agents/:id/audit`, `GET /api/audit` → paginated audit trail (per-agent / all,
-  `?limit=&before=`)
-- `GET /api/audit/stream` → SSE feed of new audit events for the authenticated wallet
-- `GET /api/agents/:id/dashboard`, `GET /api/agents/summary` → aggregate stats (win rate, total
-  return, running time, delegation/position/PnL snapshot) for one agent or all of them
-- `GET /api/smart-wallets` → this owner's registered Smart Wallet(s)
-- `POST /api/smart-wallets { address, label?, network? }` → idempotent upsert (re-registering an
-  address already on file just updates its label/network); returns the full updated list. Backs
-  the onboarding check/register steps in `apps/web/app/api/connect/*` — see the root README's
-  [Authentication & Onboarding](../README.md#authentication--onboarding) section.
+- `POST /api/agents { mode?, capital?, riskLevel? }` → create an agent owned by the authenticated wallet (`mode` defaults `'live'`; pass `'paper'` for simulated trading).
+- `GET /api/agents` · `GET /api/agents/:id` → list / detail.
+- `POST /api/agents/:id/delegation { delegation }` → attach a signed delegation (delegate must equal the agent's public key); `POST /api/agents/:id/delegation/revoke`.
+- `POST /api/agents/:id/strategy { type: 'dca' | 'quant' | 'limit' | 'role', ... }`.
+- `POST /api/agents/:id/start` · `POST /api/agents/:id/stop` · `DELETE /api/agents/:id` (must be stopped first; only removes the local record — revoke the on-chain delegation separately).
+- `GET /api/agents/:id/trades` → fills + PnL summary; `POST /api/agents/:id/trades/:tradeId/reverse` (quant only).
+- `GET /api/agents/:id/positions` · `GET /api/positions` → open positions.
+- `GET /api/agents/:id/audit` · `GET /api/audit` → paginated audit trail (`?limit=&before=`); `GET /api/audit/stream` → SSE feed.
+- `GET /api/agents/:id/context` → the assembled `AgentContext` (backs the Context inspector page).
+- `GET /api/agents/:id/dashboard` · `GET /api/agents/summary` → aggregate stats.
+- `GET /api/smart-wallets` · `POST /api/smart-wallets { address, label?, network? }` → this owner's registered Smart Wallet(s) (idempotent upsert).
+
+## Tests & benchmarks
+
+```bash
+pnpm --filter @wolf1276/kairos-agent-backend test         # unit tests (reasoning, context, memory, validation, ...)
+pnpm --filter @wolf1276/kairos-agent-backend benchmark    # reasoning benchmark harness (see benchmarks/reasoning)
+pnpm --filter @wolf1276/kairos-agent-backend benchmark:e2e # end-to-end determinism/concurrency/reliability/performance
+```
 
 ## Security notes
 
-- New agents' private keys never exist in this process — they're MPC-backed via Turnkey, and
-  every signature is a network round-trip to Turnkey's cluster. The `TURNKEY_API_PRIVATE_KEY`
-  (or `TURNKEY_CREDENTIALS_FILE`) is the one local secret in this design: it authenticates to
-  Turnkey but by itself cannot reconstruct any agent's Ed25519 key. Treat it like a root
-  credential regardless — anyone holding it can request signatures from every agent key in
-  the Turnkey organization.
-- `AGENT_MASTER_KEY` only matters for agents created before Turnkey integration — it decrypts
-  their locally stored secret. Losing it makes those specific stored agent wallets permanently
-  unusable (the secrets are unrecoverable without it, by design); it has no effect on
-  Turnkey-backed agents.
-- `AUTH_JWT_SECRET` signs every session token — treat it as a root credential too; anyone
-  holding it can mint a valid session for any wallet address without ever signing anything in
-  Freighter.
-- Every `/api/agents`, `/api/positions`, `/api/audit` route requires a valid bearer session and
-  enforces per-agent ownership server-side (see Auth above) — this closes the gap from earlier
-  versions of this service where `owner` was a client-supplied, unverified string.
+- `AUTH_JWT_SECRET` signs every session token — treat it as a root credential. Anyone holding it can mint a valid session for any wallet address without ever signing in Freighter.
+- Every `/api/agents`, `/api/positions`, `/api/audit` route requires a valid bearer session and enforces per-agent ownership server-side — a client-supplied `owner` is never trusted.
+- Live execution is not functional today (no working signer). When a signer is integrated, on-chain caveats enforced by the `policies` contract at `redeem_delegations` remain the final authority regardless of what this backend decides.

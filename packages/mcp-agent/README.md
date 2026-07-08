@@ -4,6 +4,15 @@ An MCP server that lets an AI agent (e.g. Claude via MCP) spend from a delegatio
 Smart Wallet, using its own MPC-backed key — never the user's real wallet key, and never a raw
 secret sitting in this process either.
 
+> [!WARNING]
+> **Experimental — not functional end to end.** This package signs on-chain redemptions through
+> the Turnkey MPC signer (`@wolf1276/kairos-turnkey-signer`), which is not working today, so the
+> `spend_funds` / `execute_action` tools cannot complete a real transaction. It is documented here
+> for design reference; the working, testnet-ready surface of Kairos is the
+> [SDK](../sdk/README.md), the [delegation contracts](../../README.md#deployed-contracts-testnet),
+> and paper-mode agents in the [backend](../../backend/README.md). This page will be accurate once
+> a functional signer is integrated.
+
 ## How it works
 
 1. Every agent identity (`KAIROS_AGENT_ID`) gets its **own** Ed25519 private key, generated
