@@ -650,3 +650,132 @@ export async function getAgentEpisodicHistory(agentId: string): Promise<Episodic
   const data = await dashboardRequest<{ history: EpisodicRecord[] }>(`/api/dashboard/history?agentId=${encodeURIComponent(agentId)}`);
   return data?.history ?? [];
 }
+
+// --- Hidden Developer Mode (/api/dev/*) --------------------------------------------------
+// Thin typed wrappers over the backend's requireAuth+requireDev-gated dev routes (see
+// backend/src/routes/dev.ts). Every call below goes through the same `request<T>` helper (and
+// therefore the same Bearer token / 401-handling) as the rest of this file — no separate auth
+// path. A 403 here just means the caller isn't in the server-side DEV_ALLOWLIST; callers must
+// treat that as "render nothing", never as an error to surface to a normal user.
+
+export interface DevPipelineStage {
+  name: string;
+  completed: boolean;
+  durationMs: number | null;
+  failed: boolean;
+}
+
+export interface DevPipelineSnapshot {
+  success: boolean;
+  startedAt: number;
+  finishedAt: number;
+  totalDurationMs: number;
+  failureStage: string | null;
+  error: string | null;
+  stages: DevPipelineStage[];
+}
+
+export interface DevBenchmarkSession {
+  sessionId: string;
+  executionCount: number;
+  firstTimestamp: number;
+  lastTimestamp: number;
+}
+
+/** Returns true only if the backend actually confirms membership in DEV_ALLOWLIST — never
+ *  inferred client-side, never cached across accounts (callers should re-check on every mount /
+ *  wallet switch rather than storing this as a persisted boolean). */
+export async function getDeveloperModeStatus(): Promise<boolean> {
+  try {
+    const data = await request<{ success: boolean; enabled: boolean }>("/api/dev/status");
+    return Boolean(data?.enabled);
+  } catch {
+    return false;
+  }
+}
+
+export async function getDevRuntime(): Promise<unknown> {
+  const data = await request<{ runtime: unknown }>("/api/dev/runtime");
+  return data.runtime;
+}
+
+export async function getDevPipeline(): Promise<DevPipelineSnapshot | null> {
+  const data = await request<{ pipeline: DevPipelineSnapshot | null }>("/api/dev/pipeline");
+  return data.pipeline;
+}
+
+export async function getDevBenchmark(): Promise<{ session: DevBenchmarkSession | null; trading: unknown; pipelineLatency: unknown }> {
+  return request("/api/dev/benchmark");
+}
+
+export async function devPaperStart(target?: { agentId?: string; role?: "strategic" | "yield" | "balancer" }): Promise<unknown> {
+  return request("/api/dev/paper/start", { method: "POST", body: JSON.stringify(target ?? {}) });
+}
+
+export async function devPaperStop(agentId: string): Promise<unknown> {
+  return request("/api/dev/paper/stop", { method: "POST", body: JSON.stringify({ agentId }) });
+}
+
+export async function devPaperPause(agentId: string): Promise<unknown> {
+  return request("/api/dev/paper/pause", { method: "POST", body: JSON.stringify({ agentId }) });
+}
+
+export async function devPaperResume(agentId: string): Promise<unknown> {
+  return request("/api/dev/paper/resume", { method: "POST", body: JSON.stringify({ agentId }) });
+}
+
+export async function devValidationRun(): Promise<unknown> {
+  return request("/api/dev/validation/run", { method: "POST", body: JSON.stringify({}) });
+}
+
+export function devExportLogsUrl(): string {
+  return backendUrl("/api/dev/export/logs");
+}
+
+export function devExportBenchmarkUrl(): string {
+  return backendUrl("/api/dev/export/benchmark");
+}
+
+/** Live-tails GET /api/dev/stream (SSE). Native `EventSource` can't attach an Authorization
+ *  header, and requireAuth only reads the standard header — rather than widening the backend's
+ *  auth surface to accept a token query param just for this, this streams the response body via
+ *  `fetch` (which *can* send the Bearer header) and parses the `data: ...\n\n` frames by hand.
+ *  Returns an unsubscribe function; calls `onEvent` for each parsed audit row, `onError` once if
+ *  the connection drops or never opens (e.g. 403 for a non-allowlisted caller). */
+export function openDevStream(onEvent: (row: AuditLogRow) => void, onError?: () => void): () => void {
+  const controller = new AbortController();
+  (async () => {
+    try {
+      const res = await fetch(backendUrl("/api/dev/stream"), {
+        headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        onError?.();
+        return;
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const frames = buffer.split("\n\n");
+        buffer = frames.pop() ?? "";
+        for (const frame of frames) {
+          const line = frame.split("\n").find((l) => l.startsWith("data: "));
+          if (!line) continue;
+          try {
+            onEvent(JSON.parse(line.slice("data: ".length)));
+          } catch {
+            // Malformed frame — skip it rather than crash the stream.
+          }
+        }
+      }
+    } catch {
+      if (!controller.signal.aborted) onError?.();
+    }
+  })();
+  return () => controller.abort();
+}

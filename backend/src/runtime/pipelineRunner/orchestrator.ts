@@ -75,6 +75,20 @@ function deepFreeze<T>(value: T): T {
 
 const silentLogger: PipelineRunnerLogger = { info: () => {}, error: () => {} };
 
+// Minimal read-only "last run" snapshot for Developer Mode's Live Pipeline view
+// (routes/dev.ts::GET /api/dev/pipeline). This module has no persistent stage-tracking state of
+// its own — runPipelineOnce is a pure function over a fresh local accumulator per call — so
+// rather than inventing a parallel stage tracker, the last PipelineResult this process actually
+// produced is cached here and exposed via a narrow getter. Never fabricates a snapshot: before
+// the first pipeline run in this process, the getter returns null.
+let lastPipelineResult: PipelineResult | null = null;
+
+/** Read-only accessor for Developer Mode / diagnostics. Returns the most recent PipelineResult
+ *  produced by runPipelineOnce() in this process, or null if none has run yet. */
+export function getLastPipelineResult(): PipelineResult | null {
+  return lastPipelineResult;
+}
+
 /** Runs the full frozen pipeline once, in order, against a fresh local accumulator. Every value
  *  used (accumulator, durations, timers) is a local variable scoped to this single call, so
  *  concurrent invocations never share mutable state (thread safe) and each call is fully
@@ -119,6 +133,7 @@ export async function runPipelineOnce(
         error: message,
       });
       if (benchmark) recordBenchmark(failureResult, benchmark);
+      lastPipelineResult = failureResult;
       return failureResult;
     }
   }
@@ -135,6 +150,7 @@ export async function runPipelineOnce(
     ...accumulator,
   });
   if (benchmark) recordBenchmark(successResult, benchmark);
+  lastPipelineResult = successResult;
   return successResult;
 }
 

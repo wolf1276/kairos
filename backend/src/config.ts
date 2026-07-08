@@ -72,3 +72,16 @@ export function getRoleIntervalSeconds(): number {
 export function isProtocolExecutionEnabled(): boolean {
   return process.env.ENABLE_PROTOCOL_EXECUTION === 'true';
 }
+
+/** Stellar public keys allowed to reach the hidden Developer Mode surface (`/api/dev/*`).
+ *  Comma-separated, whitespace-trimmed. Empty/unset by default — nobody has dev access in a
+ *  deployment unless this is explicitly configured, so it's read from process.env directly
+ *  (not readRequiredEnv) and never throws. Server-side only: the frontend has no way to grant
+ *  itself membership, it only reflects whatever `GET /api/dev/status` reports. */
+export function getDevAllowlist(): string[] {
+  const raw = process.env.DEV_ALLOWLIST || '';
+  return raw
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}

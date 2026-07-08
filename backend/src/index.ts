@@ -14,7 +14,8 @@ import { createMonitoringRouter } from './routes/monitoring.js';
 import { createDashboardRouter } from './routes/dashboard.js';
 import { createBenchmarkRouter } from './routes/benchmark.js';
 import { buildReportBundle } from './benchmarkReports/index.js';
-import { requireAuth } from './authMiddleware.js';
+import { createDevRouter } from './routes/dev.js';
+import { requireAuth, requireDev } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
 import { startContextMonitor } from './agentContext/monitor.js';
 import { getPriceFeedService } from './priceFeed.js';
@@ -62,6 +63,9 @@ app.use('/api/trades', requireAuth, tradesRouter);
 app.use('/api/positions', requireAuth, positionsRouter);
 app.use('/api/audit', requireAuth, auditRouter);
 app.use('/api/smart-wallets', requireAuth, smartWalletsRouter);
+// Hidden Developer Mode surface — requireDev 403s any caller not in DEV_ALLOWLIST (config.ts)
+// before any handler in createDevRouter() runs. Empty allowlist by default (nobody has access).
+app.use('/api/dev', requireAuth, requireDev, createDevRouter());
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   const message = error instanceof Error ? error.message : String(error);

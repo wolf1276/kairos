@@ -40,6 +40,7 @@ import {
   resumeRuntime,
   getAgentMemoryPackage,
   getAgentLearningSnapshot,
+  getDeveloperModeStatus,
   type AgentSummary,
   type AgentDashboard,
   type Allocations,
@@ -52,6 +53,7 @@ import {
   type MemoryPackage,
   type LearningSnapshot,
 } from "@/app/lib/agentsBackend";
+import { DevPanel } from "./DevPanel";
 
 const INPUT_CLS =
   "w-full rounded-lg border border-white/5 bg-bg-elevated px-2.5 py-1.5 font-mono text-xs text-text-primary transition-all duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/30";
@@ -978,6 +980,16 @@ function ControlCenter({ agent }: { agent: AgentSummary }) {
   const [memorySearch, setMemorySearch] = useState("");
   const [runtimeBusy, setRuntimeBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Hidden Developer Mode: re-verified against the backend (GET /api/dev/status, gated by
+  // requireAuth+requireDev / DEV_ALLOWLIST) on every mount — never cached as a persisted
+  // client-side flag, so switching wallets/accounts always re-checks server-side membership.
+  const [devMode, setDevMode] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getDeveloperModeStatus().then((enabled) => { if (!cancelled) setDevMode(enabled); });
+    return () => { cancelled = true; };
+  }, [agent.id]);
 
   const refresh = useCallback(async () => {
     try {
@@ -1031,6 +1043,15 @@ function ControlCenter({ agent }: { agent: AgentSummary }) {
         <div className="rounded-xl border border-error/15 bg-error/6 px-3 py-2">
           <p className="text-xs text-error/90">{loadError}</p>
         </div>
+      )}
+
+      {devMode && (
+        <>
+          <div className="flex items-center gap-2">
+            <Badge tone="warning" dot>Developer Mode</Badge>
+          </div>
+          <DevPanel agent={agent} />
+        </>
       )}
 
       <section className="space-y-2.5">
