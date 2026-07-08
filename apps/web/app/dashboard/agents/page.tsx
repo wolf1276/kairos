@@ -159,6 +159,7 @@ export default function AgentsPage() {
       await ensureAgentAuth();
       await provisionRoleAgents();
       await refresh();
+      window.dispatchEvent(new Event("kairos:smart-wallet-changed"));
     } catch (e) {
       setCreateError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -626,6 +627,7 @@ function AgentDetailModal({
       await attachAgentDelegation(agent.id, result.delegation, Boolean(agent.delegationHash));
       setEditingDelegation(false);
       onChanged();
+      window.dispatchEvent(new Event("kairos:smart-wallet-changed"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -639,6 +641,7 @@ function AgentDetailModal({
     try {
       await revokeAgentDelegation(agent.id);
       onChanged();
+      window.dispatchEvent(new Event("kairos:smart-wallet-changed"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -658,6 +661,7 @@ function AgentDetailModal({
     try {
       await withdrawFromSmartWallet(delegatorWallet, fundAmount, networkPassphrase, sorobanRpcUrl, agent.publicKey);
       onChanged();
+      window.dispatchEvent(new Event("kairos:smart-wallet-changed"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

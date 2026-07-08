@@ -432,11 +432,60 @@ export async function withdrawFromSmartWallet(
     .setTimeout(30)
     .build();
 
-  const simulated = await server.simulateTransaction(builtTx);
+  let simulated = await server.simulateTransaction(builtTx);
   if (!rpc.Api.isSimulationSuccess(simulated)) {
     const reason = rpc.Api.isSimulationError(simulated) ? simulated.error : "unknown simulation error";
     throw new Error(`Failed to simulate smart wallet withdrawal: ${reason}`);
   }
+
+  // Ledger entries the withdrawal touches (the smart wallet's contract instance/storage, the
+  // native SAC's balance entry) can have their TTL expire from disuse and get archived —
+  // simulation still reports success in that case (`isSimulationSuccess` only checks for
+  // `transactionData`), but submitting the tx as-is fails on-chain with an archived-entry error.
+  // Restore those entries first, then re-simulate against live state before building for real.
+  if (rpc.Api.isSimulationRestore(simulated)) {
+    const restoreFee = String(Number(BASE_FEE) + Number(simulated.restorePreamble.minResourceFee));
+    const restoreTx = new TransactionBuilder(account, { fee: restoreFee, networkPassphrase })
+      .setSorobanData(simulated.restorePreamble.transactionData.build())
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(30)
+      .build();
+
+    const signedRestoreXDR = await signWithWallet(restoreTx.toXDR(), networkPassphrase, ownerAddress);
+    const signedRestoreTx = TransactionBuilder.fromXDR(signedRestoreXDR, networkPassphrase);
+    const restoreSend = await server.sendTransaction(signedRestoreTx);
+    if (restoreSend.status === "ERROR") {
+      throw new Error("Failed to submit smart wallet restore transaction");
+    }
+    const restoreResult = await pollSorobanTransaction(server, restoreSend.hash);
+    if (restoreResult.status !== "SUCCESS") {
+      throw new Error(restoreResult.error || `Smart wallet restore ${restoreResult.status.toLowerCase()}`);
+    }
+
+    account = await server.getAccount(ownerAddress);
+    const rebuiltTx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase })
+      .addOperation(execOp)
+      .setTimeout(30)
+      .build();
+    simulated = await server.simulateTransaction(rebuiltTx);
+    if (!rpc.Api.isSimulationSuccess(simulated)) {
+      const reason = rpc.Api.isSimulationError(simulated) ? simulated.error : "unknown simulation error";
+      throw new Error(`Failed to simulate smart wallet withdrawal after restore: ${reason}`);
+    }
+    const assembled = rpc.assembleTransaction(rebuiltTx, simulated).build();
+    const signedXDR = await signWithWallet(assembled.toXDR(), networkPassphrase, ownerAddress);
+    const signedTx = TransactionBuilder.fromXDR(signedXDR, networkPassphrase);
+    const sendResponse = await server.sendTransaction(signedTx);
+    if (sendResponse.status === "ERROR") {
+      throw new Error("Failed to submit smart wallet withdrawal transaction");
+    }
+    const result = await pollSorobanTransaction(server, sendResponse.hash);
+    if (result.status !== "SUCCESS") {
+      throw new Error(result.error || `Smart wallet withdrawal ${result.status.toLowerCase()}`);
+    }
+    return { hash: sendResponse.hash, amount, destination: recipient };
+  }
+
   const assembled = rpc.assembleTransaction(builtTx, simulated).build();
 
   const signedXDR = await signWithWallet(assembled.toXDR(), networkPassphrase, ownerAddress);
