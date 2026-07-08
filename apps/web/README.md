@@ -31,8 +31,8 @@ A [Next.js 16](https://nextjs.org) (App Router) frontend for the [Kairos](../../
 | Route | Purpose |
 | :--- | :--- |
 | `POST /api/connect/check` · `prepare` · `submit` · `register` | Smart Wallet onboarding — checks for an existing wallet, prepares a sponsored deploy, submits the Freighter-signed auth entry, and persists the mapping. Owned by `OnboardingService`. |
-| `POST /api/delegate-sdk` | SDK-backed delegation helpers. |
-| `POST /api/intent/parse` · `POST /api/analyze` | Intent parsing and market analysis (Hugging Face, with deterministic fallback). |
+| `POST /api/delegate-sdk` | Single action-dispatch endpoint for all SDK delegation operations (a `type`-keyed switch: `PREPARE_/SUBMIT_` wallet-deploy, delegation register/revoke/enable, `SET_POLICY`/`SEED_POLICIES`, `EXECUTE`, `BALANCE`, `DELEGATION_STATUS`, …). Uses the sponsored funder pattern; serializes bigint/`Uint8Array` delegation fields to JSON-safe forms. |
+| `POST /api/intent/parse` · `POST /api/analyze` | Intent parsing and market analysis (Hugging Face, with deterministic fallback). `analyze` proxies the backend's `/api/strategies`. |
 | `GET/POST /api/graphql` | GraphQL price API (graphql-yoga) fed by the Binance oracle in `oracle/`. |
 
 ## Onboarding & auth
@@ -54,7 +54,33 @@ These are composed so pages read a single, already-sequenced wallet state:
 
 ## Oracle & indicators
 
-`oracle/` is a self-contained price engine: `BinanceOracle` streams live prices and `IndicatorEngine` computes technical indicators, surfaced through the GraphQL API and the charting components. This feeds the app's charts and price displays only — it is separate from the agent decision pipeline, which uses Stellar Horizon market data in the backend.
+`oracle/` is a self-contained price engine: `BinanceOracle` streams live prices and `IndicatorEngine` computes technical indicators, surfaced through the GraphQL API and the charting components. This feeds the app's charts and price displays only — it is separate from the agent decision pipeline, which uses Stellar Horizon market data in the backend. See [`oracle/README.md`](./oracle/README.md).
+
+## Business logic (`lib/`)
+
+Feature-grouped, deterministic logic that runs client/server-side (distinct from the agent backend):
+
+- `lib/decision/` — natural-language intent → `TradingProfile`. `intentParser.ts` (regex, deterministic), `hfIntentParser.ts` (Hugging Face structured parse, prompt-injection-hardened, with validation), `hfAdvisor.ts` (`HfAdvisor.advise()` → advisory BUY/SELL/HOLD `TradeProposal`, with an RSI+MACD deterministic fallback), `displayMapper.ts` (mode display summaries).
+- `lib/strategy/` — `StrategyEngine.evaluate(MarketSnapshot)`: EMA20/EMA50 golden/death-cross signal (needs ≥52 candles).
+- `app/lib/sdk/` — server-side SDK glue: `getKairosClient`, `getFunderKeypair`, registry lookup/register, sponsored wallet deploy.
+
+## Environment variables
+
+| Variable | Purpose |
+| :--- | :--- |
+| `NEXT_PUBLIC_AGENTS_BACKEND_URL` | Agent-backend base URL (default `http://localhost:4001`). Inlined into the client bundle at build time — must be set before the build. |
+| `HUGGINGFACE_API_KEY` | Enables HF intent parsing / advisory (deterministic fallback when unset). |
+| `FUNDER_SECRET_KEY` | Funder keypair for sponsored onboarding/delegation operations. |
+| `STELLAR_NETWORK`, `STELLAR_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
+| `DELEGATION_MANAGER_CONTRACT_ID`, `POLICY_CONTRACT_ID`, `CUSTOM_ACCOUNT_CONTRACT_ID`, `CUSTOM_ACCOUNT_WASM_HASH`, `REGISTRY_CONTRACT_ID` | Deployed contract config (from [`configs/contracts.testnet.json`](../../configs/README.md)). |
+
+## Tests
+
+- Unit: Vitest (`pnpm test`) — route handlers (`app/api/**/route.test.ts`), hooks, SDK glue.
+- E2E: Playwright (`pnpm e2e`) — `e2e/demo.spec.ts` (mocked-Freighter onboarding demo) and `e2e/devMode.spec.ts` (verifies hidden Developer Mode stays inert for non-allowlisted callers).
+
+> [!NOTE]
+> `apps/comming-soon` appears in the workspace config but has no tracked source — only `apps/web` exists today. (A "coming soon" UI component lives at `app/components/ui/ComingSoon.tsx`.)
 
 ## Getting started
 

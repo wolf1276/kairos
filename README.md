@@ -180,7 +180,7 @@ cd contracts/soroban && cargo test                      # contract tests
 | Layer | Technology |
 | :--- | :--- |
 | Frontend | Next.js, React, TypeScript, Tailwind CSS, graphql-yoga, lightweight-charts. |
-| Backend | Node.js, TypeScript, Express, SQLite, Vitest. |
+| Backend | Node.js, TypeScript, Express, SQLite (better-sqlite3) + Postgres (smart-wallet ownership), Vitest. |
 | Blockchain | Stellar Soroban (Rust), `@stellar/stellar-sdk`, `@wolf1276/kairos-sdk`. |
 | AI | Configuration-driven LLM providers with structured-output enforcement and deterministic fallbacks. |
 | Deployment | Docker, Vercel, GitHub Actions CI. |
@@ -242,7 +242,15 @@ Source of truth: [`configs/contracts.testnet.json`](./configs/contracts.testnet.
 | [DEVELOPER_GUIDE.md](./DEVELOPER_GUIDE.md) | Local development and Developer Mode. |
 | [SECURITY.md](./SECURITY.md) | Security and threat model. |
 
-Additional references: [`backend/README.md`](./backend/README.md), [`apps/web/README.md`](./apps/web/README.md), [`packages/sdk/README.md`](./packages/sdk/README.md), and [`docs/architecture/`](./docs/architecture).
+### Component READMEs
+
+Every workspace unit and major subsystem has its own README:
+
+- Apps: [`apps/web`](./apps/web/README.md) (incl. [`oracle`](./apps/web/oracle/README.md))
+- Backend: [`backend`](./backend/README.md) — subsystems [`reasoning`](./backend/src/reasoning/README.md), [`agentContext`](./backend/src/agentContext/README.md), [`memoryLayer`](./backend/src/memoryLayer/README.md), [`strategyEngine`](./backend/src/strategyEngine/README.md), [`protocolAdapters`](./backend/src/protocolAdapters/README.md), [`runtime`](./backend/src/runtime/README.md); benchmarks [`reasoning`](./backend/benchmarks/reasoning/README.md) · [`e2e`](./backend/benchmarks/e2e/README.md)
+- Packages: [`sdk`](./packages/sdk/README.md) ([`examples`](./packages/sdk/examples/README.md)) · [`mcp-agent`](./packages/mcp-agent/README.md) · [`turnkey-signer`](./packages/turnkey-signer/README.md) · [`types`](./packages/types/README.md)
+- Contracts: [`contracts/soroban`](./contracts/soroban/README.md) — [`delegation-manager`](./contracts/soroban/contracts/delegation-manager/README.md) · [`custom-account`](./contracts/soroban/contracts/custom-account/README.md) · [`policies`](./contracts/soroban/contracts/policies/README.md) · [`registry`](./contracts/soroban/contracts/registry/README.md)
+- Support: [`configs`](./configs/README.md) · [`scripts`](./scripts/README.md) · [`docs`](./docs/README.md)
 
 ## Roadmap
 

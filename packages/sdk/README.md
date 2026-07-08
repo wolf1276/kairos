@@ -69,17 +69,20 @@ The SDK is a thin, typed client over three on-chain Soroban contracts (`Delegati
 KairosClient
 ├── wallet     (WalletModule)     — Custom Account (smart wallet) create/load/balance/direct-execute
 ├── delegation (DelegationModule) — off-chain sign/hash + on-chain register/disable/enable/revoke/renew
-├── policy     (PolicyModule)     — encode/decode caveats (spend-limit, time-restriction, target-whitelist)
+├── policy     (PolicyModule)     — encode/decode caveats (5 policy types, see below)
 ├── execution  (ExecutionModule)  — redeem_delegations: execute / simulate / estimateResources / history
 ├── events     (EventsModule)     — decode + subscribe/query on-chain protocol events
 └── registry   (RegistryModule)   — on-chain owner -> smart wallet lookups and funder-attested registration
 ```
 
+The SDK also ships a protocol-adapter layer under `protocols/` (DeFi venues): `BlendAdapter` (lending) and `SoroswapAdapter` (AMM), a `PROTOCOL_REGISTRY` of testnet/mainnet contract IDs, and a `getAdapter(client, protocolId)` factory that builds protocol actions (deposit/withdraw/swap) as `Execution`s to redeem through a delegation.
+
 Supporting building blocks (not modules, just plain exports):
 
 - `client/` — `KairosClient` itself: RPC provider, network config, account fetch/wait/fund helpers (incl. Friendbot for testnet), `simulateTx`/`submitTransaction`/`pollTransaction`, and low-level XDR helpers (`delegationToScVal`, `hexToBytesN32ScVal`, instance storage reads).
 - `delegation/` — `DelegationModule`. Builds and signs the off-chain `Delegation` struct (`delegate`, `delegator`, `authority`, `caveats`, `salt`, `nonce`, `signature`), computes its deterministic hash, and drives the on-chain lifecycle (`register_delegation`, `disable_delegation`, `enable_delegation`, `revoke_by_wallet`, `set_policy(ies)`). Every on-chain state-changing call has a `prepareSponsored*`/`submitSponsored*` pair so a relayer/funder can pay fees while the delegator (an EOA or a smart-wallet contract) supplies the required Soroban authorization entry.
-- `policy/` — `PolicyModule`. Encodes/decodes `Caveat.terms` byte layouts for the three built-in policy types (`spend-limit`, `time-restriction`, `target-whitelist`), plus "indexed" caveats (`0xFE ++ policy_id`) that point at on-chain Policy storage so a policy's limits can be updated later without invalidating the delegation's signature.
+- `policy/` — `PolicyModule`. Encodes/decodes `Caveat.terms` byte layouts for the five built-in policy types (`spend-limit`, `time-restriction`, `target-whitelist`, `target-function-set-whitelist`, `pooled-protocol-spend-limit`), plus "indexed" caveats (`0xFE ++ policy_id`) that point at on-chain Policy storage so a policy's limits can be updated later without invalidating the delegation's signature.
+- `protocols/` — DeFi protocol adapters. `BlendAdapter` (lending: `deposit`/`withdraw` → Blend `submit`) and `SoroswapAdapter` (AMM: `swapExactIn` → `swap_exact_tokens_for_tokens`), a `PROTOCOL_REGISTRY` (testnet Blend pool + Soroswap router IDs), and `getAdapter(client, protocolId)`. Adapters build `Execution`s that are redeemed through a delegation.
 - `execution/` — `ExecutionModule`. Assembles `redeem_delegations` calls from one or more delegation chains and executions, and offers `execute` (submit), `simulate` (dry-run against the `PolicyEngine`'s `before_all`/`before_hook`/`after_hook`/`after_all`), and `estimateResources` (fee/footprint sizing from a simulation).
 - `wallet/` — `WalletModule`. Deploys/loads a `CustomAccount` smart wallet contract instance and reads its owner/balance, or executes a call directly as the owner (bypassing the delegation path).
 - `events/` — `EventsModule`. Decodes raw contract events into typed protocol events and supports both live subscription and historical `getEvents` querying with topic filters.
@@ -99,4 +102,15 @@ Supporting building blocks (not modules, just plain exports):
 
 ## API Documentation
 
-The full public API is the set of methods documented above on each module (`KairosClient.wallet`, `.delegation`, `.policy`, `.execution`, `.events`, `.registry`) — see the TypeScript types shipped in `dist/index.d.ts` for exact signatures, and `tests/sdk.test.ts` / `examples/` in this package for runnable usage.
+The full public API is the set of methods documented above on each module (`KairosClient.wallet`, `.delegation`, `.policy`, `.execution`, `.events`, `.registry`) — see the TypeScript types shipped in `dist/index.d.ts` for exact signatures, and `tests/sdk.test.ts` / [`examples/`](./examples/README.md) in this package for runnable usage.
+
+## Remote signing
+
+The `Signer = Keypair | RemoteSigner` abstraction (in `types/`) lets an out-of-process signer — where the private key never enters this process — plug into `client.submitTransaction(tx, signer)` and `client.execution.execute({ redeemer })`. The [`@wolf1276/kairos-turnkey-signer`](../turnkey-signer/README.md) package implements `RemoteSigner` over Turnkey's MPC cluster.
+
+## Related
+
+- [`packages/turnkey-signer`](../turnkey-signer/README.md) — MPC `RemoteSigner` implementation.
+- [`contracts/soroban`](../../contracts/soroban/README.md) — the on-chain contracts this client targets.
+- [`examples/`](./examples/README.md) — runnable usage scripts.
+- [`docs/MIGRATION.md`](../../docs/MIGRATION.md) — migrating from manual XDR to the SDK.

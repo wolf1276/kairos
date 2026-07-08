@@ -1,6 +1,6 @@
 # @wolf1276/kairos-agent-backend
 
-The Kairos agent backend: a strategy-trading terminal and the AI **Reasoning Engine**, exposed over a REST API and persisted to SQLite. It runs `dca` / `quant` / `limit` / `role` strategies against live market data, scoped to a wallet authenticated by a Freighter signature session.
+The Kairos agent backend: a strategy-trading terminal and the AI **Reasoning Engine**, exposed over a REST API and persisted to SQLite (agents, trades, audit, …) plus Postgres (smart-wallet ownership). It runs `dca` / `quant` / `limit` / `role` strategies against live market data, scoped to a wallet authenticated by a Freighter signature session.
 
 > [!IMPORTANT]
 > **Paper mode is the functional path today.** A paper agent runs the full pipeline — market data
@@ -50,6 +50,15 @@ internals. Full design: [`docs/architecture/REASONING_ENGINE.md`](../docs/archit
 The engine is exercised by the [reasoning benchmark harness](./benchmarks/reasoning/README.md) and
 an extensive unit-test suite (`src/__tests__/`).
 
+Per-subsystem READMEs:
+[`src/reasoning`](./src/reasoning/README.md) (pipeline + LLM providers),
+[`src/agentContext`](./src/agentContext/README.md) (Context Layer),
+[`src/memoryLayer`](./src/memoryLayer/README.md) (Memory Engine),
+[`src/strategyEngine`](./src/strategyEngine/README.md) (strategy layers),
+[`src/protocolAdapters`](./src/protocolAdapters/README.md) (Protocol Layer),
+[`src/runtime`](./src/runtime/README.md) (Autonomous Runtime),
+and the [e2e benchmark harness](./benchmarks/e2e/README.md).
+
 ## Auth
 
 Every route under `/api/agents`, `/api/positions`, `/api/audit`, `/api/smart-wallets` requires a bearer session token, obtained via a Freighter wallet-signature challenge/response — no password or email, the connected Stellar address *is* the identity:
@@ -70,11 +79,15 @@ This is separate from the *onboarding* flow (deploying/checking a Smart Wallet, 
 
 ## Persistence
 
-SQLite (`better-sqlite3`), with hand-written `CREATE TABLE IF NOT EXISTS` + guarded `ALTER TABLE` migrations in `src/db.ts` — no ORM. Tables: `agents`, `wallet_delegations`, `trades`, `positions`, `audit_log`, `users`, `auth_challenges`, `smart_wallets`.
+Two stores:
+
+**SQLite** (`better-sqlite3`), with hand-written `CREATE TABLE IF NOT EXISTS` + guarded `ALTER TABLE` migrations in `src/db.ts` — no ORM. Tables include `agents`, `wallet_delegations`, `trades`, `positions`, `audit_log`, `decisions`, `performance_snapshots`, `portfolio_state`, `execution_journal`, `protocol_execution_journal`, `protocol_positions`, `users`, `auth_challenges`. Path from `AGENTS_DB_PATH` (default `./data/agents.db`), WAL mode, `foreign_keys=ON`.
+
+**Postgres** (`pg`, `src/smartWalletsDb.ts`) — the production store of record for **smart-wallet ownership only** (`smart_wallets`). It is **required** and there is **no SQLite fallback**: `config.getDatabaseUrl` throws if `DATABASE_URL` is unset. Writes are read-back-verified before resolving. Tests use `pg-mem`.
 
 - `positions` (`src/positionService.ts`) — one row per agent+pair, upserted after every fill with the same weighted-average-cost math as PnL, so open positions survive a refresh.
 - `audit_log` (`src/auditService.ts`) — append-only lifecycle + execution trail (strategy started/stopped/error, signal generated with market snapshot, validation, trade executed, position updated). Broader than `trades` (fills only) — the full "why did this happen" record. Also feeds the audit SSE stream.
-- `smart_wallets` (`src/routes/smartWallets.ts`) — one row per `(owner, address)`; the server-side record of which Smart Wallet(s) an owner has deployed, so a returning owner on a new device recovers their wallet instead of being onboarded again.
+- `smart_wallets` (`src/smartWalletsDb.ts`, exposed via `src/routes/smartWallets.ts`) — one row per `(owner, address)` in **Postgres**; the record of which Smart Wallet(s) an owner has deployed, so a returning owner on a new device recovers their wallet instead of being onboarded again. Because it lives in Postgres, it survives backend redeploys/restarts regardless of the web service's disk plan.
 
 ## API
 
@@ -100,7 +113,7 @@ pnpm --filter @wolf1276/kairos-agent-backend benchmark:e2e # end-to-end determin
 
 ## Deployment
 
-Render Blueprint at [`../render.yaml`](../render.yaml) (Docker-built from `backend/Dockerfile`, health-checked at `/health`, persistent Disk mounted at `AGENTS_DB_PATH`). See the root [README's Render section](../README.md#deploy-the-backend-to-render) for setup steps — critically, `ALLOWED_ORIGIN` must be set to the deployed frontend's exact origin, and a paid (Disk-capable) plan is required or the SQLite DB — including `smart_wallets` — resets on every redeploy.
+Render Blueprint at [`../render.yaml`](../render.yaml) (Docker-built from `backend/Dockerfile`, health-checked at `/health`, persistent Disk mounted at `AGENTS_DB_PATH`, plus a managed Postgres instance wired via `DATABASE_URL`). See the root [README's Render section](../README.md#deploy-the-backend-to-render) for setup steps — critically, `ALLOWED_ORIGIN` must be set to the deployed frontend's exact origin. A paid (Disk-capable) plan is required or the **SQLite** DB (agents/trades/etc.) resets on every redeploy; `smart_wallets` lives in Postgres (`DATABASE_URL`) and persists regardless of the disk plan.
 
 ## Security notes
 
