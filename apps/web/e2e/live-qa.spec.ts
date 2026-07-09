@@ -404,49 +404,50 @@ test.describe.serial('Kairos live QA — Agent Creation end-to-end', () => {
       if (await refreshBtn.isVisible().catch(() => false)) {
         await refreshBtn.click();
       }
-      await expect(page.locator('button:has-text("Continue")').first()).toBeEnabled({ timeout: 20_000 }).catch(() => {});
     } else {
       console.log('[QA] Could not find smart wallet address in captured responses — skipping funding.');
     }
 
+    // Note: no isEnabled()-then-click() pre-checks below. Playwright's .click() already
+    // auto-waits for the element to be visible+enabled+stable up to its timeout and retries
+    // the actionability check internally — a separate isEnabled() check followed by a
+    // click() call is a check-then-act race: app state (balance poll every 10s in
+    // useSmartWalletBalances, or a step transition) can flip the button between the two
+    // calls, so click() throws on a button that *was* enabled a moment ago. Swallowing that
+    // error made the harness silently skip steps and report "Continue failed" for what was
+    // actually just a timing gap in the test, not the app.
     const continueAfterWallet = page.locator('button:has-text("Continue")').first();
-    const canContinue = await continueAfterWallet.isEnabled().catch(() => false);
-    console.log('[QA] Can continue past Smart Wallet step:', canContinue);
-    if (canContinue) {
-      try {
-        await continueAfterWallet.click({ timeout: 5000 });
-      } catch (e: any) {
-        console.log('[QA] Continue click blocked:', e.message.split('\n')[0]);
-      }
-      await expect(page.locator('text=Step 6 of 9')).toHaveCount(0, { timeout: 10_000 }).catch(() => {});
-      await page.screenshot({ path: 'test-results/qa-11-approval-step.png', fullPage: true });
+    await continueAfterWallet.click({ timeout: 20_000 });
+    console.log('[QA] Clicked Continue past Smart Wallet step.');
+    await expect(page.locator('text=Step 6 of 9')).toHaveCount(0, { timeout: 10_000 }).catch(() => {});
+    await page.screenshot({ path: 'test-results/qa-11-approval-step.png', fullPage: true });
 
-      // Wizard has intermediate steps (e.g. "Review Plan") between Smart Wallet and the
-      // final Approve & Create step — keep advancing via Continue until Approve & Create
-      // shows up, bounded to avoid an infinite loop if something is genuinely stuck.
-      const approveBtn = page.locator('button:has-text("Approve & Create")');
-      for (let i = 0; i < 5 && !(await approveBtn.isVisible().catch(() => false)); i++) {
-        const nextContinue = page.locator('button:has-text("Continue")').first();
-        if (!(await nextContinue.isVisible().catch(() => false))) break;
-        if (!(await nextContinue.isEnabled().catch(() => false))) break;
-        await nextContinue.click({ timeout: 5000 }).catch((e) => console.log('[QA] Continue click failed:', e.message.split('\n')[0]));
-        await page.waitForTimeout(300);
-      }
-      await page.screenshot({ path: 'test-results/qa-11c-review-plan-step.png', fullPage: true });
+    // Wizard has intermediate steps (e.g. "Review Plan") between Smart Wallet and the
+    // final Approve & Create step — keep advancing via Continue until Approve & Create
+    // shows up, bounded to avoid an infinite loop if something is genuinely stuck.
+    const approveBtn = page.locator('button:has-text("Approve & Create")');
+    for (let i = 0; i < 5 && !(await approveBtn.isVisible().catch(() => false)); i++) {
+      const nextContinue = page.locator('button:has-text("Continue")').first();
+      if (!(await nextContinue.isVisible().catch(() => false))) break;
+      await nextContinue.click({ timeout: 20_000 });
+      await expect(nextContinue).toHaveCount(0, { timeout: 10_000 }).catch(() => {});
+    }
+    await page.screenshot({ path: 'test-results/qa-11c-review-plan-step.png', fullPage: true });
 
-      if (await approveBtn.isVisible({ timeout: 10_000 }).catch(() => false)) {
-        await approveBtn.click();
-        // Real backend provisioning (Policy, Smart Wallet init, Delegation, Runtime, Memory,
-        // Benchmark, Scheduler, Agent) can take well over a minute — wait for the wizard's
-        // "Creating agent..." screen to close (real completion signal), not a fixed sleep.
-        await expect(page.locator('text=Creating agent...')).toHaveCount(0, { timeout: 120_000 }).catch((e) => {
-          console.log('[QA] Creation did not finish within 120s:', e.message.split('\n')[0]);
-        });
-        await page.screenshot({ path: 'test-results/qa-12-creation-progress.png', fullPage: true });
-      } else {
-        console.log('[QA] Approve & Create button never appeared after Continue clicks.');
-        await page.screenshot({ path: 'test-results/qa-11b-stuck-after-continue.png', fullPage: true });
-      }
+    if (await approveBtn.isVisible({ timeout: 10_000 }).catch(() => false)) {
+      await approveBtn.click({ timeout: 20_000 });
+      // Real backend provisioning (Policy, Smart Wallet init, Delegation, Runtime, Memory,
+      // Benchmark, Scheduler, Agent) can take well over a minute — wait for the wizard's
+      // "Creating agent..." screen to close (real completion signal), not a fixed sleep.
+      // Timeout raised 120s -> 180s: a run that times out here but finishes moments after
+      // the harness gives up is what previously looked like "flaky E2E, solid backend" —
+      // the agent really was created, just after this assertion stopped watching.
+      await expect(page.locator('text=Creating agent...')).toHaveCount(0, { timeout: 180_000 });
+      await page.screenshot({ path: 'test-results/qa-12-creation-progress.png', fullPage: true });
+    } else {
+      console.log('[QA] Approve & Create button never appeared after Continue clicks.');
+      await page.screenshot({ path: 'test-results/qa-11b-stuck-after-continue.png', fullPage: true });
+      throw new Error('[QA] Approve & Create never appeared — onboarding stuck, not a timing flake.');
     }
 
     console.log('[QA] Console errors:', consoleErrors);
