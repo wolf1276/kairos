@@ -1,20 +1,32 @@
-// Step 1 of Agent Creation (see agentcreation.md): Natural Language -> Hugging Face Intent
-// Parser -> Validated AgentSpec. Nothing beyond this is done here — no agent, wallet, or
-// delegation is created. Mirrors the HF wiring already used in decisionEngine.ts (same
-// HUGGINGFACE_API_KEY, same @huggingface/inference client), but this parser has no heuristic
-// fallback: unlike trading decisions, a fabricated AgentSpec would misrepresent user intent, so
-// when HF is unavailable or the parse fails, callers get a clear failure instead of an invented spec.
+// Step 1 of Agent Creation (see agentcreation.md): Natural Language -> Intent Parser -> Validated
+// AgentSpec. Nothing beyond this is done here — no agent, wallet, or delegation is created.
+//
+// Provider failover: the parser tries a priority-ordered list of LLM providers (Hugging Face ->
+// OpenRouter -> Gemini) and automatically moves to the next configured provider on a transient
+// failure (rate limit, exhausted credits, timeout, outage, 5xx, network error) or a malformed/
+// unusable response. Non-transient failures (bad API key, invalid request) are not retried against
+// the same provider, but the next provider is still tried. Whichever provider answers, the output
+// goes through the exact same JSON validation, missing-field/confidence clarification logic, and
+// AgentSpec shape as before — the frontend has no way to tell which provider was used. If every
+// configured provider fails, this returns the same 'failed' status as before: no fabricated
+// AgentSpec, no regex/heuristic fallback.
 import { HfInference } from '@huggingface/inference';
-import { getHuggingFaceApiKey } from './config.js';
+import { GoogleGenerativeAI } from '@google/generative-ai';
+import { getHuggingFaceApiKey, getGeminiApiKey } from './config.js';
 import { RISK_LEVELS, EXECUTION_STYLES } from '@kairos/types';
 import type { RiskLevel, ExecutionStyle, AgentSpec, IntentParseResult } from '@kairos/types';
 
 export { RISK_LEVELS, EXECUTION_STYLES };
 export type { RiskLevel, ExecutionStyle, AgentSpec, IntentParseResult };
 
-const MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
-const MAX_RETRIES = 2;
+const HF_MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
+const GEMINI_MODEL = 'gemini-2.0-flash';
+const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
+const OPENROUTER_MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
+
+const MAX_RETRIES_PER_PROVIDER = 2;
 const BACKOFF_MS = 1500;
+const REQUEST_TIMEOUT_MS = 20_000;
 
 const CONFIDENCE_THRESHOLD = 0.6;
 
@@ -43,14 +55,226 @@ Example:
 User: "Grow my XLM while keeping risk low."
 {"mission":"Growth Agent","objective":"Long-term Growth","riskLevel":"conservative","suggestedCapital":null,"executionStyle":"autonomous","confidence":0.9,"clarifyingQuestions":[]}`;
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+// ---------------------------------------------------------------------------
+// Provider layer: each provider exposes configured() + call(), and every failure is normalized
+// to a ProviderCallError with a classification that determines whether it's worth retrying.
+// ---------------------------------------------------------------------------
+
+type FailureKind =
+  | 'rate_limit'
+  | 'credits_exhausted'
+  | 'timeout'
+  | 'network'
+  | 'provider_unavailable'
+  | 'authentication'
+  | 'invalid_request'
+  | 'malformed_response';
+
+/** Transient — worth retrying (same provider, then falling over to the next). Everything else
+ *  (authentication, invalid_request) fails a provider immediately without burning a retry, but
+ *  the parser still moves on to the next configured provider. */
+const RETRYABLE_KINDS: ReadonlySet<FailureKind> = new Set([
+  'rate_limit',
+  'credits_exhausted',
+  'timeout',
+  'network',
+  'provider_unavailable',
+  'malformed_response',
+]);
+
+class ProviderCallError extends Error {
+  readonly kind: FailureKind;
+  readonly retryable: boolean;
+
+  constructor(kind: FailureKind, message: string) {
+    super(message);
+    this.name = 'ProviderCallError';
+    this.kind = kind;
+    this.retryable = RETRYABLE_KINDS.has(kind);
+  }
+}
+
+/** Classifies an arbitrary thrown error (SDK exception, fetch failure, HTTP status) into a
+ *  FailureKind by inspecting status codes and message text — provider SDKs don't share a common
+ *  error shape, so this is necessarily heuristic. */
+function classifyError(err: unknown): ProviderCallError {
+  if (err instanceof ProviderCallError) return err;
+
+  const status: number | undefined =
+    (err as { status?: number; statusCode?: number })?.status ?? (err as { statusCode?: number })?.statusCode;
+  const message = err instanceof Error ? err.message : String(err);
+
+  if (status === 401 || status === 403 || /unauthori[sz]ed|invalid.*api.?key|authentication/i.test(message)) {
+    return new ProviderCallError('authentication', message);
+  }
+  if (status === 429 || /rate.?limit|too many requests/i.test(message)) {
+    return new ProviderCallError('rate_limit', message);
+  }
+  if (status === 402 || /credit|insufficient.*balance|quota exceeded|out of credits/i.test(message)) {
+    return new ProviderCallError('credits_exhausted', message);
+  }
+  if (/abort|timed? ?out/i.test(message)) {
+    return new ProviderCallError('timeout', message);
+  }
+  if ((status !== undefined && status >= 500) || /service unavailable|bad gateway|internal server error/i.test(message)) {
+    return new ProviderCallError('provider_unavailable', message);
+  }
+  if (status === 400 || status === 404 || /invalid request|bad request/i.test(message)) {
+    return new ProviderCallError('invalid_request', message);
+  }
+  return new ProviderCallError('network', message);
+}
+
+/** Races a provider call against a timeout so a hanging connection can't stall the whole
+ *  failover chain. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new ProviderCallError('timeout', `request timed out after ${ms}ms`)), ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
+}
+
+interface ProviderAdapter {
+  name: string;
+  configured(): boolean;
+  /** Returns the raw completion text, or throws a ProviderCallError. */
+  call(userText: string): Promise<string>;
+}
+
 function hf(): HfInference | null {
   const key = getHuggingFaceApiKey();
   return key ? new HfInference(key) : null;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
+const huggingFaceProvider: ProviderAdapter = {
+  name: 'huggingface',
+  configured: () => Boolean(getHuggingFaceApiKey()),
+  async call(userText) {
+    const client = hf();
+    if (!client) throw new ProviderCallError('authentication', 'HUGGINGFACE_API_KEY unset');
+    let res;
+    try {
+      res = await withTimeout(
+        client.chatCompletion({
+          model: HF_MODEL,
+          max_tokens: 500,
+          temperature: 0.2,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userText },
+          ],
+        }),
+        REQUEST_TIMEOUT_MS
+      );
+    } catch (err) {
+      throw classifyError(err);
+    }
+    const content = res.choices?.[0]?.message?.content;
+    if (!content) throw new ProviderCallError('malformed_response', 'empty response from Hugging Face');
+    return content;
+  },
+};
+
+function resolveOpenRouterApiKey(): string | undefined {
+  return process.env.OPENROUTER_API_KEY || process.env.OPENROUTER || undefined;
 }
+
+const openRouterProvider: ProviderAdapter = {
+  name: 'openrouter',
+  configured: () => Boolean(resolveOpenRouterApiKey()),
+  async call(userText) {
+    const apiKey = resolveOpenRouterApiKey();
+    if (!apiKey) throw new ProviderCallError('authentication', 'OPENROUTER_API_KEY unset');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          temperature: 0.2,
+          max_tokens: 500,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            { role: 'user', content: userText },
+          ],
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (controller.signal.aborted) throw new ProviderCallError('timeout', `request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+      throw classifyError(err);
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      const err = classifyError({ status: res.status, message: `HTTP ${res.status}: ${text}` } as unknown as Error);
+      throw err;
+    }
+
+    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+    const content = json.choices?.[0]?.message?.content;
+    if (!content) throw new ProviderCallError('malformed_response', 'empty response from OpenRouter');
+    return content;
+  },
+};
+
+const geminiProvider: ProviderAdapter = {
+  name: 'gemini',
+  configured: () => Boolean(getGeminiApiKey()),
+  async call(userText) {
+    const key = getGeminiApiKey();
+    if (!key) throw new ProviderCallError('authentication', 'GEMINI_API_KEY unset');
+    const client = new GoogleGenerativeAI(key);
+    const model = client.getGenerativeModel({
+      model: GEMINI_MODEL,
+      systemInstruction: SYSTEM_PROMPT,
+      generationConfig: { maxOutputTokens: 500, temperature: 0.2 },
+    });
+    let content: string;
+    try {
+      const res = await withTimeout(model.generateContent(userText), REQUEST_TIMEOUT_MS);
+      content = res.response.text();
+    } catch (err) {
+      throw classifyError(err);
+    }
+    if (!content) throw new ProviderCallError('malformed_response', 'empty response from Gemini');
+    return content;
+  },
+};
+
+/** Priority order: primary (Hugging Face) -> secondary (OpenRouter) -> additional (Gemini).
+ *  A provider that isn't configured (missing API key) is skipped, not treated as a failure. */
+const PROVIDERS: ProviderAdapter[] = [huggingFaceProvider, openRouterProvider, geminiProvider];
+
+function log(event: string, fields: Record<string, unknown>): void {
+  console.log(JSON.stringify({ component: 'intent-parser', event, ...fields }));
+}
+
+// ---------------------------------------------------------------------------
+// Response validation (provider-agnostic — identical regardless of which provider answered).
+// ---------------------------------------------------------------------------
 
 interface RawIntentResponse {
   mission: string | null;
@@ -106,8 +330,56 @@ const REQUIRED_FIELD_QUESTIONS: Record<'mission' | 'objective' | 'riskLevel' | '
   executionStyle: 'Should this agent act fully autonomously, or should it check in with you before acting?',
 };
 
-/** Runs the natural-language goal through the Hugging Face intent parser and returns a
- *  validated AgentSpec, or a request for clarification. Never fabricates a missing field. */
+/** Parses a provider's raw completion text into a validated RawIntentResponse, or throws a
+ *  ProviderCallError('malformed_response') if the text isn't usable JSON matching the expected
+ *  shape. */
+function parseCompletion(content: string): RawIntentResponse {
+  const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  let json: unknown;
+  try {
+    json = JSON.parse(cleaned);
+  } catch {
+    throw new ProviderCallError('malformed_response', 'model response was not valid JSON');
+  }
+  const raw = parseRaw(json);
+  if (!raw) throw new ProviderCallError('malformed_response', 'model response did not match the expected AgentSpec shape');
+  return raw;
+}
+
+/** Runs one provider through its own retry budget. Returns the validated response on success, or
+ *  throws the last ProviderCallError once retries (for transient failures) or a single attempt
+ *  (for non-retryable failures) are exhausted. */
+async function runProvider(provider: ProviderAdapter, userText: string): Promise<RawIntentResponse> {
+  let lastError: ProviderCallError = new ProviderCallError('network', 'provider never attempted');
+
+  for (let attempt = 0; attempt < MAX_RETRIES_PER_PROVIDER; attempt++) {
+    if (attempt > 0) await sleep(BACKOFF_MS * attempt);
+    const start = performance.now();
+    try {
+      const content = await provider.call(userText);
+      const raw = parseCompletion(content);
+      log('provider_succeeded', { provider: provider.name, attempt, latencyMs: Math.round(performance.now() - start) });
+      return raw;
+    } catch (err) {
+      const providerError = classifyError(err);
+      lastError = providerError;
+      log('provider_failed', {
+        provider: provider.name,
+        attempt,
+        reason: providerError.kind,
+        latencyMs: Math.round(performance.now() - start),
+      });
+      if (!providerError.retryable) break;
+    }
+  }
+
+  throw lastError;
+}
+
+/** Runs the natural-language goal through the provider failover chain and returns a validated
+ *  AgentSpec, or a request for clarification. Never fabricates a missing field, and never falls
+ *  back to regex/heuristic parsing — if every configured provider fails, the caller gets the same
+ *  'failed' status regardless of which providers were tried. */
 export async function parseIntent(goalText: string): Promise<IntentParseResult> {
   const trimmed = goalText.trim();
   if (!trimmed) {
@@ -118,88 +390,63 @@ export async function parseIntent(goalText: string): Promise<IntentParseResult> 
     };
   }
 
-  const client = hf();
-  if (!client) {
+  const configuredProviders = PROVIDERS.filter((p) => p.configured());
+  if (configuredProviders.length === 0) {
     return {
       status: 'failed',
       spec: null,
       clarifyingQuestions: [],
-      error: 'Hugging Face is not configured (HUGGINGFACE_API_KEY unset). Cannot parse intent.',
+      error: 'No intent-parsing provider is configured (HUGGINGFACE_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY all unset). Cannot parse intent.',
     };
   }
 
   let lastError = '';
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) await sleep(BACKOFF_MS * attempt);
+  for (const provider of configuredProviders) {
+    log('provider_attempted', { provider: provider.name });
+    let raw: RawIntentResponse;
     try {
-      const res = await client.chatCompletion({
-        model: MODEL,
-        max_tokens: 500,
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: trimmed },
-        ],
-      });
-      const content = res.choices?.[0]?.message?.content;
-      if (!content) {
-        lastError = 'empty response from Hugging Face';
-        continue;
-      }
-      const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-      let json: unknown;
-      try {
-        json = JSON.parse(cleaned);
-      } catch {
-        lastError = 'model response was not valid JSON';
-        continue;
-      }
-      const raw = parseRaw(json);
-      if (!raw) {
-        lastError = 'model response did not match the expected AgentSpec shape';
-        continue;
-      }
-
-      const confidence = typeof raw.confidence === 'number' && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : 0;
-      const questions = extractQuestions(raw.clarifyingQuestions);
-
-      const missing: string[] = [];
-      if (!raw.mission) missing.push(REQUIRED_FIELD_QUESTIONS.mission);
-      if (!raw.objective) missing.push(REQUIRED_FIELD_QUESTIONS.objective);
-      if (!raw.riskLevel) missing.push(REQUIRED_FIELD_QUESTIONS.riskLevel);
-      if (!raw.executionStyle) missing.push(REQUIRED_FIELD_QUESTIONS.executionStyle);
-
-      if (missing.length > 0 || confidence < CONFIDENCE_THRESHOLD) {
-        const merged = Array.from(new Set([...questions, ...missing]));
-        return {
-          status: 'needs_clarification',
-          spec: null,
-          clarifyingQuestions: merged.length > 0 ? merged : ['Could you say more about what you want this agent to do?'],
-        };
-      }
-
-      return {
-        status: 'ok',
-        spec: {
-          mission: raw.mission!,
-          objective: raw.objective!,
-          riskLevel: raw.riskLevel!,
-          suggestedCapital: raw.suggestedCapital,
-          executionStyle: raw.executionStyle!,
-          confidence,
-        },
-        clarifyingQuestions: [],
-      };
+      raw = await runProvider(provider, trimmed);
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      if (attempt < MAX_RETRIES - 1) continue;
+      continue;
     }
+
+    const confidence = typeof raw.confidence === 'number' && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : 0;
+    const questions = extractQuestions(raw.clarifyingQuestions);
+
+    const missing: string[] = [];
+    if (!raw.mission) missing.push(REQUIRED_FIELD_QUESTIONS.mission);
+    if (!raw.objective) missing.push(REQUIRED_FIELD_QUESTIONS.objective);
+    if (!raw.riskLevel) missing.push(REQUIRED_FIELD_QUESTIONS.riskLevel);
+    if (!raw.executionStyle) missing.push(REQUIRED_FIELD_QUESTIONS.executionStyle);
+
+    if (missing.length > 0 || confidence < CONFIDENCE_THRESHOLD) {
+      const merged = Array.from(new Set([...questions, ...missing]));
+      return {
+        status: 'needs_clarification',
+        spec: null,
+        clarifyingQuestions: merged.length > 0 ? merged : ['Could you say more about what you want this agent to do?'],
+      };
+    }
+
+    return {
+      status: 'ok',
+      spec: {
+        mission: raw.mission!,
+        objective: raw.objective!,
+        riskLevel: raw.riskLevel!,
+        suggestedCapital: raw.suggestedCapital,
+        executionStyle: raw.executionStyle!,
+        confidence,
+      },
+      clarifyingQuestions: [],
+    };
   }
 
   return {
     status: 'failed',
     spec: null,
     clarifyingQuestions: [],
-    error: `Hugging Face intent parsing failed: ${lastError}`,
+    error: `Intent parsing failed on every configured provider. Last error: ${lastError}`,
   };
 }

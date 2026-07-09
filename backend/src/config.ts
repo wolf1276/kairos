@@ -68,6 +68,13 @@ export function getHuggingFaceApiKey(): string | undefined {
   return process.env.HUGGINGFACE_API_KEY || undefined;
 }
 
+/** Optional — additional fallback provider for the agent-creation intent parser
+ *  (intentParser.ts), tried after Hugging Face and OpenRouter. If none of the configured
+ *  providers succeed, the parser returns a failure status rather than fabricating a spec. */
+export function getGeminiApiKey(): string | undefined {
+  return process.env.GEMINI_API_KEY || undefined;
+}
+
 /** How often each autonomous role agent may act, in seconds (its own tick still gated by this). */
 export function getRoleIntervalSeconds(): number {
   return Number(process.env.ROLE_INTERVAL_SECONDS) || 120;
