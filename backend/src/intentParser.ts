@@ -23,6 +23,8 @@ const HF_MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
 const GEMINI_MODEL = 'gemini-2.0-flash';
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
 const OPENROUTER_MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
+const GPT_OSS_MODEL = 'openai/gpt-oss-20b:free';
+const NVIDIA_MODEL = 'nvidia/nemotron-nano-9b-v2:free';
 
 const MAX_RETRIES_PER_PROVIDER = 2;
 const BACKOFF_MS = 1500;
@@ -192,53 +194,62 @@ function resolveOpenRouterApiKey(): string | undefined {
   return process.env.OPENROUTER_API_KEY || process.env.OPENROUTER || undefined;
 }
 
-const openRouterProvider: ProviderAdapter = {
-  name: 'openrouter',
-  configured: () => Boolean(resolveOpenRouterApiKey()),
-  async call(userText) {
-    const apiKey = resolveOpenRouterApiKey();
-    if (!apiKey) throw new ProviderCallError('authentication', 'OPENROUTER_API_KEY unset');
+/** OpenRouter fronts many models behind one key/endpoint — each fallback model (default Llama,
+ *  GPT-OSS, Nvidia Nemotron) is just this same call shape with a different `model` id, so they're
+ *  built from one factory rather than copy-pasted adapters. */
+function makeOpenRouterProvider(name: string, model: string): ProviderAdapter {
+  return {
+    name,
+    configured: () => Boolean(resolveOpenRouterApiKey()),
+    async call(userText) {
+      const apiKey = resolveOpenRouterApiKey();
+      if (!apiKey) throw new ProviderCallError('authentication', 'OPENROUTER_API_KEY unset');
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-    let res: Response;
-    try {
-      res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: OPENROUTER_MODEL,
-          temperature: 0.2,
-          max_tokens: 500,
-          messages: [
-            { role: 'system', content: SYSTEM_PROMPT },
-            { role: 'user', content: userText },
-          ],
-        }),
-        signal: controller.signal,
-      });
-    } catch (err) {
-      if (controller.signal.aborted) throw new ProviderCallError('timeout', `request timed out after ${REQUEST_TIMEOUT_MS}ms`);
-      throw classifyError(err);
-    } finally {
-      clearTimeout(timer);
-    }
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      let res: Response;
+      try {
+        res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            max_tokens: 500,
+            messages: [
+              { role: 'system', content: SYSTEM_PROMPT },
+              { role: 'user', content: userText },
+            ],
+          }),
+          signal: controller.signal,
+        });
+      } catch (err) {
+        if (controller.signal.aborted) throw new ProviderCallError('timeout', `request timed out after ${REQUEST_TIMEOUT_MS}ms`);
+        throw classifyError(err);
+      } finally {
+        clearTimeout(timer);
+      }
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      const err = classifyError({ status: res.status, message: `HTTP ${res.status}: ${text}` } as unknown as Error);
-      throw err;
-    }
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        const err = classifyError({ status: res.status, message: `HTTP ${res.status}: ${text}` } as unknown as Error);
+        throw err;
+      }
 
-    const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-    const content = json.choices?.[0]?.message?.content;
-    if (!content) throw new ProviderCallError('malformed_response', 'empty response from OpenRouter');
-    return content;
-  },
-};
+      const json = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+      const content = json.choices?.[0]?.message?.content;
+      if (!content) throw new ProviderCallError('malformed_response', `empty response from ${name}`);
+      return content;
+    },
+  };
+}
+
+const openRouterProvider = makeOpenRouterProvider('openrouter', OPENROUTER_MODEL);
+const gptOssProvider = makeOpenRouterProvider('gpt-oss', GPT_OSS_MODEL);
+const nvidiaProvider = makeOpenRouterProvider('nvidia', NVIDIA_MODEL);
 
 const geminiProvider: ProviderAdapter = {
   name: 'gemini',
@@ -264,9 +275,18 @@ const geminiProvider: ProviderAdapter = {
   },
 };
 
-/** Priority order: primary (Hugging Face) -> secondary (OpenRouter) -> additional (Gemini).
+/** Priority order: primary (Hugging Face) -> OpenRouter/Llama -> GPT-OSS -> Nvidia Nemotron ->
+ *  Gemini. All three OpenRouter-model providers share one API key (OPENROUTER_API_KEY) — if that
+ *  key is unset all three are skipped together as unconfigured; if it's set but one model errors
+ *  (rate limit, outage), failover just tries the next model id on the same key.
  *  A provider that isn't configured (missing API key) is skipped, not treated as a failure. */
-const PROVIDERS: ProviderAdapter[] = [huggingFaceProvider, openRouterProvider, geminiProvider];
+const PROVIDERS: ProviderAdapter[] = [
+  huggingFaceProvider,
+  openRouterProvider,
+  gptOssProvider,
+  nvidiaProvider,
+  geminiProvider,
+];
 
 function log(event: string, fields: Record<string, unknown>): void {
   console.log(JSON.stringify({ component: 'intent-parser', event, ...fields }));
@@ -396,7 +416,7 @@ export async function parseIntent(goalText: string): Promise<IntentParseResult> 
       status: 'failed',
       spec: null,
       clarifyingQuestions: [],
-      error: 'No intent-parsing provider is configured (HUGGINGFACE_API_KEY, OPENROUTER_API_KEY, GEMINI_API_KEY all unset). Cannot parse intent.',
+      error: 'No intent-parsing provider is configured (HUGGINGFACE_API_KEY, OPENROUTER_API_KEY [needed for OpenRouter/GPT-OSS/Nvidia], GEMINI_API_KEY all unset). Cannot parse intent.',
     };
   }
 
