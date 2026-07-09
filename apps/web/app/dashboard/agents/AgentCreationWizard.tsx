@@ -322,7 +322,7 @@ export function AgentCreationWizard({
   const approvedCaps = CAPABILITY_ROWS.filter((c) => caps[c.key]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 py-8 backdrop-blur-[2px]" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-y-auto bg-black/70 p-4 py-8 backdrop-blur-[2px]" onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full max-w-2xl rounded-2xl border border-white/[0.08] bg-bg-card shadow-[0_24px_64px_-16px_rgba(0,0,0,0.7)]">
         {/* Header + stepper */}
         <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-6 py-4">
