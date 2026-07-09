@@ -26,9 +26,16 @@ const OPENROUTER_MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
 const GPT_OSS_MODEL = 'openai/gpt-oss-20b:free';
 const NVIDIA_MODEL = 'nvidia/nemotron-nano-9b-v2:free';
 
-const MAX_RETRIES_PER_PROVIDER = 2;
+// 1 = no retry within a provider — on any failure, move to the next provider immediately.
+// With 5 providers configured, retrying the same one before failing over just adds visible
+// latency (backoff sleep + a second round-trip) to a request the user is waiting on; the
+// failover chain itself is the retry.
+const MAX_RETRIES_PER_PROVIDER = 1;
 const BACKOFF_MS = 1500;
-const REQUEST_TIMEOUT_MS = 20_000;
+// A hung/dead provider previously ate 20s before failing over — user-visible stall on an
+// interactive form. GPT-OSS (the current working fallback) answers in ~4-5s, so 10s leaves
+// headroom for a legitimately slow model without making a dead one block the chain for long.
+const REQUEST_TIMEOUT_MS = 10_000;
 
 const CONFIDENCE_THRESHOLD = 0.6;
 
