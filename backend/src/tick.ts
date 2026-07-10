@@ -9,6 +9,9 @@ import { getStrategy } from './strategies/index.js';
 import { logEvent } from './auditService.js';
 import { executePaperQuantTrade, executePaperLimitOrder } from './paperExecutor.js';
 import { recordCompletedTrade } from './executionEngine.js';
+import { isProtocolExecutionEnabled } from './config.js';
+import { executeProtocolAction } from './protocolExecutionService.js';
+import { buildSoroswapSwapRequest } from './swapExecution.js';
 
 /** Reads the agent's stored policy, if any. No policy on record (agents created before this
  *  existed, or without explicit policy input) is treated as unrestricted. */
@@ -227,7 +230,9 @@ export async function runQuantTick(row: AgentRow, strategy: QuantStrategyConfig)
     const txHash =
       row.mode === 'paper'
         ? await executePaperQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal)
-        : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal, price, policy?.maxSlippagePct);
+        : isProtocolExecutionEnabled()
+          ? await executeQuantTradeViaProtocol(row, strategy, signal, price, policy?.maxSlippagePct ?? 1)
+          : await executeQuantTrade(row, { ...strategy, amountPerTrade: amount }, signal, price, policy?.maxSlippagePct);
 
     recordCompletedTrade({
       row,
@@ -294,7 +299,11 @@ export async function runLimitTick(row: AgentRow, strategy: LimitStrategyConfig)
       return;
     }
 
-    const txHash = row.mode === 'paper' ? await executePaperLimitOrder(row, strategy, price) : await executeLimitOrder(row, strategy, price);
+    const txHash = row.mode === 'paper'
+      ? await executePaperLimitOrder(row, strategy, price)
+      : isProtocolExecutionEnabled()
+        ? await executeLimitOrderViaProtocol(row, strategy, price)
+        : await executeLimitOrder(row, strategy, price);
 
     recordCompletedTrade({
       row,
@@ -319,6 +328,42 @@ export async function runLimitTick(row: AgentRow, strategy: LimitStrategyConfig)
 export function evaluateLimitTrigger(strategy: LimitStrategyConfig, price: number): boolean {
   const trigger = parseFloat(strategy.triggerPrice);
   return strategy.triggerComparator === 'lte' ? price <= trigger : price >= trigger;
+}
+
+/** Smart-Wallet-custodied counterpart to executeQuantTrade — routes the quant signal through the
+ *  Soroswap adapter via executeProtocolAction (delegation/redemption path) instead of signing a
+ *  classic Stellar path payment from the agent's own Turnkey account. Throws on failure so the
+ *  calling try/catch in runQuantTick handles it identically to the paper and legacy branches. */
+export async function executeQuantTradeViaProtocol(
+  row: AgentRow,
+  strategy: { pair: string; amountPerTrade: string },
+  side: 'buy' | 'sell',
+  price: number,
+  maxSlippagePct: number
+): Promise<string> {
+  const request = buildSoroswapSwapRequest(strategy.pair, side, BigInt(strategy.amountPerTrade), price, maxSlippagePct);
+  const result = await executeProtocolAction(row, request);
+  if (!result.ok) {
+    throw new Error(result.error ?? 'Protocol execution failed with no error detail');
+  }
+  return result.txHash!;
+}
+
+/** Smart-Wallet-custodied counterpart to executeLimitOrder — routes the limit fill through the
+ *  Soroswap adapter via executeProtocolAction (delegation/redemption path). Converts the decimal
+ *  quantity string to stroops for the protocol adapter. Throws on failure. */
+async function executeLimitOrderViaProtocol(
+  row: AgentRow,
+  strategy: LimitStrategyConfig,
+  price: number
+): Promise<string> {
+  const quantityStroops = BigInt(Math.floor(parseFloat(strategy.quantity) * 1e7));
+  const request = buildSoroswapSwapRequest(strategy.pair, strategy.side, quantityStroops, price, 1);
+  const result = await executeProtocolAction(row, request);
+  if (!result.ok) {
+    throw new Error(result.error ?? 'Protocol execution failed with no error detail');
+  }
+  return result.txHash!;
 }
 
 // P0-3: executeQuantTrade/executeLimitOrder used to sign and submit a classic Stellar path

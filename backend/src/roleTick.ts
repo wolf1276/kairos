@@ -27,6 +27,7 @@ import { openExecution, markBroadcast, markRecorded } from './executionJournal.j
 import { executeProtocolAction } from './protocolExecutionService.js';
 import { isProtocolExecutionEnabled } from './config.js';
 import { BLEND_TESTNET_ASSETS } from '@wolf1276/kairos-sdk';
+import { buildSoroswapSwapRequest } from './swapExecution.js';
 
 /** stroops (integer string) → decimal asset units string, matching tick.ts's convention. */
 function stroopsToAmount(stroops: string): string {
@@ -85,16 +86,14 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     const risk = riskChecks(config, decision, ctx, { capital: row.capital, realizedPnl: pnlBefore.realizedPnl, unrealizedPnl: pnlBefore.unrealizedPnl });
     logEvent({ agentId: row.id, owner: row.owner, eventType: 'risk_check', mode: row.mode, mpcAccount: row.public_key, pair: config.pair, message: `Risk ${risk.ok ? 'passed' : `blocked: ${risk.reason}`}` });
 
-    // The yield role's reallocation deploys idle capital into a real protocol (Blend deposit)
-    // rather than a spot buy, when protocol execution is turned on for live agents.
-    const useProtocolExecution = config.role === 'yield' && row.mode === 'live' && isProtocolExecutionEnabled();
-
-    // P0-3: every live role except yield-with-protocol-execution had no Smart-Wallet-custodied
-    // execution route and fell back to the legacy direct-custody spot-trade path (tick.ts's
-    // executeQuantTrade, signed by the agent's own Turnkey key against Horizon directly) — no
-    // on-chain Delegation validation, no on-chain Policy enforcement. Block instead of falling
-    // back; paper mode is untouched (row.mode !== 'live' short-circuits this to false), so
-    // simulated trading keeps working exactly as before. See docs/security/MAINNET_AUDIT.md.
+    // Every live role gets a Smart-Wallet-custodied execution route when protocol execution is
+    // turned on: yield deploys idle capital via Blend deposit (USDC → Blend), while strategic
+    // and balancer execute spot swaps via Soroswap (XLM ⇄ USDC). When protocol execution is off
+    // the legacy direct-custody path (tick.ts's executeQuantTrade, which signed against the
+    // agent's own Turnkey key with no on-chain Delegation validation or Policy enforcement) is
+    // blocked instead of falling through — see docs/security/MAINNET_AUDIT.md, P0-3. Paper mode
+    // is untouched (row.mode !== 'live' short-circuits legacyPathBlocked to false).
+    const useProtocolExecution = row.mode === 'live' && isProtocolExecutionEnabled();
     const legacyPathBlocked = row.mode === 'live' && !useProtocolExecution;
 
     const willExecute = side !== null && policy.ok && !delegationBlocks && !legacyPathBlocked && risk.ok;
@@ -105,19 +104,42 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     let pnlAfter = pnlBefore;
 
     if (willExecute && side && useProtocolExecution) {
-      // Blend deposit sizing reuses the same base-unit amount the legacy spot-buy path would
-      // have used for this agent (config.amountPerTrade), rather than inventing a new sizing
-      // rule — see stroopsToAmount's doc for the base-unit convention this assumes.
-      const result = await executeProtocolAction(row, {
-        protocolId: 'blend',
-        action: 'deposit',
-        asset: BLEND_TESTNET_ASSETS.USDC,
-        amount: BigInt(config.amountPerTrade),
-      });
-      // executeProtocolAction already journals (protocol_execution_journal), applies the
-      // position delta, and audit-logs internally — nothing further to record here. The spot
-      // pair position/PnL are untouched by a protocol deposit, so positionAfter/pnlAfter stay
-      // at their pre-tick values.
+      let result: Awaited<ReturnType<typeof executeProtocolAction>>;
+      if (config.role === 'yield') {
+        // Yield: deploy idle capital into Blend lending.
+        result = await executeProtocolAction(row, {
+          protocolId: 'blend',
+          action: 'deposit',
+          asset: BLEND_TESTNET_ASSETS.USDC,
+          amount: BigInt(config.amountPerTrade),
+        });
+      } else {
+        // Strategic / Balancer: spot swap via Soroswap.
+        const request = buildSoroswapSwapRequest(
+          config.pair, side, BigInt(config.amountPerTrade), ctx.price, 1
+        );
+        result = await executeProtocolAction(row, request);
+        // A Soroswap swap updates the spot pair position — record it as a trade so PnL
+        // tracking and position bookkeeping stay consistent with the paper/legacy paths.
+        if (result.ok) {
+          try {
+            const amount = stroopsToAmount(config.amountPerTrade);
+            const strategyId = decision.selectedStrategy ?? config.role;
+            const { tradeId: tid, position: pos, pnl } = recordCompletedTrade({
+              row, strategyId, side, pair: config.pair, amount,
+              price: String(ctx.price), txHash: result.txHash!,
+              mode: row.mode, eventType: 'trade_executed',
+              message: `${config.role}: ${side} ${amount} ${config.pair} @ ${ctx.price.toFixed(5)}. Tx: ${result.txHash}`,
+            });
+            tradeId = tid;
+            positionAfter = pos;
+            pnlAfter = pnl;
+          } catch (_err) {
+            // executeProtocolAction already journaled; the trade record is local bookkeeping.
+            // A write failure here doesn't lose the on-chain effect.
+          }
+        }
+      }
       executionResult = result.ok ? `success:${result.txHash}` : `failed:${result.error}`;
     } else if (willExecute && side) {
       // 7. Execute (paper or live) → 8. update positions. Journaled (outbox pattern) so a

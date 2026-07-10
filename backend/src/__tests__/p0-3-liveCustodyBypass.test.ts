@@ -16,6 +16,7 @@ const getLatestPriceMock = vi.fn();
 const executePaperQuantTradeMock = vi.fn();
 const executePaperLimitOrderMock = vi.fn();
 const recordCompletedTradeMock = vi.fn();
+const executeProtocolActionMock = vi.fn();
 
 vi.mock('../agentService.js', () => ({
   getAgentSigner: vi.fn(),
@@ -40,6 +41,19 @@ vi.mock('../paperExecutor.js', () => ({
 }));
 vi.mock('../executionEngine.js', () => ({
   recordCompletedTrade: recordCompletedTradeMock,
+}));
+vi.mock('../protocolExecutionService.js', () => ({
+  executeProtocolAction: executeProtocolActionMock,
+}));
+vi.mock('../swapExecution.js', () => ({
+  buildSoroswapSwapRequest: vi.fn(() => ({
+    protocolId: 'soroswap' as const,
+    action: 'swap' as const,
+    path: ['CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU', 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'],
+    amountIn: 10000000n,
+    minAmountOut: 1n,
+    deadline: 9999999999n,
+  })),
 }));
 
 const baseRow: AgentRow = {
@@ -96,11 +110,24 @@ describe('P0-3: legacy direct-custody trading is blocked, not routed', () => {
   });
 
   it('runQuantTick in live mode fails cleanly and never records a completed trade', async () => {
+    delete process.env.ENABLE_PROTOCOL_EXECUTION;
     const { runQuantTick } = await import('../tick.js');
     await runQuantTick(baseRow, quantStrategy);
 
     expect(recordCompletedTradeMock).not.toHaveBeenCalled();
     expect(recordTickMock).toHaveBeenCalledWith(baseRow.id, expect.objectContaining({ ok: false }));
+  });
+
+  it('runQuantTick in live mode with protocol execution enabled routes through Soroswap swap (Smart Wallet path) instead of the legacy throw', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    executeProtocolActionMock.mockResolvedValue({ ok: true, txHash: 'sw-tx-hash' });
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 't1', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
+    const { runQuantTick } = await import('../tick.js');
+
+    await runQuantTick(baseRow, quantStrategy);
+
+    expect(executeProtocolActionMock).toHaveBeenCalled();
+    expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
   });
 
   it('runQuantTick in paper mode still executes normally (regression: legitimate path unaffected)', async () => {
@@ -115,12 +142,26 @@ describe('P0-3: legacy direct-custody trading is blocked, not routed', () => {
   });
 
   it('runLimitTick in live mode fails cleanly and never records a completed trade', async () => {
+    delete process.env.ENABLE_PROTOCOL_EXECUTION;
     const { runLimitTick } = await import('../tick.js');
     await runLimitTick(baseRow, limitStrategy);
 
     expect(recordCompletedTradeMock).not.toHaveBeenCalled();
     expect(stopAgentMock).not.toHaveBeenCalled();
     expect(recordTickMock).toHaveBeenCalledWith(baseRow.id, expect.objectContaining({ ok: false }));
+  });
+
+  it('runLimitTick in live mode with protocol execution enabled routes through Soroswap swap (Smart Wallet path) instead of the legacy throw', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    executeProtocolActionMock.mockResolvedValue({ ok: true, txHash: 'sw-tx-hash' });
+    recordCompletedTradeMock.mockReturnValue(undefined);
+    const { runLimitTick } = await import('../tick.js');
+
+    await runLimitTick(baseRow, limitStrategy);
+
+    expect(executeProtocolActionMock).toHaveBeenCalled();
+    expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
+    expect(stopAgentMock).toHaveBeenCalledTimes(1);
   });
 
   it('runLimitTick in paper mode still executes normally (regression: legitimate path unaffected)', async () => {

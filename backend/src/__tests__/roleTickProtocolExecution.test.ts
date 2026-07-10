@@ -56,6 +56,16 @@ vi.mock('../decisionService.js', () => ({
 vi.mock('../auditService.js', () => ({
   logEvent: vi.fn(),
 }));
+vi.mock('../swapExecution.js', () => ({
+  buildSoroswapSwapRequest: vi.fn(() => ({
+    protocolId: 'soroswap' as const,
+    action: 'swap' as const,
+    path: ['CAQCFVLOBK5GIULPNZRGATJJMIZL5BSP7X5YJVMGCPTUEPFM4AVSRCJU', 'CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC'],
+    amountIn: 1000000000n,
+    minAmountOut: 1n,
+    deadline: 9999999999n,
+  })),
+}));
 vi.mock('../decisionEngine.js', () => ({
   buildMarketContext: vi.fn(async () => ({
     price: 0.12,
@@ -155,26 +165,25 @@ describe('roleTick yield reallocation dispatch', () => {
     expect(executePaperQuantTradeMock).toHaveBeenCalledTimes(1);
   });
 
-  // P0-3: the strategic/balancer roles have no protocol-execution route at all (useProtocolExecution
-  // only ever applies to role === 'yield'), so a live strategic/balancer agent must always be
-  // blocked, regardless of the ENABLE_PROTOCOL_EXECUTION flag — it must never fall back to signing
-  // real trades from the agent's own Turnkey account outside Smart Wallet custody.
-  it('blocks a live strategic-role trade even when protocol execution is enabled (no route exists for this role)', async () => {
+  // P0-3 regression: a live strategic-role agent with no protocol execution must be blocked — but
+  // when protocol execution IS enabled, it now routes through Soroswap swap (Smart Wallet path).
+  it('routes a live strategic-role trade through Soroswap swap when protocol execution is enabled', async () => {
     process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
     const { decideStrategic } = await import('../decisionEngine.js');
     vi.mocked(decideStrategic).mockResolvedValue({
-      action: 'buy',
-      confidence: 0.9,
-      reasoning: 'test',
+      action: 'buy', confidence: 0.9, reasoning: 'test',
       llmModel: null,
     } as Awaited<ReturnType<typeof decideStrategic>>);
+    executeProtocolActionMock.mockResolvedValue({ ok: true, txHash: 'sw-tx-hash' });
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-sw', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
     const { runRoleTick } = await import('../roleTick.js');
 
     await runRoleTick({ ...baseRow, role: 'strategic' }, { ...baseConfig, role: 'strategic' });
 
-    expect(executeProtocolActionMock).not.toHaveBeenCalled();
+    expect(executeProtocolActionMock).toHaveBeenCalled();
+    expect(executeProtocolActionMock.mock.calls[0][1]).toMatchObject({ protocolId: 'soroswap', action: 'swap' });
     expect(executeQuantTradeMock).not.toHaveBeenCalled();
-    expect(recordCompletedTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
   });
 
   it('still executes a paper-mode strategic-role trade normally (regression: simulated trading unaffected)', async () => {
@@ -193,6 +202,25 @@ describe('roleTick yield reallocation dispatch', () => {
     await runRoleTick({ ...baseRow, role: 'strategic', mode: 'paper' }, { ...baseConfig, role: 'strategic' });
 
     expect(executePaperQuantTradeMock).toHaveBeenCalledTimes(1);
+    expect(executeQuantTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes a live balancer-role trade through Soroswap swap when protocol execution is enabled', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    const { decideBalancer } = await import('../decisionEngine.js');
+    vi.mocked(decideBalancer).mockResolvedValue({
+      action: 'rebalance', confidence: 0.85, reasoning: 'rebalance test',
+      llmModel: null,
+    } as Awaited<ReturnType<typeof decideBalancer>>);
+    executeProtocolActionMock.mockResolvedValue({ ok: true, txHash: 'sw-tx-hash' });
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-sw', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick(baseRow, { ...baseConfig, role: 'balancer' });
+
+    expect(executeProtocolActionMock).toHaveBeenCalled();
+    expect(executeProtocolActionMock.mock.calls[0][1]).toMatchObject({ protocolId: 'soroswap', action: 'swap' });
     expect(executeQuantTradeMock).not.toHaveBeenCalled();
     expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
   });
