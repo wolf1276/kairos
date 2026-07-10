@@ -587,6 +587,85 @@ fn test_h1_spend_limit_rejects_transfer_from_on_whitelisted_token() {
     client.before_hook(&terms, &hash, &ctx);
 }
 
+// Same shape but for burn — also not transfer/xfer, also must be rejected.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_burn_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[45u8; 32]);
+
+    let from = Address::generate(&env);
+    let args = vec![&env, from.clone().into_val(&env), 500i128.into_val(&env)];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "burn"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+}
+
+// Same shape but for clawback — also not transfer/xfer, also must be rejected.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_clawback_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[46u8; 32]);
+
+    let from = Address::generate(&env);
+    let args = vec![&env, from.clone().into_val(&env), 500i128.into_val(&env)];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "clawback"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+}
+
+// Same shape but for mint — also not transfer/xfer, also must be rejected.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_mint_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[47u8; 32]);
+
+    let to = Address::generate(&env);
+    let args = vec![&env, to.clone().into_val(&env), 500i128.into_val(&env)];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "mint"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+}
+
+// Arbitrary unsupported function on the whitelisted token must also fail closed.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_unsupported_function_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[48u8; 32]);
+
+    let args = vec![&env, 500i128.into_val(&env)];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "set_admin"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+}
+
 // Sanity: legitimate transfer/xfer calls on the whitelisted token are unaffected by the H1 fix.
 #[test]
 fn test_h1_fix_still_allows_transfer_within_limit() {
