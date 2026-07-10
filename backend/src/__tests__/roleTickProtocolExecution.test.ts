@@ -127,16 +127,20 @@ describe('roleTick yield reallocation dispatch', () => {
     expect(recordCompletedTradeMock).not.toHaveBeenCalled();
   });
 
-  it('falls back to the legacy spot-trade path when protocol execution is disabled', async () => {
+  // P0-3: a live agent with no Smart-Wallet-custodied execution route (any role but
+  // yield-with-protocol-execution) must be blocked, not silently routed through the legacy
+  // direct-custody path (tick.ts's executeQuantTrade, signed by the agent's own Turnkey key
+  // against Horizon directly — no on-chain Delegation validation, no on-chain Policy
+  // enforcement). See docs/security/MAINNET_AUDIT.md.
+  it('blocks a live reallocation instead of falling back to the legacy spot-trade path when protocol execution is disabled', async () => {
     delete process.env.ENABLE_PROTOCOL_EXECUTION;
-    executeQuantTradeMock.mockResolvedValue('legacy-tx-hash');
-    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-1', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
     const { runRoleTick } = await import('../roleTick.js');
 
     await runRoleTick(baseRow, baseConfig);
 
     expect(executeProtocolActionMock).not.toHaveBeenCalled();
-    expect(executeQuantTradeMock).toHaveBeenCalledTimes(1);
+    expect(executeQuantTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).not.toHaveBeenCalled();
   });
 
   it('never routes a paper-mode agent through executeProtocolAction, even when the flag is on', async () => {
@@ -149,5 +153,47 @@ describe('roleTick yield reallocation dispatch', () => {
 
     expect(executeProtocolActionMock).not.toHaveBeenCalled();
     expect(executePaperQuantTradeMock).toHaveBeenCalledTimes(1);
+  });
+
+  // P0-3: the strategic/balancer roles have no protocol-execution route at all (useProtocolExecution
+  // only ever applies to role === 'yield'), so a live strategic/balancer agent must always be
+  // blocked, regardless of the ENABLE_PROTOCOL_EXECUTION flag — it must never fall back to signing
+  // real trades from the agent's own Turnkey account outside Smart Wallet custody.
+  it('blocks a live strategic-role trade even when protocol execution is enabled (no route exists for this role)', async () => {
+    process.env.ENABLE_PROTOCOL_EXECUTION = 'true';
+    const { decideStrategic } = await import('../decisionEngine.js');
+    vi.mocked(decideStrategic).mockResolvedValue({
+      action: 'buy',
+      confidence: 0.9,
+      reasoning: 'test',
+      llmModel: null,
+    } as Awaited<ReturnType<typeof decideStrategic>>);
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick({ ...baseRow, role: 'strategic' }, { ...baseConfig, role: 'strategic' });
+
+    expect(executeProtocolActionMock).not.toHaveBeenCalled();
+    expect(executeQuantTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).not.toHaveBeenCalled();
+  });
+
+  it('still executes a paper-mode strategic-role trade normally (regression: simulated trading unaffected)', async () => {
+    delete process.env.ENABLE_PROTOCOL_EXECUTION;
+    const { decideStrategic } = await import('../decisionEngine.js');
+    vi.mocked(decideStrategic).mockResolvedValue({
+      action: 'buy',
+      confidence: 0.9,
+      reasoning: 'test',
+      llmModel: null,
+    } as Awaited<ReturnType<typeof decideStrategic>>);
+    executePaperQuantTradeMock.mockResolvedValue('paper-tx-hash');
+    recordCompletedTradeMock.mockReturnValue({ tradeId: 'trade-3', position: null, pnl: { realizedPnl: 0, unrealizedPnl: 0 } });
+    const { runRoleTick } = await import('../roleTick.js');
+
+    await runRoleTick({ ...baseRow, role: 'strategic', mode: 'paper' }, { ...baseConfig, role: 'strategic' });
+
+    expect(executePaperQuantTradeMock).toHaveBeenCalledTimes(1);
+    expect(executeQuantTradeMock).not.toHaveBeenCalled();
+    expect(recordCompletedTradeMock).toHaveBeenCalledTimes(1);
   });
 });

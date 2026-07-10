@@ -105,4 +105,66 @@ describe('RegistryModule.getSmartWallet', () => {
     const registry = new RegistryModule(client);
     await expect(registry.getSmartWallet(OWNER)).rejects.toThrow(RpcError);
   });
+
+  it('P1-3: malformed response (transactionData present, no result entry) must throw, not return null', async () => {
+    // `rpc.Api.isSimulationSuccess` only checks `"transactionData" in sim` — it does not
+    // require `result` to be present. The real SDK's `parseSuccessful` omits `result`
+    // entirely whenever `sim.results` is an empty array instead of a one-element array
+    // (a malformed/incomplete RPC response e.g. from a buggy proxy or degraded RPC node).
+    const client = makeClient({
+      simulateTx: async () => ({
+        latestLedger: 100,
+        transactionData: {},
+        // no `result` key at all
+      }),
+    });
+    const registry = new RegistryModule(client);
+
+    await expect(registry.getSmartWallet(OWNER)).rejects.toThrow(RpcError);
+  });
+
+  it('invalid contract ID: Registry contract not configured throws before any RPC call', async () => {
+    const client = {
+      contracts: {},
+      networkPassphrase: 'Test SDF Network ; September 2015',
+      getAccount: async () => new Account('GBKKNVTF24OKM2V7YRRQHLQIH6PTWDYRFMZPD6AUKB4RXAPSCRKB3XMO', '0'),
+      simulateTx: vi.fn(),
+    } as unknown as KairosClient;
+    const registry = new RegistryModule(client);
+
+    await expect(registry.getSmartWallet(OWNER)).rejects.toThrow(RpcError);
+    expect((client as unknown as { simulateTx: ReturnType<typeof vi.fn> }).simulateTx).not.toHaveBeenCalled();
+  });
+
+  it('Horizon/RPC 5xx surfaced during simulation throws, never returns null', async () => {
+    const client = makeClient({
+      simulateTx: async () => {
+        throw new Error('Server responded with 503 Service Unavailable');
+      },
+    });
+    const registry = new RegistryModule(client);
+
+    const err = await registry.getSmartWallet(OWNER).catch((e) => e);
+    expect(err).toBeInstanceOf(RpcError);
+    expect((err as Error).message).toContain('503');
+  });
+
+  it('malformed retval (present but not an Address ScVal) throws RpcError, not a raw TypeError', async () => {
+    // A present, non-void retval that isn't an Address ScVal (e.g. from a malformed/incompatible
+    // RPC response) previously reached `Address.fromScVal`, which throws a raw TypeError. That
+    // still failed closed (never returned `null`), but leaked an SDK-internal error type instead
+    // of the RpcError every other Registry failure mode surfaces.
+    const client = makeClient({
+      simulateTx: async () => ({
+        result: { retval: xdr.ScVal.scvU32(42) },
+        latestLedger: 100,
+        transactionData: {},
+      }),
+    });
+    const registry = new RegistryModule(client);
+
+    const err = await registry.getSmartWallet(OWNER).catch((e) => e);
+    expect(err).toBeInstanceOf(RpcError);
+    expect(err).not.toBeInstanceOf(TypeError);
+  });
 });

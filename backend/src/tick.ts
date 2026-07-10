@@ -1,18 +1,14 @@
-import { Address, Asset, BASE_FEE, Horizon, Operation, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
-import { signTransaction } from '@wolf1276/kairos-sdk';
+import { Address, xdr } from '@stellar/stellar-sdk';
 import { getKairosClient } from './kairos.js';
 import { getAgentSigner, getActiveDelegationForAgent, recordTick, stopAgent, tradesToday } from './agentService.js';
 import { mapExecutionError, mapThrownError } from './errors.js';
 import type { AgentRow } from './db.js';
 import type { AgentPolicy, DcaStrategyConfig, JsonSafeDelegation, LimitStrategyConfig, QuantStrategyConfig, RoleStrategyConfig } from './types.js';
-import { getCandles, getLatestPrice, TESTNET_USDC_ISSUER } from './priceHistory.js';
+import { getCandles, getLatestPrice } from './priceHistory.js';
 import { getStrategy } from './strategies/index.js';
-import { getNetwork } from './config.js';
 import { logEvent } from './auditService.js';
 import { executePaperQuantTrade, executePaperLimitOrder } from './paperExecutor.js';
 import { recordCompletedTrade } from './executionEngine.js';
-
-const HORIZON_TESTNET_URL = 'https://horizon-testnet.stellar.org';
 
 /** Reads the agent's stored policy, if any. No policy on record (agents created before this
  *  existed, or without explicit policy input) is treated as unrestricted. */
@@ -325,166 +321,37 @@ export function evaluateLimitTrigger(strategy: LimitStrategyConfig, price: numbe
   return strategy.triggerComparator === 'lte' ? price <= trigger : price >= trigger;
 }
 
-/** True if the loaded account already trusts `asset` (native XLM never needs a trustline). */
-function hasTrustline(account: Awaited<ReturnType<Horizon.Server['loadAccount']>>, asset: Asset): boolean {
-  if (asset.isNative()) return true;
-  return account.balances.some(
-    (b) =>
-      b.asset_type !== 'native' &&
-      (b as { asset_code: string; asset_issuer: string }).asset_code === asset.getCode() &&
-      (b as { asset_code: string; asset_issuer: string }).asset_issuer === asset.getIssuer()
-  );
-}
+// P0-3: executeQuantTrade/executeLimitOrder used to sign and submit a classic Stellar path
+// payment directly from the agent's own Turnkey-MPC account (see agentService.createAgent /
+// provisionService.ts's funding note) instead of via CustomAccount.execute_from_executor +
+// DelegationManager.redeem_delegations. That meant every live quant/limit trade — and every
+// live strategic/balancer role trade, plus the yield role whenever ENABLE_PROTOCOL_EXECUTION is
+// unset (see roleTick.ts's useProtocolExecution) — moved funds under sole backend/Turnkey
+// custody: no on-chain Delegation validation and no on-chain Policy enforcement (spend limits,
+// target whitelist, time restriction) ever ran for the trade itself. The one-time smart-wallet
+// -> agent-account funding transfer (apps/web/app/lib/stellar.ts's withdrawFromSmartWallet) is
+// owner-authorized and bounded by a spend-limit delegation, but nothing bounded what happened to
+// that capital afterward — a direct violation of "funds must always remain under Smart Wallet
+// custody" / "every execution flows through Smart Wallet -> Delegation -> Policy -> Execution".
+// See docs/security/MAINNET_AUDIT.md, P0-3. Disabled for live trading (paper mode is unaffected
+// — it never moves real funds) until a Smart-Wallet-custodied execution path exists for spot
+// swaps, following the pattern executeProtocolAction/protocolAdapters/soroswap already use for
+// the yield role's Blend deposit.
+const LEGACY_LIVE_CUSTODY_ERROR =
+  'Live trading via the legacy direct-custody path is disabled: it would move funds outside ' +
+  'Smart Wallet custody without on-chain Delegation validation or Policy enforcement ' +
+  '(docs/security/MAINNET_AUDIT.md, P0-3). Use paper mode, or a protocol-execution-backed strategy.';
 
-const QUANT_TRADE_SLIPPAGE = 0.02;
-
-/** Submits a real classic Stellar path payment for a quant buy/sell signal, signed by the
- *  agent's own keypair (the agent trades from its own funded Stellar account — see
- *  agentService.createAgent — not via the Kairos SDK delegation `execute()`). Currently only
- *  the XLM/USDC pair is supported: 'buy' spends USDC to acquire XLM, 'sell' spends XLM to
- *  acquire USDC. Mirrors apps/web/app/lib/stellar.ts's executeSwap, reimplemented server-side.
- *  A freshly-created agent account only holds native XLM (friendbot funding) — it has no USDC
- *  trustline yet, so a missing trustline is established here in the same transaction as the
- *  trade, rather than requiring a separate manual setup step per agent.
- *  `price` (USDC per XLM, same convention as executeLimitOrder) floors the receive amount at a
- *  2% slippage buffer — previously this used a near-zero `destMin`, which accepted a fill at
- *  any price and gave a thin or manipulated order book no floor to respect. */
 export async function executeQuantTrade(
-  row: AgentRow,
-  strategy: { pair: string; amountPerTrade: string },
-  side: 'buy' | 'sell',
-  price: number,
-  // Overrides QUANT_TRADE_SLIPPAGE when the agent has a Capital & Safety "Maximum Slippage"
-  // policy (agentcreation.md §3) — previously collected in the wizard but never enforced here.
-  maxSlippagePct?: number
+  _row: AgentRow,
+  _strategy: { pair: string; amountPerTrade: string },
+  _side: 'buy' | 'sell',
+  _price: number,
+  _maxSlippagePct?: number
 ): Promise<string> {
-  if (strategy.pair !== 'XLM/USDC') {
-    throw new Error(`Unsupported pair for trading: ${strategy.pair}`);
-  }
-
-  const signer = await getAgentSigner(row);
-  const networkPassphrase =
-    getNetwork() === 'testnet'
-      ? 'Test SDF Network ; September 2015'
-      : 'Public Global Stellar Network ; September 2015';
-
-  const server = new Horizon.Server(HORIZON_TESTNET_URL, { allowHttp: false });
-  const account = await server.loadAccount(signer.publicKey());
-
-  const usdcAsset = new Asset('USDC', TESTNET_USDC_ISSUER);
-  const xlmAsset = Asset.native();
-
-  // 'buy' means "buy XLM with USDC" per the quant strategy's own trade side vocabulary (a
-  // buy signal on the pair increases XLM exposure); 'sell' unwinds it back to USDC.
-  const sendAsset = side === 'buy' ? usdcAsset : xlmAsset;
-  const destAsset = side === 'buy' ? xlmAsset : usdcAsset;
-  const amount = strategy.amountPerTrade;
-
-  // USDC -> XLM divides by price; XLM -> USDC multiplies (same convention as executeLimitOrder).
-  const sendAmountNum = parseFloat(amount);
-  const expectedDest = side === 'buy' ? sendAmountNum / price : sendAmountNum * price;
-  const slippage = maxSlippagePct !== undefined ? maxSlippagePct / 100 : QUANT_TRADE_SLIPPAGE;
-  const destMin = (expectedDest * (1 - slippage)).toFixed(7);
-
-  const needsUsdcTrustline = !hasTrustline(account, usdcAsset);
-
-  const op = Operation.pathPaymentStrictSend({
-    sendAsset,
-    sendAmount: amount,
-    destination: signer.publicKey(),
-    destAsset,
-    destMin,
-  });
-
-  const builder = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase });
-  if (needsUsdcTrustline) {
-    builder.addOperation(Operation.changeTrust({ asset: usdcAsset }));
-  }
-  const transaction = builder.addOperation(op).setTimeout(30).build();
-  await signTransaction(transaction, signer);
-
-  const result = await server.submitTransaction(transaction);
-  return result.hash;
+  throw new Error(LEGACY_LIVE_CUSTODY_ERROR);
 }
 
-const LIMIT_ORDER_SLIPPAGE = 0.02;
-
-/** Executes a one-shot limit order once its trigger has fired (see runLimitTick). Unlike
- *  executeQuantTrade (which always fixes the *sent* amount via pathPaymentStrictSend),
- *  strategy.quantity is denominated in strategy.asset regardless of side — "buy 5 XLM" and
- *  "sell 5 XLM" both mean exactly 5 XLM changes hands, so 'buy' uses pathPaymentStrictReceive
- *  (fix the amount received, cap what's spent) and 'sell' uses pathPaymentStrictSend (fix the
- *  amount given up, floor what's received). `price` is the latest USDC-per-XLM price used to
- *  size the other side of the trade with a slippage buffer. */
-async function executeLimitOrder(row: AgentRow, strategy: LimitStrategyConfig, price: number): Promise<string> {
-  if (strategy.pair !== 'XLM/USDC') {
-    throw new Error(`Unsupported pair for trading: ${strategy.pair}`);
-  }
-  if (strategy.asset !== 'XLM' && strategy.asset !== 'USDC') {
-    throw new Error(`Unsupported asset for limit order: ${strategy.asset}`);
-  }
-
-  const signer = await getAgentSigner(row);
-  const networkPassphrase =
-    getNetwork() === 'testnet'
-      ? 'Test SDF Network ; September 2015'
-      : 'Public Global Stellar Network ; September 2015';
-
-  const server = new Horizon.Server(HORIZON_TESTNET_URL, { allowHttp: false });
-  const account = await server.loadAccount(signer.publicKey());
-
-  const usdcAsset = new Asset('USDC', TESTNET_USDC_ISSUER);
-  const xlmAsset = Asset.native();
-
-  const quantity = parseFloat(strategy.quantity);
-  // The other side's amount, converting through the USDC-per-XLM price: XLM -> USDC multiplies,
-  // USDC -> XLM divides.
-  const otherSideAmount = strategy.asset === 'XLM' ? quantity * price : quantity / price;
-
-  let op;
-  if (strategy.asset === 'XLM') {
-    op =
-      strategy.side === 'buy'
-        ? Operation.pathPaymentStrictReceive({
-            sendAsset: usdcAsset,
-            sendMax: (otherSideAmount * (1 + LIMIT_ORDER_SLIPPAGE)).toFixed(7),
-            destination: signer.publicKey(),
-            destAsset: xlmAsset,
-            destAmount: quantity.toFixed(7),
-          })
-        : Operation.pathPaymentStrictSend({
-            sendAsset: xlmAsset,
-            sendAmount: quantity.toFixed(7),
-            destination: signer.publicKey(),
-            destAsset: usdcAsset,
-            destMin: (otherSideAmount * (1 - LIMIT_ORDER_SLIPPAGE)).toFixed(7),
-          });
-  } else {
-    op =
-      strategy.side === 'buy'
-        ? Operation.pathPaymentStrictReceive({
-            sendAsset: xlmAsset,
-            sendMax: (otherSideAmount * (1 + LIMIT_ORDER_SLIPPAGE)).toFixed(7),
-            destination: signer.publicKey(),
-            destAsset: usdcAsset,
-            destAmount: quantity.toFixed(7),
-          })
-        : Operation.pathPaymentStrictSend({
-            sendAsset: usdcAsset,
-            sendAmount: quantity.toFixed(7),
-            destination: signer.publicKey(),
-            destAsset: xlmAsset,
-            destMin: (otherSideAmount * (1 - LIMIT_ORDER_SLIPPAGE)).toFixed(7),
-          });
-  }
-
-  const limitBuilder = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase });
-  if (!hasTrustline(account, usdcAsset)) {
-    limitBuilder.addOperation(Operation.changeTrust({ asset: usdcAsset }));
-  }
-  const transaction = limitBuilder.addOperation(op).setTimeout(30).build();
-  await signTransaction(transaction, signer);
-
-  const result = await server.submitTransaction(transaction);
-  return result.hash;
+async function executeLimitOrder(_row: AgentRow, _strategy: LimitStrategyConfig, _price: number): Promise<string> {
+  throw new Error(LEGACY_LIVE_CUSTODY_ERROR);
 }
