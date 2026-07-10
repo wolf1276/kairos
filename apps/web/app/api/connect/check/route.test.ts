@@ -75,4 +75,110 @@ describe("POST /api/connect/check", () => {
     expect(data).toEqual({ success: true, status: "new" });
     expect(registerSmartWalletMock).not.toHaveBeenCalled();
   });
+
+  it("DB unavailable (503) -> Registry consulted, not short-circuited", async () => {
+    backendFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      data: { error: "Failed to read smart wallets: connection timeout", owner: OWNER },
+    });
+    lookupRegistry.mockResolvedValueOnce("CSMART_WALLET");
+    registerSmartWalletMock.mockResolvedValueOnce({ ok: true, status: 200, data: {} });
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    expect(lookupRegistry).toHaveBeenCalledWith(OWNER);
+    expect(data).toEqual({ success: true, status: "existing", walletAddress: OWNER, smartWallet: "CSMART_WALLET" });
+  });
+
+  it("DB unavailable + Registry empty -> new, DB error surfaced but not blocking", async () => {
+    backendFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      data: { error: "Failed to read smart wallets: connection timeout", owner: OWNER },
+    });
+    lookupRegistry.mockResolvedValueOnce(null);
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    expect(data).toEqual({
+      success: true,
+      status: "new",
+      dbWarning: "Failed to read smart wallets: connection timeout",
+    });
+    expect(registerSmartWalletMock).not.toHaveBeenCalled();
+  });
+
+  it("DB unavailable + Registry wallet -> existing, backfill attempted best-effort", async () => {
+    backendFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      data: { error: "Failed to read smart wallets: connection timeout", owner: OWNER },
+    });
+    lookupRegistry.mockResolvedValueOnce("CSMART_WALLET");
+    registerSmartWalletMock.mockResolvedValueOnce({ ok: false, status: 503, data: { error: "still down" } });
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    // Backfill failure must not surface as an error or block the "existing" verdict.
+    expect(registerSmartWalletMock).toHaveBeenCalledWith("Bearer test-token", "CSMART_WALLET");
+    expect(data).toEqual({ success: true, status: "existing", walletAddress: OWNER, smartWallet: "CSMART_WALLET" });
+  });
+
+  it("Registry lookup throws (RPC/network/simulation/timeout) -> explicit error, never 'new'", async () => {
+    backendFetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: { owner: OWNER, wallets: [] } });
+    lookupRegistry.mockRejectedValueOnce(new Error("Registry lookup failed: connection refused"));
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(data).toEqual({
+      success: false,
+      status: "error",
+      error: "Registry lookup failed: Registry lookup failed: connection refused",
+    });
+    expect(registerSmartWalletMock).not.toHaveBeenCalled();
+  });
+
+  it("DB unavailable AND Registry lookup throws -> explicit error, never falls open to 'new'", async () => {
+    backendFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      data: { error: "Failed to read smart wallets: connection timeout", owner: OWNER },
+    });
+    lookupRegistry.mockRejectedValueOnce(new Error("Transaction simulation failed: HostError"));
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(data.status).toBe("error");
+    expect(data.status).not.toBe("new");
+    expect(registerSmartWalletMock).not.toHaveBeenCalled();
+  });
+
+  it("DB unavailable + backfill call itself throws -> still reports existing wallet", async () => {
+    backendFetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 503,
+      data: { error: "Failed to read smart wallets: connection timeout", owner: OWNER },
+    });
+    lookupRegistry.mockResolvedValueOnce("CSMART_WALLET");
+    registerSmartWalletMock.mockRejectedValueOnce(new Error("network down"));
+
+    const { POST } = await import("./route");
+    const res = await POST(req());
+    const data = await res.json();
+
+    expect(data).toEqual({ success: true, status: "existing", walletAddress: OWNER, smartWallet: "CSMART_WALLET" });
+  });
 });

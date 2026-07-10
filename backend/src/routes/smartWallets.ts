@@ -9,7 +9,10 @@ smartWalletsRouter.get('/', async (req, res) => {
     const wallets = await listSmartWallets(req.auth!.publicKey);
     res.json({ success: true, owner: req.auth!.publicKey, wallets });
   } catch (err) {
-    res.status(503).json({ error: `Failed to read smart wallets: ${(err as Error).message}` });
+    // Owner is known from the auth token regardless of DB outcome — callers (e.g.
+    // apps/web/app/api/connect/check/route.ts) need it to fall back to the on-chain Registry
+    // when the DB is unavailable, so it must be present on error too, not just on success.
+    res.status(503).json({ error: `Failed to read smart wallets: ${(err as Error).message}`, owner: req.auth!.publicKey });
   }
 });
 

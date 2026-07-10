@@ -101,6 +101,8 @@ export default function AgentsPage() {
     deploying,
     deployError,
     deploySmartWallet,
+    checkError,
+    retryCheck,
   } = useWalletContext();
   const networkPassphrase = wallet?.networkPassphrase ?? "Test SDF Network ; September 2015";
 
@@ -292,6 +294,19 @@ export default function AgentsPage() {
               className="rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50"
             >
               {connecting ? "Connecting…" : "Connect Freighter"}
+            </button>
+          </CardBody>
+        </Card>
+      ) : checkError ? (
+        <Card className="card-matte">
+          <CardBody className="text-center">
+            <p className="text-xs text-text-muted">Couldn&apos;t verify your smart wallet status.</p>
+            <p className="mt-2 text-xs text-error/90">{checkError}</p>
+            <button
+              onClick={() => retryCheck()}
+              className="mt-3 rounded-xl bg-accent/70 px-4 py-2 text-xs font-semibold text-white transition-all duration-300 hover:bg-accent"
+            >
+              Retry
             </button>
           </CardBody>
         </Card>

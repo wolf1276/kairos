@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import type { WalletState } from "@/app/lib/stellar";
 import { getStoredSessionToken } from "@/app/lib/agentsAuth";
@@ -55,6 +55,13 @@ export interface SmartWalletState {
    *  `retryOnboarding()`, which resumes rather than restarting from scratch. */
   onboardingError: string | null;
   retryOnboarding: () => Promise<void>;
+  /** Set when the "does this owner already have a smart wallet" check itself failed (Registry
+   *  RPC/network/simulation/timeout, or the DB proxy erroring) rather than confirming "no
+   *  wallet". While set, `smartWalletAddress` is left as-is (no auto-provisioning is triggered)
+   *  and callers should show a retry/error state instead of a "Create Smart Wallet" button —
+   *  see components/SmartWalletPanel.tsx. Retry with `retryCheck()`. */
+  checkError: string | null;
+  retryCheck: () => Promise<void>;
 }
 
 /**
@@ -90,11 +97,17 @@ export function useSmartWallet(): SmartWalletState {
   const setWalletRef = useRef<(w: WalletState | null) => void>(() => {});
   const smartWalletsRef = useRef<ReturnType<typeof useSmartWallets> | null>(null);
 
+  const [checkError, setCheckError] = useState<string | null>(null);
+  // Stashed only when the smart-wallet existence check itself fails, so retryCheck() can re-run
+  // it without a fresh connect (which would re-prompt Freighter's signature).
+  const pendingCheckRetryRef = useRef<{ wallet: WalletState; interactive: boolean } | null>(null);
+
   const handleResolvedWallet = useCallback(
     async (result: ConnectResult, interactive: boolean) => {
       if (!(result.success && result.wallet)) return;
       const w = result.wallet;
       const smartWallets = smartWalletsRef.current!;
+      setCheckError(null);
 
       // Must finish (or fail) the auth handshake *before* exposing the wallet via setWallet —
       // walletOwner flips truthy the instant that state update lands, and pages key their
@@ -118,16 +131,28 @@ export function useSmartWallet(): SmartWalletState {
       // duration of the merge/fetch below, which on a slow RPC round-trip reads as "balance
       // became 0 on relogin" even though it's just a stale render, not a real balance.
 
-      let merged = await smartWallets.mergeSmartWallets(w.address, token);
+      const { wallets: merged0, checkFailed } = await smartWallets.mergeSmartWallets(w.address, token);
+      let merged = merged0;
 
-      // First-time onboarding: this owner authenticated successfully but has no smart wallet
-      // anywhere (local or remote) — deploy one automatically instead of leaving them stuck with
-      // no way to create one. Only for an interactive, freshly-authenticated connect — a silent
-      // background restore/poll must never surprise the user with a Freighter signAuthEntry
-      // prompt (on top of the login signature) out of nowhere.
-      if (merged.length === 0 && authed && interactive && token) {
-        const smartWallet = await onboarding.runOnboarding(w, token);
-        if (smartWallet) merged = [{ address: smartWallet, label: null }];
+      if (checkFailed) {
+        // The Registry check itself failed (RPC/network/simulation/timeout) — this is NOT a
+        // confirmed "no wallet" verdict, so auto-provisioning a (possibly duplicate) smart
+        // wallet here would be a fail-open bug. Surface it for a retry/error UI instead and
+        // leave any wallets we do already know about untouched.
+        pendingCheckRetryRef.current = { wallet: w, interactive };
+        setCheckError("Could not verify your smart wallet status — the registry check failed.");
+      } else {
+        pendingCheckRetryRef.current = null;
+        // First-time onboarding: this owner authenticated successfully and the check *confirmed*
+        // no smart wallet anywhere (local, remote DB, or Registry) — deploy one automatically
+        // instead of leaving them stuck with no way to create one. Only for an interactive,
+        // freshly-authenticated connect — a silent background restore/poll must never surprise
+        // the user with a Freighter signAuthEntry prompt (on top of the login signature) out of
+        // nowhere.
+        if (merged.length === 0 && authed && interactive && token) {
+          const smartWallet = await onboarding.runOnboarding(w, token);
+          if (smartWallet) merged = [{ address: smartWallet, label: null }];
+        }
       }
 
       await smartWallets.applySmartWallets(w, merged);
@@ -161,6 +186,16 @@ export function useSmartWallet(): SmartWalletState {
     }
   }, [onboarding, smartWallets, walletHook.wallet]);
 
+  /** Re-runs the smart-wallet existence check after a prior one failed (Registry RPC/network/
+   *  simulation/timeout) — see `checkError`. Deliberately does not go through `walletHook.connect`
+   *  (which could re-prompt Freighter); it just re-runs `handleResolvedWallet` for the wallet
+   *  that was already connected when the check failed. */
+  const retryCheck = useCallback(async () => {
+    const pending = pendingCheckRetryRef.current;
+    if (!pending) return;
+    await handleResolvedWallet({ success: true, wallet: pending.wallet }, pending.interactive);
+  }, [handleResolvedWallet]);
+
   const ensureAgentAuth = useCallback(
     (interactive = true) => auth.ensureAgentAuth(walletHook.wallet, interactive),
     [auth, walletHook.wallet]
@@ -172,6 +207,8 @@ export function useSmartWallet(): SmartWalletState {
     smartWallets.reset(owner);
     onboarding.reset();
     auth.logout(owner);
+    setCheckError(null);
+    pendingCheckRetryRef.current = null;
     if (owner) clearAgentCache(owner);
   }, [walletHook, smartWallets, onboarding, auth]);
 
@@ -199,5 +236,7 @@ export function useSmartWallet(): SmartWalletState {
     onboardingStage: onboarding.onboardingStage,
     onboardingError: onboarding.onboardingError,
     retryOnboarding,
+    checkError,
+    retryCheck,
   };
 }

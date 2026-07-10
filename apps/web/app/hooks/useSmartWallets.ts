@@ -10,6 +10,17 @@ export interface SmartWalletInfo {
   label: string | null;
 }
 
+export interface MergeSmartWalletsResult {
+  wallets: SmartWalletInfo[];
+  /** True when the on-chain Registry check (the canonical source of truth) failed to run to a
+   *  confirmed verdict — RPC failure, network error, simulation failure, timeout, or a non-2xx
+   *  from /api/connect/check. When true, an empty `wallets` list must NOT be treated as "new
+   *  user, safe to auto-provision a smart wallet": it means "we don't know", not "there isn't
+   *  one". Only false (and empty `wallets`) means the Registry was actually consulted and
+   *  confirmed no wallet exists. */
+  checkFailed: boolean;
+}
+
 const SELECTED_KEY_PREFIX = "kairos:smart-wallet:"; // pointer to the currently-selected wallet
 const LIST_KEY_PREFIX = "kairos:smart-wallets:"; // this owner's full set of smart wallets
 
@@ -68,11 +79,14 @@ export interface UseSmartWalletsResult {
   deploySmartWallet: (label?: string) => Promise<void>;
   /** Reconciles this owner's local (per-browser) smart-wallet list with the backend's copy —
    *  pure read, doesn't touch selection/balance state. The composer decides what an empty
-   *  result means (a new-user onboarding trigger) before calling `applySmartWallets`. Pass the
-   *  session token (not just an `authed` flag) so this can also fall back to the on-chain
-   *  registry via /api/connect/check if the DB has no row (e.g. lost on a backend redeploy —
-   *  see apps/web/app/api/connect/check/route.ts). */
-  mergeSmartWallets: (owner: string, token: string | null) => Promise<SmartWalletInfo[]>;
+   *  result means (a new-user onboarding trigger) before calling `applySmartWallets` — but only
+   *  when `checkFailed` is false: `checkFailed` means the on-chain Registry check itself failed
+   *  (RPC/network/simulation/timeout), so an empty `wallets` list is NOT a confirmed "no wallet"
+   *  verdict and must never be treated as one (see mergeSmartWallets below). Pass the session
+   *  token (not just an `authed` flag) so this can also fall back to the on-chain registry via
+   *  /api/connect/check if the DB has no row (e.g. lost on a backend redeploy — see
+   *  apps/web/app/api/connect/check/route.ts). */
+  mergeSmartWallets: (owner: string, token: string | null) => Promise<MergeSmartWalletsResult>;
   /** Commits a resolved smart-wallet list for `wallet`, selects whichever address ends up
    *  selected (persisted selection, or the first in the list), and loads its balance. */
   applySmartWallets: (wallet: WalletState, wallets: SmartWalletInfo[]) => Promise<void>;
@@ -119,35 +133,47 @@ export function useSmartWallets(wallet: WalletState | null): UseSmartWalletsResu
     [walletOwner, checkBalance]
   );
 
-  const mergeSmartWallets = useCallback(async (owner: string, token: string | null): Promise<SmartWalletInfo[]> => {
+  const mergeSmartWallets = useCallback(async (owner: string, token: string | null): Promise<MergeSmartWalletsResult> => {
     const localList = loadWalletList(owner);
     // Merge in any wallets registered server-side (e.g. deployed from another browser/device) —
     // best-effort, skipped entirely if we have no session token to call the backend with yet.
-    if (!token) return localList;
+    if (!token) return { wallets: localList, checkFailed: false };
+
+    const byAddress = new Map(localList.map((w) => [w.address, w]));
     try {
       const remote = await listSmartWallets();
-      const byAddress = new Map(localList.map((w) => [w.address, w]));
       for (const r of remote) {
         if (!byAddress.has(r.address)) byAddress.set(r.address, { address: r.address, label: r.label });
       }
-      if (byAddress.size === 0) {
-        // DB has nothing for this owner (e.g. the row was lost on a backend redeploy — Render's
-        // free-tier SQLite disk isn't persistent). Fall back to the on-chain registry before
-        // reporting "new user" and walking them through deploying a second wallet.
-        try {
-          const onChain = await checkOnboarding(token);
-          if (onChain.status === "existing" && onChain.smartWallet) {
-            byAddress.set(onChain.smartWallet, { address: onChain.smartWallet, label: null });
-          }
-        } catch {
-          // best-effort — fall through to whatever we already have
-        }
-      }
-      return Array.from(byAddress.values());
     } catch {
-      // fall back to the local list only
-      return localList;
+      // DB list fetch failed — fall through to the Registry check below rather than trusting
+      // the local list alone, since a DB outage must not be mistaken for "no wallets".
     }
+
+    if (byAddress.size > 0) {
+      return { wallets: Array.from(byAddress.values()), checkFailed: false };
+    }
+
+    // Neither the local cache nor the DB has a wallet for this owner (e.g. the DB row was lost
+    // on a backend redeploy, or the DB fetch above failed). Fall back to the on-chain registry —
+    // the canonical source of truth — before reporting "new user" and walking them through
+    // deploying a (possibly second) smart wallet. A Registry check failure (RPC/network/
+    // simulation/timeout, surfaced as a thrown ConnectApiError from a non-2xx /api/connect/check
+    // response — see that route) must be reported as `checkFailed`, NOT silently swallowed into
+    // an empty list: that would fail open into offering "Create Smart Wallet" to an owner whose
+    // existing wallet we simply failed to look up.
+    try {
+      const onChain = await checkOnboarding(token);
+      if (onChain.status === "existing" && onChain.smartWallet) {
+        byAddress.set(onChain.smartWallet, { address: onChain.smartWallet, label: null });
+      } else if (onChain.status !== "new") {
+        return { wallets: [], checkFailed: true };
+      }
+    } catch {
+      return { wallets: Array.from(byAddress.values()), checkFailed: true };
+    }
+
+    return { wallets: Array.from(byAddress.values()), checkFailed: false };
   }, []);
 
   const applySmartWallets = useCallback(async (w: WalletState, wallets: SmartWalletInfo[]) => {

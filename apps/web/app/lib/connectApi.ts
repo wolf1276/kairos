@@ -4,9 +4,14 @@
 // since the backend derives `owner` from it rather than trusting a client-supplied address.
 
 export interface ConnectCheckResult {
-  status: "new" | "existing";
+  // "error" (HTTP 502) means the Registry lookup itself failed — RPC/network/simulation/timeout
+  // — and is NOT a confirmed "no wallet" verdict. Callers must never treat it like "new" (see
+  // apps/web/app/api/connect/check/route.ts and useSmartWallets.mergeSmartWallets).
+  status: "new" | "existing" | "error";
   walletAddress?: string;
   smartWallet?: string;
+  dbWarning?: string;
+  error?: string;
 }
 
 export interface ConnectPrepareResult {

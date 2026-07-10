@@ -60,12 +60,13 @@ vi.mock("@/app/lib/agentsAuth", () => {
   };
 });
 
+const checkOnboardingMock = vi.fn().mockResolvedValue({ status: "new" });
 vi.mock("@/app/lib/connectApi", () => {
   class ConnectApiError extends Error {
     smartWallet?: string;
   }
   return {
-    checkOnboarding: vi.fn().mockResolvedValue({ status: "new" }),
+    checkOnboarding: (...args: unknown[]) => checkOnboardingMock(...args),
     ConnectApiError,
   };
 });
@@ -101,6 +102,7 @@ beforeEach(() => {
   challengeAndVerifyMock.mockResolvedValue("fake-session-token");
   fetchSmartWalletBalanceMock.mockResolvedValue("100.0000000");
   listSmartWalletsMock.mockResolvedValue([]);
+  checkOnboardingMock.mockReset().mockResolvedValue({ status: "new" });
   connectWalletMock.mockResolvedValue(makeConnectResult());
   window.sessionStorage.setItem(SESSION_KEY_PREFIX + OWNER, "fake-session-token");
   window.localStorage.setItem(`kairos:smart-wallets:${OWNER}`, JSON.stringify([{ address: SMART_WALLET_ADDR, label: null }]));
@@ -210,5 +212,59 @@ describe("useSmartWallet disconnect/reconnect", () => {
 
     expect(hook.result.current.smartWalletAddress).toBeNull();
     expect(hook.result.current.wallet?.address).toBe(OTHER_OWNER);
+  });
+});
+
+// Regression tests for the Registry-check fail-open bug: a Registry lookup failure (RPC/
+// network/simulation/timeout, surfaced here as checkOnboarding rejecting) must never be treated
+// as "confirmed no wallet" — it must not auto-provision a smart wallet, and it must surface as
+// `checkError` (with a `retryCheck` escape hatch) instead of silently returning to smartWalletAddress
+// === null, which every "no wallet" UI (see SmartWalletPanel.tsx) reads as "safe to create one".
+describe("useSmartWallet Registry-check failure handling", () => {
+  it("checkOnboarding rejecting sets checkError and does NOT auto-provision a smart wallet", async () => {
+    window.localStorage.clear();
+    listSmartWalletsMock.mockResolvedValue([]);
+    checkOnboardingMock.mockRejectedValue(new Error("Registry lookup failed: RPC unavailable"));
+
+    const hook = renderHook(() => useSmartWallet());
+    await connect(hook);
+
+    await waitFor(() => expect(hook.result.current.checkError).not.toBeNull());
+    expect(hook.result.current.smartWalletAddress).toBeNull();
+    expect(hook.result.current.smartWallets).toEqual([]);
+  });
+
+  it("retryCheck() re-runs the check and clears checkError once it succeeds", async () => {
+    window.localStorage.clear();
+    listSmartWalletsMock.mockResolvedValue([]);
+    checkOnboardingMock.mockRejectedValueOnce(new Error("Registry lookup failed: RPC unavailable"));
+
+    const hook = renderHook(() => useSmartWallet());
+    await connect(hook);
+    await waitFor(() => expect(hook.result.current.checkError).not.toBeNull());
+
+    checkOnboardingMock.mockResolvedValueOnce({
+      status: "existing",
+      smartWallet: SMART_WALLET_ADDR,
+      walletAddress: OWNER,
+    });
+    await act(async () => {
+      await hook.result.current.retryCheck();
+    });
+
+    expect(hook.result.current.checkError).toBeNull();
+    expect(hook.result.current.smartWalletAddress).toBe(SMART_WALLET_ADDR);
+  });
+
+  it("checkOnboarding resolving status 'new' (confirmed empty) does NOT set checkError", async () => {
+    window.localStorage.clear();
+    listSmartWalletsMock.mockResolvedValue([]);
+    checkOnboardingMock.mockResolvedValue({ status: "new" });
+
+    const hook = renderHook(() => useSmartWallet());
+    await connect(hook);
+
+    await waitFor(() => expect(hook.result.current.wallet).not.toBeNull());
+    expect(hook.result.current.checkError).toBeNull();
   });
 });

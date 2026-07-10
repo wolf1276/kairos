@@ -19,7 +19,16 @@ function explorerUrl(address: string, isTestnet: boolean) {
  *  reuses the same `deploySmartWallet` onboarding path other pages already call — no new
  *  backend surface. */
 export function SmartWalletPanel() {
-  const { connected, wallet, smartWalletAddress, deploying, deployError, deploySmartWallet } = useWalletContext();
+  const {
+    connected,
+    wallet,
+    smartWalletAddress,
+    deploying,
+    deployError,
+    deploySmartWallet,
+    checkError,
+    retryCheck,
+  } = useWalletContext();
   const { xlmBalance, usdcBalance, loading: balanceLoading, error: balanceError, refresh } = useSmartWalletBalances(
     smartWalletAddress,
     wallet?.networkPassphrase ?? null,
@@ -53,6 +62,25 @@ export function SmartWalletPanel() {
       <div className="flex h-full flex-col p-6">
         <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">Smart Wallet</p>
         <p className="mt-2 font-display text-2xl font-bold text-text-primary">Connect Wallet</p>
+      </div>
+    );
+  }
+
+  // The existence check itself failed (Registry RPC/network/simulation/timeout) — this is NOT a
+  // confirmed "no wallet" verdict, so never offer "Create Smart Wallet" here: that would risk
+  // provisioning a duplicate wallet for an owner who already has one. Show a retry state instead.
+  if (checkError) {
+    return (
+      <div className="flex h-full flex-col p-6">
+        <p className="font-mono text-[10px] font-medium uppercase tracking-[0.15em] text-text-muted">Smart Wallet</p>
+        <p className="mt-2 text-sm text-text-muted">Couldn&apos;t Verify Smart Wallet</p>
+        <p className="mt-2 text-xs text-red-400">{checkError}</p>
+        <button
+          onClick={() => retryCheck()}
+          className="mt-auto rounded-lg bg-accent-hover px-3 py-2 text-xs font-semibold text-black transition-colors hover:bg-accent-hover/90"
+        >
+          Retry
+        </button>
       </div>
     );
   }

@@ -17,6 +17,8 @@ export interface SmartWalletDto {
 interface BackendResult {
   ok: boolean;
   status: number;
+  // `owner` is present on the smart-wallets GET response body even on 503 (DB unavailable) —
+  // it's derived from the auth token, not the DB — so callers can still fall back to Registry.
   data: { error?: string; owner?: string; wallets?: SmartWalletDto[] };
 }
 
