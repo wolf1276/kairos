@@ -803,6 +803,128 @@ fn test_set_policies_batch() {
     assert!(result.is_err(), "mismatched policy_ids/terms_list lengths must fail");
 }
 
+// --- P0-2: empty delegation chain bypassed ALL policy/delegation validation (fixed) ---
+//
+// Before the fix, `redeem_delegations` special-cased a zero-length chain: phase 1 `continue`d
+// past every signature/nonce/authority check, and phase 2 invoked the execution directly from
+// the DelegationManager instead of through the policy hooks. Pointing that direct invoke at a
+// *victim* wallet's `execute_from_executor` turned the manager into a confused deputy — the
+// wallet trusts any call whose direct caller is the manager, and the manager would make that
+// call for anyone passing an empty chain. Any wallet on this manager was drainable by anyone,
+// with no delegation, no victim signature, and no policy. This is the exact exploit payload,
+// authorized by ONLY the attacker (`mock_auths`, not `mock_all_auths`) to prove no victim
+// signature is involved; it must now be rejected with `EmptyChain` and move zero funds.
+#[test]
+fn test_empty_chain_confused_deputy_drain_is_rejected() {
+    let env = Env::default();
+
+    let admin = Address::generate(&env);
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    let (_victim_key, victim_owner) = generate_signing_identity(&env);
+    let wallet_id = env.register_contract(None, CustomAccount);
+    let wallet = CustomAccountClient::new(&env, &wallet_id);
+
+    let attacker = Address::generate(&env);
+
+    env.mock_all_auths();
+    manager.init(&admin);
+    wallet.init(&victim_owner, &manager_id);
+
+    let token_admin = Address::generate(&env);
+    let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
+    let token_id = sac.address();
+    let token_asset_client = token::StellarAssetClient::new(&env, &token_id);
+    let token_client = token::Client::new(&env, &token_id);
+    let starting_balance: i128 = 500_000_000i128;
+    token_asset_client.mint(&wallet_id, &starting_balance);
+
+    let inner_args: Vec<Val> = Vec::from_array(
+        &env,
+        [
+            wallet_id.clone().into_val(&env),
+            attacker.clone().into_val(&env),
+            starting_balance.into_val(&env),
+        ],
+    );
+    let execution = Execution {
+        target: wallet_id.clone(),
+        function: Symbol::new(&env, "execute_from_executor"),
+        args: Vec::from_array(
+            &env,
+            [
+                token_id.clone().into_val(&env),
+                Symbol::new(&env, "transfer").into_val(&env),
+                inner_args.into_val(&env),
+            ],
+        ),
+    };
+
+    let empty_chain: Vec<Delegation> = Vec::new(&env);
+    let contexts = Vec::from_array(&env, [empty_chain]);
+    let executions = Vec::from_array(&env, [execution.clone()]);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &manager_id,
+            fn_name: "redeem_delegations",
+            args: (attacker.clone(), contexts.clone(), executions.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = manager.try_redeem_delegations(&attacker, &contexts, &executions);
+    assert!(result.is_err(), "empty-chain redemption must be rejected");
+    // No funds moved: the confused-deputy drain is fully blocked.
+    assert_eq!(token_client.balance(&wallet_id), starting_balance);
+    assert_eq!(token_client.balance(&attacker), 0);
+}
+
+/// A batch that mixes one valid chain with one empty chain must reject the *whole* batch —
+/// the empty chain cannot piggyback on a legitimate redemption to slip an unpoliced execution
+/// through. Nothing in the batch may execute.
+#[test]
+fn test_empty_chain_in_batch_rejects_entire_batch() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+    manager.init(&admin);
+
+    let delegator_id = env.register_contract(None, MockCustomAccount);
+    let delegator = MockCustomAccountClient::new(&env, &delegator_id);
+    delegator.init(&admin, &manager_id);
+
+    let delegate = Address::generate(&env);
+    let target = env.register_contract(None, DummyContract);
+
+    let valid = Delegation {
+        delegate: delegate.clone(),
+        delegator: delegator_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 0,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let exec = Execution { target: target.clone(), function: Symbol::new(&env, "test"), args: Vec::new(&env) };
+
+    let contexts = Vec::from_array(
+        &env,
+        [Vec::from_array(&env, [valid]), Vec::<Delegation>::new(&env)],
+    );
+    let executions = Vec::from_array(&env, [exec.clone(), exec]);
+
+    let result = manager.try_redeem_delegations(&delegate, &contexts, &executions);
+    assert!(result.is_err(), "a batch containing any empty chain must be rejected wholesale");
+    // The valid chain's nonce must be untouched — the whole batch reverted before execution.
+    assert_eq!(manager.get_nonce(&delegator_id), 0);
+}
+
 /// The spend-limit policy caveat must actually stop an over-limit token transfer.
 /// This exercises the caveat pipeline end-to-end (before_all -> before_hook) with a
 /// real SAC token, proving policy enforcement is wired into execution, not just

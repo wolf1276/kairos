@@ -73,6 +73,7 @@ pub enum ManagerError {
     Locked = 12,
     WalletAlreadyDelegated = 13,
     NoActiveDelegation = 14,
+    EmptyChain = 15,
 }
 
 const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
@@ -381,9 +382,16 @@ impl DelegationManager {
             let chain = permission_contexts.get(i).unwrap();
             let mut hashes = Vec::new(&env);
 
+            // P0-2 fix: reject empty chains. With no delegation there is no signature, nonce,
+            // authority, or policy caveat to check — yet the old code still executed the call
+            // directly from the manager (removed phase-2 branch below), letting anyone drive
+            // the DelegationManager as a confused deputy into any wallet's execute_from_executor
+            // (which trusts the manager unconditionally), draining it with zero policy. Every
+            // execution must be backed by at least one validated delegation. Callers wanting a
+            // no-delegation self-execution use their own wallet's execute(), not this path.
             if chain.len() == 0 {
-                delegation_hashes_batch.push_back(hashes);
-                continue;
+                env.storage().instance().remove(&lock_key);
+                panic_with_error!(&env, ManagerError::EmptyChain);
             }
 
             // Verify delegation leaf specifies the redeemer
@@ -472,16 +480,7 @@ impl DelegationManager {
             let execution = executions.get(i).unwrap();
             let hashes = delegation_hashes_batch.get(i).unwrap();
 
-            if chain.len() == 0 {
-                // Self authorized execution directly from redeemer
-                env.invoke_contract::<Val>(
-                    &execution.target,
-                    &execution.function,
-                    execution.args.clone(),
-                );
-                continue;
-            }
-
+            // Empty chains are rejected in phase 1 (P0-2), so every chain here is non-empty.
             let leaf_delegation = chain.get(0).unwrap();
             let context = ExecutionContext {
                 target: execution.target.clone(),
