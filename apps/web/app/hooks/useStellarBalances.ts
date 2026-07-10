@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   fetchAccountBalances,
-  TESTNET_USDC_ISSUER,
+  usdcIssuerForNetwork,
   type AccountBalance,
 } from "@/app/lib/stellar";
 
@@ -37,8 +37,9 @@ export function useStellarBalances(
       const balances = await fetchAccountBalances(address, networkPassphrase);
       setAllBalances(balances);
       const xlm = balances.find((b) => b.code === "XLM");
+      const usdcIssuer = usdcIssuerForNetwork(networkPassphrase);
       const usdc = balances.find(
-        (b) => b.code === "USDC" && b.issuer === TESTNET_USDC_ISSUER,
+        (b) => b.code === "USDC" && b.issuer === usdcIssuer,
       );
       setXlmBalance(xlm ? parseFloat(xlm.balance) : 0);
       setUsdcBalance(usdc ? parseFloat(usdc.balance) : 0);
