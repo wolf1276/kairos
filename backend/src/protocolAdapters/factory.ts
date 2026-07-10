@@ -1,5 +1,5 @@
 // AdapterFactory: builds a ProtocolAdapter from a declarative spec, so every adapter (including
-// future real Blend/Soroswap/Phoenix integrations, and every test double in this framework's own
+// future real Blend/Soroswap integrations, and every test double in this framework's own
 // test suite) gets the same default validation/health/simulate wiring instead of hand-rolling it.
 // No blockchain logic here — defaults are pure, deterministic, in-memory behavior only.
 import { randomUUID } from 'crypto';

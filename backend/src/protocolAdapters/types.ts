@@ -1,5 +1,5 @@
 // Types for the Protocol Adapter Framework. Deterministic abstraction layer only — no blockchain
-// logic, no Blend/Soroswap/Phoenix implementation, no Execution Engine wiring. A future Execution
+// logic, no Blend/Soroswap implementation, no Execution Engine wiring. A future Execution
 // Engine consumes this layer through ProtocolRegistry; it must never import a protocol SDK
 // directly, and neither does anything in this directory.
 export const PROTOCOL_ADAPTER_FRAMEWORK_VERSION = '1.0.0';

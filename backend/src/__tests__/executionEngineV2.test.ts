@@ -1,11 +1,13 @@
 // Execution Engine (Phase 7) — exhaustive test suite. Deterministic, no AI/LLM, no blockchain
-// execution (never signs/submits). Every candidate protocol is a real adapter
-// (Aquarius/Phoenix/Soroswap/Blend) backed by its own deterministic test double — no real network
-// call is made anywhere in this file. Named `executionEngineV2` to avoid colliding with the
-// pre-existing `executionEngine.test.ts` (a different, untouched multi-step plan orchestrator —
-// see docs/architecture/REASONING_ENGINE.md Phase 7 for the split rationale).
+// execution (never signs/submits). Soroswap/Blend are real adapters backed by their own
+// deterministic test doubles; 'aquarius' below is a generic multi-candidate fixture (see
+// genericProtocolAdapter.ts) used only to exercise engine plumbing with a second candidate —
+// Kairos does not integrate Aquarius. No real network call is made anywhere in this file. Named
+// `executionEngineV2` to avoid colliding with the pre-existing `executionEngine.test.ts` (a
+// different, untouched multi-step plan orchestrator — see docs/architecture/REASONING_ENGINE.md
+// Phase 7 for the split rationale).
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createAquariusAdapter, createDeterministicRouterClient as createAquariusRouterClient, createDeterministicSorobanRpcClient as createAquariusRpcClient } from '../protocolAdapters/aquarius/index.js';
+import { createGenericAdapter } from './helpers/genericProtocolAdapter.js';
 import { createSoroswapAdapter, createDeterministicRouterClient as createSoroswapRouterClient, createDeterministicSorobanRpcClient as createSoroswapRpcClient } from '../protocolAdapters/soroswap/index.js';
 import { createBlendAdapter, createDeterministicBlendPoolClient, createDeterministicSorobanRpcClient as createBlendRpcClient } from '../protocolAdapters/blend/index.js';
 import { ProtocolRegistry } from '../protocolAdapters/index.js';
@@ -19,12 +21,7 @@ const FUTURE_DEADLINE = Math.floor(Date.now() / 1000) + 3600;
 const SUPPORTED = ['XLM', 'USDC', 'AQUA', 'BLND'];
 
 function makeAquarius(overrides: { rates?: Record<string, number>; health?: 'READY' | 'UNAVAILABLE' } = {}): ProtocolAdapter {
-  return createAquariusAdapter({
-    supportedAssets: SUPPORTED,
-    routerClient: createAquariusRouterClient({ rates: overrides.rates }),
-    sorobanRpcClient: createAquariusRpcClient(),
-    onHealth: () => overrides.health ?? 'READY',
-  });
+  return createGenericAdapter('aquarius', { supportedAssets: SUPPORTED, rates: overrides.rates, health: overrides.health });
 }
 
 function makeSoroswap(overrides: { health?: 'READY' | 'UNAVAILABLE'; simSuccess?: boolean } = {}): ProtocolAdapter {

@@ -25,7 +25,7 @@ Callers import **only** from [`index.ts`](./index.ts) — never reaching into in
 | `decisionIntelligence/` | Decision Intelligence | **Yes — the only LLM call** | Proposes a primary action with alternatives, evidence, and confidence. It **never sizes or authorizes** a transfer. |
 | `verification/` | Verification | No | Deterministic gate. Rejects a decision that fails any rule; a rejected decision is never planned or executed. |
 | `executionPlanner/` | Execution Planning | No | Builds a hashable, replayable plan with prerequisite checks. No blockchain call. |
-| `executionEngine/`, `routeEngine/`, `routeExecutionEngine/` | Routing & Execution | No | Route discovery/quoting/ranking and per-protocol execution providers (aquarius/blend/phoenix/soroswap). |
+| `executionEngine/`, `routeEngine/`, `routeExecutionEngine/` | Routing & Execution | No | Route discovery/quoting/ranking and per-protocol execution providers (blend/soroswap). |
 | `learningEngine/`, `outcomeRecorder/`, `memoryWriter/` | Learning | No | Records outcomes and writes back to the [Memory Engine](../memoryLayer/README.md). |
 
 Supporting files: `contextBuilder.ts`, `promptBuilder.ts`, `promptTemplate.ts`, `orchestrator.ts`, `validation.ts`, `hashing.ts`, `metadata.ts`, `interfaces.ts`, `types.ts`. A `benchmark/` directory supports the reasoning benchmark harness ([`backend/benchmarks/reasoning`](../../benchmarks/reasoning/README.md)).
