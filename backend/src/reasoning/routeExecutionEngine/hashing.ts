@@ -20,12 +20,13 @@ export function hashResourceEstimate(estimate: ResourceEstimate): string {
 
 /** Hashes the deterministic content of an ExecutionResult — excludes `executionId` (fresh UUID),
  *  `metadata.startedAt`/`completedAt`/`durationMs`/`executionHash` itself (wall clock and
- *  self-reference), and the embedded `route.routeId`/`route.metadata.timestamp` (Phase 6's own
- *  wall-clock fields) — so replaying the same plan+route against the same adapter state always
- *  produces the same `executionHash` regardless of when either run happened. */
+ *  self-reference), `metadata.planExecutionId` (the upstream plan's fresh UUID), and the embedded
+ *  `route.routeId`/`route.metadata.timestamp` (Phase 6's own wall-clock fields) — so replaying the
+ *  same plan+route against the same adapter state always produces the same `executionHash`
+ *  regardless of when either run happened. */
 export function hashExecutionResult(result: Omit<ExecutionResult, 'executionHash' | 'executionId'>): string {
   const { metadata, route, ...rest } = result;
-  const { startedAt: _startedAt, completedAt: _completedAt, durationMs: _durationMs, executionHash: _executionHash, ...metadataForHash } = metadata;
+  const { startedAt: _startedAt, completedAt: _completedAt, durationMs: _durationMs, executionHash: _executionHash, planExecutionId: _planExecutionId, ...metadataForHash } = metadata;
   const { routeId: _routeId, ...routeRest } = route;
   const { timestamp: _timestamp, ...routeMetadataForHash } = route.metadata;
   return sha256({ ...rest, route: { ...routeRest, metadata: routeMetadataForHash }, metadata: metadataForHash });

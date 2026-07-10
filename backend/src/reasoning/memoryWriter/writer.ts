@@ -69,7 +69,17 @@ export async function writeMemory(
     agentId,
     episodic: episodicForHash,
     semantic: semantic.map(({ updatedAt: _updatedAt, ...rest }) => rest),
-    working: working.map(({ setAt: _setAt, expiresAt: _expiresAt, ...rest }) => rest),
+    // Strip the volatile `outcomeId` UUID from the pointer value before hashing — `outcomeHash`
+    // (also in this input) already identifies the outcome deterministically, so the UUID is pure
+    // per-run noise. The persisted entry (below) keeps it; only the replay hash drops it.
+    working: working.map(({ setAt: _setAt, expiresAt: _expiresAt, ...rest }) => {
+      const value = rest.value as Record<string, unknown>;
+      if (value && typeof value === 'object' && 'outcomeId' in value) {
+        const { outcomeId: _outcomeId, ...valueForHash } = value;
+        return { ...rest, value: valueForHash };
+      }
+      return rest;
+    }),
   });
 
   const episodicProvider = providers.episodic ?? getEpisodicMemoryProvider();
