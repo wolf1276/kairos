@@ -56,6 +56,12 @@ impl CustomAccount {
         env.storage().instance().extend_ttl(10000, 100000);
     }
 
+    // Read-only owner getter. Cross-called by the Registry so it can verify a
+    // (owner -> smart_wallet) binding is self-consistent without an owner signature.
+    pub fn owner(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    }
+
     // Standard execute function for direct transactions by owner
     pub fn execute(env: Env, target: Address, function: Symbol, args: Vec<Val>) -> Val {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();

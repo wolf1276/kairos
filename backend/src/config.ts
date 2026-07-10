@@ -44,8 +44,11 @@ export function getMasterKeyHex(): string {
   return key;
 }
 
+/** CORS allow-list origin. Fail closed: defaults to the local dev origin, never `*`.
+ *  A real deploy that forgets to set ALLOWED_ORIGIN gets a broken (blocked) frontend it
+ *  will notice immediately, instead of a silently world-open API. */
 export function getAllowedOrigin(): string {
-  return process.env.ALLOWED_ORIGIN || '*';
+  return process.env.ALLOWED_ORIGIN || 'http://localhost:3000';
 }
 
 export function getSchedulerIntervalMs(): number {

@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, contracttype, contracterror, symbol_short, panic_with_error, Address, BytesN, Env,
+    contract, contractimpl, contracttype, contracterror, symbol_short, panic_with_error, Address, BytesN, Env, Val, Vec,
 };
 
 const BUMP_THRESHOLD: u32 = 10000;
@@ -48,13 +48,25 @@ impl Registry {
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);
     }
 
-    // Funder/backend attests that `owner` deployed `smart_wallet`. Owner-gating is
-    // intentionally skipped here (the funder already sponsors and observes the deploy
-    // transaction) so onboarding doesn't need a third Freighter signing round trip.
+    // Binds `owner` -> `smart_wallet`. Funder-attested (admin signs), but the binding is
+    // made owner-consented *without* a second signature by verifying on-chain that
+    // `smart_wallet` actually reports `owner` as its Owner. This closes M1: a lone admin key
+    // can no longer point a victim owner's entry at an attacker-controlled wallet, because
+    // that wallet's own Owner wouldn't match the claimed owner. The wallet's constructor
+    // already required the owner's signature at deploy, so its Owner field is authoritative.
     pub fn register(env: Env, admin: Address, owner: Address, smart_wallet: Address) {
         admin.require_auth();
         let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         if admin != stored_admin {
+            panic_with_error!(&env, RegistryError::NotAuthorized);
+        }
+
+        let wallet_owner: Address = env.invoke_contract(
+            &smart_wallet,
+            &symbol_short!("owner"),
+            Vec::<Val>::new(&env),
+        );
+        if wallet_owner != owner {
             panic_with_error!(&env, RegistryError::NotAuthorized);
         }
 

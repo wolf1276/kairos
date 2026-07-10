@@ -47,9 +47,10 @@ services:
       - key: STELLAR_NETWORK
         value: testnet
       # Must equal the deployed Vercel frontend's exact origin (scheme + host, no trailing
-      # slash) — e.g. https://kairos.vercel.app. Left blank here deliberately; CORS defaults to
-      # `*` in code (backend/src/config.ts getAllowedOrigin) only when this is unset entirely, so
-      # an empty string here would be worse than omitting it. Set this in the Render dashboard.
+      # slash) — e.g. https://kairos.vercel.app. Left blank here deliberately (set it in the
+      # Render dashboard). CORS fails closed: when unset, getAllowedOrigin() (backend/src/config.ts)
+      # falls back to http://localhost:3000, never `*`, so forgetting this blocks the real
+      # frontend (visibly broken) rather than opening the API to every origin.
       - key: ALLOWED_ORIGIN
         sync: false
       - key: AUTH_JWT_SECRET

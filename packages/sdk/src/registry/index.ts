@@ -91,8 +91,11 @@ export class RegistryModule {
 
   /**
    * Funder-attested registration: the funder is both the transaction source account and
-   * the `admin` argument, so (unlike the wallet deploy) no separate owner authorization
-   * entry is needed — the funder already sponsors and observes the deploy transaction.
+   * the `admin` argument, so no separate owner authorization entry is needed. The binding
+   * is still owner-consented without an owner signature because the Registry contract
+   * cross-calls `smart_wallet.owner()` and rejects any mismatch (M1 fix) — a lone admin
+   * key cannot point a victim owner's entry at a wallet that owner doesn't control.
+   * `smartWalletAddress` must already be deployed on-chain for that cross-call to resolve.
    */
   async register(funder: Keypair, ownerAddress: string, smartWalletAddress: string): Promise<void> {
     const sourceAccount = await this.client.waitForAccount(funder.publicKey());

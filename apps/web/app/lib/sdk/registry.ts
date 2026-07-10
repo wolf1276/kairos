@@ -17,11 +17,11 @@ export async function registerOnChain(ownerAddress: string, smartWalletAddress: 
   if (!getContractConfig().registry) return;
   const client = getKairosClient();
 
-  // The Registry itself does not prove ownership (funder-attested by design), and one caller
-  // (/api/connect/register) passes a client-supplied smartWallet. So verify on-chain that this
-  // wallet's own Owner == ownerAddress before the funder attests it — otherwise a caller could
-  // register a wallet they don't control into their own owner slot. Reads DataKey::Owner from the
-  // deployed CustomAccount (works for already-deployed wallets; no contract change).
+  // The Registry contract now enforces owner<->wallet consistency on-chain (it cross-calls
+  // smart_wallet.owner() and rejects a mismatch — M1 fix), so this off-chain check is no longer
+  // the sole guard. We keep it because one caller (/api/connect/register) passes a client-supplied
+  // smartWallet, and catching the mismatch here yields a clean 400 (OwnershipMismatchError) instead
+  // of a raw contract trap surfaced as a 502. Reads DataKey::Owner from the deployed CustomAccount.
   const walletOwner = await client.wallet.owner(smartWalletAddress);
   if (walletOwner !== ownerAddress) {
     throw new OwnershipMismatchError(

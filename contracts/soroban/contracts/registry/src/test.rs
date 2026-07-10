@@ -2,7 +2,28 @@
 extern crate std;
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::TryFromVal;
+use soroban_sdk::{contract, contractimpl, symbol_short, IntoVal, TryFromVal};
+
+// Minimal stand-in for a deployed CustomAccount: exposes only the `owner()` getter the
+// Registry cross-calls to verify a (owner -> smart_wallet) binding. Its constructor stores
+// the owner, mirroring CustomAccount's real Owner storage.
+#[contract]
+pub struct MockWallet;
+
+#[contractimpl]
+impl MockWallet {
+    pub fn __constructor(env: Env, owner: Address) {
+        env.storage().instance().set(&symbol_short!("owner"), &owner);
+    }
+    pub fn owner(env: Env) -> Address {
+        env.storage().instance().get(&symbol_short!("owner")).unwrap()
+    }
+}
+
+// Deploy a mock smart wallet that reports `owner` as its on-chain Owner.
+fn deploy_wallet(env: &Env, owner: &Address) -> Address {
+    env.register(MockWallet, (owner.clone(),))
+}
 
 #[test]
 fn test_init_and_register() {
@@ -11,9 +32,8 @@ fn test_init_and_register() {
 
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
-
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
 
     registry.register(&admin, &owner, &smart_wallet);
     assert_eq!(registry.get_smart_wallet(&owner), Some(smart_wallet));
@@ -26,9 +46,8 @@ fn test_register_same_address_is_idempotent() {
 
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
-
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
 
     registry.register(&admin, &owner, &smart_wallet);
     registry.register(&admin, &owner, &smart_wallet);
@@ -43,10 +62,11 @@ fn test_register_conflicting_address_rejected() {
 
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet_a = Address::generate(&env);
-    let smart_wallet_b = Address::generate(&env);
-
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    // Both wallets are genuinely owned by `owner`, so the register reaches the
+    // one-wallet-per-owner conflict check (not the owner-mismatch check).
+    let smart_wallet_a = deploy_wallet(&env, &owner);
+    let smart_wallet_b = deploy_wallet(&env, &owner);
 
     registry.register(&admin, &owner, &smart_wallet_a);
     registry.register(&admin, &owner, &smart_wallet_b);
@@ -160,6 +180,25 @@ fn test_register_wrong_admin_returns_not_authorized_error_not_generic_panic() {
     assert_eq!(registry.get_smart_wallet(&owner), None);
 }
 
+// M1 regression: a lone admin key cannot bind a victim owner to a wallet the victim does
+// not control. Even with the admin fully authorized, register cross-checks the wallet's
+// on-chain Owner and rejects the mismatch — closing the redirection/griefing vector.
+#[test]
+fn test_register_rejects_wallet_not_owned_by_claimed_owner() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let victim = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    // Wallet genuinely owned by the attacker; admin tries to file it under the victim.
+    let attacker_wallet = deploy_wallet(&env, &attacker);
+
+    let result = registry.try_register(&admin, &victim, &attacker_wallet);
+    assert!(result.is_err(), "admin must not bind a victim owner to a wallet they don't own");
+    assert_eq!(registry.get_smart_wallet(&victim), None);
+}
+
 #[test]
 fn test_register_conflicting_address_returns_already_registered_error() {
     let env = Env::default();
@@ -167,10 +206,9 @@ fn test_register_conflicting_address_returns_already_registered_error() {
 
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let wallet_a = Address::generate(&env);
-    let wallet_b = Address::generate(&env);
-
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let wallet_a = deploy_wallet(&env, &owner);
+    let wallet_b = deploy_wallet(&env, &owner);
     registry.register(&admin, &owner, &wallet_a);
 
     let result = registry.try_register(&admin, &owner, &wallet_b);
@@ -273,25 +311,16 @@ fn test_admin_can_be_registered_as_its_own_owner() {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &admin);
 
     registry.register(&admin, &admin, &smart_wallet);
     assert_eq!(registry.get_smart_wallet(&admin), Some(smart_wallet));
 }
 
-#[test]
-fn test_owner_can_equal_smart_wallet_address() {
-    // Contract never validates owner != smart_wallet — confirm it doesn't trap.
-    let env = Env::default();
-    env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let owner = Address::generate(&env);
-    let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
-
-    registry.register(&admin, &owner, &owner);
-    assert_eq!(registry.get_smart_wallet(&owner), Some(owner));
-}
+// (Removed test_owner_can_equal_smart_wallet_address: register now requires
+// smart_wallet to be a deployed wallet whose Owner == owner, so a wallet address can
+// never equal its own owner's address — the scenario is no longer representable.)
 
 #[test]
 fn test_storage_isolation_across_distinct_owners() {
@@ -304,7 +333,7 @@ fn test_storage_isolation_across_distinct_owners() {
     let mut pairs = std::vec::Vec::new();
     for _ in 0..25 {
         let owner = Address::generate(&env);
-        let wallet = Address::generate(&env);
+        let wallet = deploy_wallet(&env, &owner);
         registry.register(&admin, &owner, &wallet);
         pairs.push((owner, wallet));
     }
@@ -320,8 +349,8 @@ fn test_no_event_emitted_on_idempotent_reregister() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
 
     registry.register(&admin, &owner, &smart_wallet);
     // `events().all()` drains the buffer since the last read, so this confirms
@@ -340,9 +369,9 @@ fn test_no_event_emitted_on_rejected_conflicting_register() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let wallet_a = Address::generate(&env);
-    let wallet_b = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let wallet_a = deploy_wallet(&env, &owner);
+    let wallet_b = deploy_wallet(&env, &owner);
     registry.register(&admin, &owner, &wallet_a);
     env.events().all(); // drain the successful register's event first
 
@@ -356,8 +385,8 @@ fn test_register_event_carries_correct_smart_wallet_payload() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
 
     registry.register(&admin, &owner, &smart_wallet);
 
@@ -491,8 +520,8 @@ fn test_transfer_admin_moves_control_to_new_admin() {
     let admin = Address::generate(&env);
     let new_admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
 
     registry.transfer_admin(&new_admin);
 
@@ -555,8 +584,8 @@ fn test_ttl_extended_on_repeated_reads_does_not_change_value() {
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let owner = Address::generate(&env);
-    let smart_wallet = Address::generate(&env);
     let registry = RegistryClient::new(&env, &env.register(Registry, (admin.clone(),)));
+    let smart_wallet = deploy_wallet(&env, &owner);
     registry.register(&admin, &owner, &smart_wallet);
 
     for _ in 0..5 {
