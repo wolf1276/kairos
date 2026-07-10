@@ -4,7 +4,6 @@
     "nonce": 0
   },
   "auth": [
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -12,7 +11,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "init",
+              "function_name": "__constructor",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -24,18 +23,17 @@
         }
       ]
     ],
-    [],
     [
       [
-        "GBNZSFGASW3U2Z2GT7YBE6EEDLGQNSXKFOC74FY7CLYIVDLTECGMXUUW",
+        "GB2HZKZ443DNBSZNKN7JK36TB3BSJER4M7CBAFEQ22GITAV4AEXDNKQR",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "init",
+              "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GBNZSFGASW3U2Z2GT7YBE6EEDLGQNSXKFOC74FY7CLYIVDLTECGMXUUW"
+                  "address": "GB2HZKZ443DNBSZNKN7JK36TB3BSJER4M7CBAFEQ22GITAV4AEXDNKQR"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -65,7 +63,7 @@
       [
         {
           "contract_data": {
-            "contract": "GBNZSFGASW3U2Z2GT7YBE6EEDLGQNSXKFOC74FY7CLYIVDLTECGMXUUW",
+            "contract": "GB2HZKZ443DNBSZNKN7JK36TB3BSJER4M7CBAFEQ22GITAV4AEXDNKQR",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -80,7 +78,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GBNZSFGASW3U2Z2GT7YBE6EEDLGQNSXKFOC74FY7CLYIVDLTECGMXUUW",
+                "contract": "GB2HZKZ443DNBSZNKN7JK36TB3BSJER4M7CBAFEQ22GITAV4AEXDNKQR",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -229,7 +227,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GBNZSFGASW3U2Z2GT7YBE6EEDLGQNSXKFOC74FY7CLYIVDLTECGMXUUW"
+                          "address": "GB2HZKZ443DNBSZNKN7JK36TB3BSJER4M7CBAFEQ22GITAV4AEXDNKQR"
                         }
                       }
                     ]

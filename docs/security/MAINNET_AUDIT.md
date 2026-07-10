@@ -53,69 +53,148 @@ Kept in the test suite (still passing, by design — see Remaining Issues) as
 `test_exploit_front_run_init_steals_ownership_pre_fix` (custom-account) and
 `test_exploit_manager_front_run_init_steals_ownership_pre_fix` (delegation-manager).
 
-### Fix
+### Fix (part 1)
 
 Added `owner.require_auth()` in both `init()` functions, immediately after the
-already-initialized guard and before any storage write. No API, storage-layout, or
-deployment-flow change. This closes:
+already-initialized guard and before any storage write. This closed impersonation, but left
+a residual race — see below, closed in part 2.
 
-- Anonymous strangers initializing a wallet they hold no key for.
-- Impersonation (setting `owner` to a victim's address without that victim's consent).
-- A malicious/compromised sponsor or relayer silently substituting a different owner than
-  the one the real owner authorized.
+### Regression tests added (part 1)
 
-### Regression tests added
+Per contract (custom-account + delegation-manager): `test_legitimate_init_succeeds_with_owner_auth`,
+`test_unauthorized_init_is_rejected`, `test_front_run_cannot_impersonate_a_different_owner`,
+`test_double_initialization_is_rejected`. (These were subsequently rewritten in part 2 below
+to register via constructor instead of a separate `init` call — same assertions, same
+coverage, since `init` no longer exists as a standalone function.)
 
-Per contract (custom-account + delegation-manager):
+---
 
-- `test_legitimate_init_succeeds_with_owner_auth`
-- `test_unauthorized_init_is_rejected` — no auth at all → panics.
-- `test_front_run_cannot_impersonate_a_different_owner` — attacker cannot set someone else
-  as owner without that owner's signature.
-- `test_double_initialization_is_rejected`
+## P0-1 (continued) — residual self-claim race — **[fixed]**
+
+**Severity: was P2 (griefing/DoS) after part 1's fix — P0 before that.**
+**Contracts: `custom-account`, `delegation-manager`.**
+**Investigated: 2026-07-10.**
+
+### Root cause
+
+Part 1's `owner.require_auth()` stopped impersonation but not self-claim: deploy
+(`CreateContract`) and init were still two separate transactions in every real flow
+(`WalletModule.create`, `submitSponsoredDeploy`, `scripts/deploy-testnet.ts`), and the
+target address is deterministic and known before either transaction lands. An attacker
+who observes the pending deploy could front-run the second (`init`) transaction with
+`init(attacker_own_address, manager)` — self-authorizing legitimately as themselves, since
+nothing in `init()` ties the call to who the deploy transaction actually intended as owner.
+Reproduced (contract-level, `soroban-env-host` 22.1.3, not mocked assertions) as
+`test_exploit_front_run_init_steals_ownership_pre_fix` / the manager equivalent, prior to
+this fix (both removed now that the two-transaction window they depended on no longer
+exists — see "Regression tests" below).
+
+### Investigated: is atomic deploy+init possible on the current stack?
+
+Yes — confirmed by reading the actual pinned dependency source, not assumed:
+
+- **Rust side**: `soroban-sdk = "22.0.1"` (resolves to `22.0.11` in `Cargo.lock`) fully
+  supports constructors — a function named exactly `__constructor`, invoked by the host as
+  part of contract creation (`soroban-env-host-22.1.3::host::lifecycle::call_constructor`,
+  `CONSTRUCTOR_SUPPORT_PROTOCOL = 22`).
+- **JS SDK side**: `@stellar/stellar-sdk` is pinned to `^14.6.1`. A prior pass at this
+  investigation assumed this needed bumping to `16.x` — **that assumption was wrong and was
+  never verified against the installed package.** Inspecting the actually-installed
+  `14.6.1` shows `Operation.createCustomContract`, `xdr.CreateContractArgsV2`, and
+  `xdr.HostFunctionType.hostFunctionTypeCreateContractV2` are all already present and
+  functional. No SDK version bump is needed or was made.
+
+So a factory/deployer contract was not needed either — native constructors close this
+completely on the current stack with no dependency changes.
+
+### Chosen fix
+
+Renamed `init` → `__constructor` in both `CustomAccount` and `DelegationManager`
+(`contracts/soroban/contracts/{custom-account,delegation-manager}/src/lib.rs`), body
+otherwise unchanged (same re-init guard, same `owner.require_auth()`, same storage writes).
+The host now invokes this as part of the single `CreateContractV2` operation that creates
+the contract — there is no longer any on-chain state where the address exists but is
+unowned, because the address does not exist until construction (including the auth check)
+has already completed as part of the same operation.
+
+This also holds under sponsorship (funder ≠ owner): per
+`soroban-env-host::host::lifecycle::create_contract_with_optional_auth`, creating a contract
+at all requires an authorization from the address embedded in the contract-id preimage (the
+intended owner), independent of and in addition to whatever the constructor itself checks —
+so an attacker who doesn't hold the real owner's key cannot create a competing contract at
+that deterministic address regardless of what constructor args they'd supply.
+
+`packages/sdk/src/wallet/index.ts` (`WalletModule`) updated to match: `buildDeployArtifacts`
+now builds `CreateContractArgsV2` with `constructorArgs: [owner, delegationManager]` via
+`Operation.createCustomContract`'s host-function shape, instead of the old
+`CreateContractArgs` (no constructor). `create()` and `submitSponsoredDeploy()` now submit
+one transaction and return — the old post-deploy `initializeWallet()` retry loop (which
+called the separate `init` transaction, up to 4 attempts with a 5s backoff) is deleted
+entirely, since there is nothing left to retry. Public method signatures on `WalletModule`
+are unchanged. `scripts/deploy-testnet.ts` updated the same way: `--owner` /
+`--delegation_manager` are now passed as constructor args on the `stellar contract deploy`
+command itself, and the separate `stellar contract invoke -- init ...` steps for these two
+contracts are removed. (`Registry` is untouched — it was never vulnerable, see part 1.)
+
+### Regression tests
+
+Both contracts' test suites were rewritten to register via constructor
+(`env.register(CustomAccount, CustomAccountArgs::__constructor(&owner, &manager))`) instead
+of registering uninitialized and calling `init` after. Per contract:
+
+- **Normal / self deploy**: `test_legitimate_init_succeeds_with_owner_auth` /
+  `test_manager_legitimate_init_succeeds_with_owner_auth` — construction with the owner's
+  own auth succeeds, storage reads back correctly.
+- **Front-run / self-claim attempt**: `test_unauthorized_init_is_rejected` /
+  `test_manager_unauthorized_init_is_rejected` — no mocked auth at all, so `env.register(...)`
+  itself panics. This is the direct proof that bringing the contract into existence at all
+  now requires the claimed owner's authorization — there's no separate, unauthenticated step
+  left to race.
+- **Impersonation attempt** (a front-run trying to set someone *else* as owner):
+  `test_front_run_cannot_impersonate_a_different_owner` /
+  `test_manager_front_run_cannot_impersonate_a_different_owner` — attacker mocks only their
+  own auth via `env.register_at` + `MockAuth{ fn_name: "__constructor", .. }`, panics.
+- **Double init**: `test_double_initialization_is_rejected` /
+  `test_manager_double_initialization_is_rejected` — `__constructor` remains an ordinary,
+  separately-callable function after creation (the host does not block re-invoking it), so a
+  second direct call is exercised explicitly (`env.as_contract(&id, || Contract::__constructor(...))`)
+  and confirmed still rejected by the re-init guard.
+- **Sponsored deploy**: covered at the SDK layer, not the contract layer — the contract has
+  no notion of "who paid"; `WalletModule.prepareSponsoredDeploy`/`submitSponsoredDeploy` were
+  code-reviewed and updated to build the same `CreateContractV2` op with `constructorArgs`,
+  simulate for the owner's auth entry (now covering both contract creation and the nested
+  `owner.require_auth()` inside `__constructor`, since Soroban auth entries are per-address
+  across the whole invocation tree, not per call), sign, and submit as one transaction.
 
 ### Verification run
 
-- Contract tests: custom-account 11/11, delegation-manager 18/18, policies 11/11, registry
-  23/23 — all pass.
-- Wasm build (`wasm32v1-none --release`, the real deploy target): all 4 contracts compile clean.
-- SDK tests (`packages/sdk`): 34/34 pass (unaffected — no SDK code changed).
-- Backend tests: 1488 passed / 123 failed / 38 skipped. All 123 failures are
-  `better-sqlite3` native binding errors (no C++ build tools in the audit sandbox — pre-existing
-  environment gap, unrelated to this change; every failing file is DB-backed, none touch
-  contract init logic).
-- Typecheck: SDK clean. Backend has 2 pre-existing, unrelated errors (unbuilt
-  `@wolf1276/kairos-turnkey-signer` dist, a vitest mock-type mismatch in
-  `priceHistory.test.ts`) — confirmed pre-existing, no backend files were touched by this fix.
+All actually executed (not asserted) in this sandbox, native tests worked around a
+Windows-only, environment-specific limitation (below) — this is the same class of
+environment gap as the pre-existing `better-sqlite3` native-binding failures noted in part 1,
+not a code issue:
 
-### Remaining issue: residual self-claim race — **[open, recommended]**
+- **Contract tests**: 61/61 pass — custom-account 10/10, delegation-manager 17/17, policies
+  11/11, registry 23/23. (Native `cargo test` on this Windows sandbox hits an unrelated,
+  pre-existing GNU-linker limit — "export ordinal too large" — building these crates'
+  `cdylib` output, since `soroban-env-host`'s dependency closure exceeds the 65535-symbol
+  Windows PE export-table limit; this is a Windows-DLL-specific ceiling that does not exist
+  on Linux/macOS CI. Worked around by temporarily dropping `cdylib` from
+  `crate-type` in all 4 contracts' `Cargo.toml` for the test run only, then restoring them —
+  confirmed via `git status` / `git diff` showing zero net change to those files.)
+- **Wasm build**: `cargo build --release --target wasm32v1-none` for all 4 contracts —
+  compiles clean, produces `custom_account.wasm`, `delegation_manager.wasm`,
+  `policies.wasm`, `registry.wasm`. This is the real deploy target and was not touched by
+  the native-test workaround above.
+- **SDK typecheck**: `tsc --noEmit` in `packages/sdk` — clean.
+- **SDK build**: `tsup` — clean (CJS + ESM + `.d.ts`).
+- **SDK tests**: 34/34 pass (`packages/sdk`'s own vitest suite; `vitest` wasn't hoisted into
+  this sandbox's `node_modules` until `pnpm install --filter @wolf1276/kairos-sdk` was run —
+  a one-time environment gap, not a code issue).
 
-**Severity: downgraded to P2 (griefing/DoS) by the fix above — was P0 before it.**
+### Remaining issues
 
-The fix stops impersonation (attacker cannot claim a wallet *as* someone else) but an
-attacker can still front-run deployment by calling `init(attacker_own_address, manager)` on
-someone else's freshly-deployed-but-uninitialized address, self-authorizing legitimately as
-themselves. Soroban caps a transaction at exactly one Soroban operation (confirmed against
-`@stellar/stellar-sdk`'s own RPC docs: "should include exactly one operation"), so true
-atomicity requires either:
-
-- Native constructors (`CreateContractV2`), which needs `@stellar/stellar-sdk` bumped from
-  the pinned `14.6.1` to `16.x` in `packages/sdk` — out of scope for a minimal P0 patch given
-  the blast radius of a major SDK version bump.
-- A factory/deployer contract, which changes the deterministic address-derivation scheme
-  (`buildDeployArtifacts`) that the frontend/backend currently rely on — an architecture
-  change, not a minimal fix.
-
-Practical impact of the residual: capped at griefing/DoS. `WalletModule.initializeWallet()`
-already throws (`ExecutionFailedError`) rather than silently treating a hijacked address as
-ready, so a lost race costs the victim a wasted deploy attempt (retry with a fresh salt), not
-funds or a false sense of ownership.
-
-**Recommendation:** scope a follow-up to bump `@stellar/stellar-sdk` to 16.x and migrate
-`CustomAccount`/`DelegationManager` init to native constructors, closing this fully. Not
-blocking for mainnet given the bounded impact.
-
----
+None open for this finding. `Registry` was never in scope (already required
+`admin.require_auth()`, never had a separate uninitialized-deploy window — see part 1).
 
 ## Template for future findings
 

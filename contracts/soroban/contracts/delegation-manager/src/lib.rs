@@ -84,14 +84,13 @@ pub struct DelegationManager;
 
 #[contractimpl]
 impl DelegationManager {
-    // Initialize the contract setting the owner
-    pub fn init(env: Env, owner: Address) {
+    // Constructor: see CustomAccount::__constructor for the full rationale (same fix,
+    // same contract-level guard rules — this runs atomically inside CreateContractV2,
+    // closing the residual self-claim race left by the old separate `init()` tx).
+    pub fn __constructor(env: Env, owner: Address) {
         if env.storage().instance().has(&DataKey::Owner) {
             panic_with_error!(&env, ManagerError::NotAuthorized);
         }
-        // P0-1 fix: require the claimed owner's own authorization, matching the same
-        // hardening applied to CustomAccount::init. See that function's comment for the
-        // full rationale.
         owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage().instance().set(&DataKey::Paused, &false);

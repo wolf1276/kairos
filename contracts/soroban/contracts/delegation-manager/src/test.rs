@@ -1,11 +1,11 @@
-#![cfg(test)]
+﻿#![cfg(test)]
 extern crate std;
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, BytesN as _, Events as _},
     token, Env, IntoVal,
 };
-use custom_account::{CustomAccount, CustomAccountClient};
+use custom_account::{CustomAccount, CustomAccountArgs};
 use policies::{Policies, PoliciesClient};
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
@@ -92,54 +92,14 @@ impl MockCustomAccount {
 
 // --- P0-1: unauthenticated init() / front-run ownership takeover (DelegationManager) ---
 //
-// Same defect as CustomAccount::init: no `.require_auth()` anywhere in `init()`, only an
-// AlreadyInitialized-style reentry guard. `scripts/deploy-testnet.ts` deploys the manager
-// and initializes it in two separate `stellar contract` invocations (two separate
-// transactions), so the same front-running window applied to the protocol singleton. Fixed
-// the same way: `owner.require_auth()` in `init()`. This is a one-time, operator-run
-// deployment (not exposed to end users like CustomAccount's per-wallet init), so it was not
-// worth the SDK-level atomicity rework — see "Remaining Issues" in the audit report.
-
-#[test]
-fn test_exploit_manager_front_run_init_steals_ownership_pre_fix() {
-    let env = Env::default();
-
-    let legit_owner = Address::generate(&env);
-    let attacker = Address::generate(&env);
-
-    let manager_id = env.register_contract(None, DelegationManager);
-    let manager = DelegationManagerClient::new(&env, &manager_id);
-
-    // Attacker front-runs the deployer's own init tx, self-authorizing as the new owner —
-    // reproduces the exploit exactly as it behaved before the fix (an attacker claiming
-    // themselves as owner still satisfies `owner.require_auth()` trivially).
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &attacker,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &manager_id,
-            fn_name: "init",
-            args: (attacker.clone(),).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-    manager.init(&attacker);
-
-    // Deployer's legitimate init (the real second transaction) now fails.
-    let legit_init = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        manager.init(&legit_owner);
-    }));
-    assert!(
-        legit_init.is_err(),
-        "legitimate deployer's init() unexpectedly succeeded after attacker's front-run"
-    );
-
-    let stored_owner: Address = env.as_contract(&manager_id, || {
-        env.storage().instance().get(&DataKey::Owner).unwrap()
-    });
-    assert_eq!(stored_owner, attacker, "attacker should now own the DelegationManager");
-}
-
-// --- Regression tests for the fix ---
+// Same defect as CustomAccount::init originally had: no `.require_auth()` anywhere in
+// `init()`, only an AlreadyInitialized-style reentry guard, and deploy+init were two
+// separate transactions (`scripts/deploy-testnet.ts`), leaving an on-chain window where
+// the singleton existed unowned. Fixed the same way as CustomAccount: `init()` is now
+// `__constructor`, invoked atomically by the host inside the same `CreateContractV2`
+// operation that creates the contract — there is no longer a separate transaction, so
+// there's nothing left for a front-runner to race. See `custom_account::CustomAccount`'s
+// test module for the full rationale (identical fix, identical guard behavior).
 
 #[test]
 fn test_manager_legitimate_init_succeeds_with_owner_auth() {
@@ -147,9 +107,7 @@ fn test_manager_legitimate_init_succeeds_with_owner_auth() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
-    let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner));
 
     let stored_owner: Address = env.as_contract(&manager_id, || {
         env.storage().instance().get(&DataKey::Owner).unwrap()
@@ -161,10 +119,11 @@ fn test_manager_legitimate_init_succeeds_with_owner_auth() {
 #[should_panic]
 fn test_manager_unauthorized_init_is_rejected() {
     let env = Env::default();
-    // No mocked auths: nobody's signature is available for `owner`.
+    // No mocked auths at all: nobody's signature is available for `owner`. Proves an
+    // attacker cannot bring the manager into existence without the claimed owner's
+    // authorization — there's no separate, unauthenticated init step to race anymore.
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner));
 }
 
 #[test]
@@ -175,19 +134,23 @@ fn test_manager_front_run_cannot_impersonate_a_different_owner() {
     let legit_owner = Address::generate(&env);
     let attacker = Address::generate(&env);
 
-    let manager_id = env.register_contract(None, DelegationManager);
-    let manager = DelegationManagerClient::new(&env, &manager_id);
-
+    // Attacker only has their own signature but tries to construct the manager with the
+    // real owner's address. Only the attacker's auth is mocked, not legit_owner's.
+    let manager_id = Address::generate(&env);
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
         address: &attacker,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &manager_id,
-            fn_name: "init",
+            fn_name: "__constructor",
             args: (legit_owner.clone(),).into_val(&env),
             sub_invokes: &[],
         },
     }]);
-    manager.init(&legit_owner);
+    env.register_at(
+        &manager_id,
+        DelegationManager,
+        DelegationManagerArgs::__constructor(&legit_owner),
+    );
 }
 
 #[test]
@@ -198,9 +161,13 @@ fn test_manager_double_initialization_is_rejected() {
 
     let owner = Address::generate(&env);
     let other = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
-    manager.init(&other);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner));
+    // `__constructor` remains an ordinary function after creation — proves a second,
+    // direct call (e.g. an attacker trying to reset ownership post-deploy) is still
+    // rejected by the re-init guard, exactly as double-`init()` was before this fix.
+    env.as_contract(&manager_id, || {
+        DelegationManager::__constructor(env.clone(), other.clone());
+    });
 }
 
 #[test]
@@ -209,8 +176,10 @@ fn test_manager_init_and_pause() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
 
     assert_eq!(manager.is_paused(), false);
     manager.pause();
@@ -225,8 +194,10 @@ fn test_disable_and_enable_delegation() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
 
     let delegator = Address::generate(&env);
     let delegate = Address::generate(&env);
@@ -259,9 +230,8 @@ fn test_redeem_delegation_pipeline() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner);
 
     // Setup contract-based delegator
     let delegator_id = env.register_contract(None, MockCustomAccount);
@@ -308,15 +278,12 @@ fn test_redeem_delegation_moves_token_balance_with_i128_precision() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     // Smart wallet owned by a real ed25519 keypair.
     let (owner_key, owner_address) = generate_signing_identity(&env);
-    let wallet_id = env.register_contract(None, CustomAccount);
-    let wallet = CustomAccountClient::new(&env, &wallet_id);
-    wallet.init(&owner_address, &manager_id);
+    let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let redeemer = Address::generate(&env);
     let receiver = Address::generate(&env);
@@ -381,15 +348,12 @@ fn test_redeem_delegation_rejects_invalid_signature() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let (_owner_key, owner_address) = generate_signing_identity(&env);
     let (wrong_key, _wrong_address) = generate_signing_identity(&env);
-    let wallet_id = env.register_contract(None, CustomAccount);
-    let wallet = CustomAccountClient::new(&env, &wallet_id);
-    wallet.init(&owner_address, &manager_id);
+    let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let redeemer = Address::generate(&env);
     let target = env.register_contract(None, DummyContract);
@@ -431,9 +395,8 @@ fn test_redeem_delegation_nonce_replay_protection() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let delegator_id = env.register_contract(None, MockCustomAccount);
     let delegator = MockCustomAccountClient::new(&env, &delegator_id);
@@ -481,9 +444,8 @@ fn test_redeem_delegation_reusable_nonce_stays_usable() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let delegator_id = env.register_contract(None, MockCustomAccount);
     let delegator = MockCustomAccountClient::new(&env, &delegator_id);
@@ -525,9 +487,8 @@ fn test_redeem_delegation_rejects_disabled_delegation() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let delegator_id = env.register_contract(None, MockCustomAccount);
     let delegator = MockCustomAccountClient::new(&env, &delegator_id);
@@ -570,8 +531,10 @@ fn test_register_delegation_enforces_one_per_delegate_pair() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
 
     let delegator = Address::generate(&env);
     let delegate_a = Address::generate(&env);
@@ -639,8 +602,10 @@ fn test_revoke_by_wallet() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
 
     let delegator = Address::generate(&env);
     let delegate = Address::generate(&env);
@@ -690,14 +655,11 @@ fn test_set_policy_updates_terms_without_new_delegation() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let (owner_key, owner_address) = generate_signing_identity(&env);
-    let wallet_id = env.register_contract(None, CustomAccount);
-    let wallet = CustomAccountClient::new(&env, &wallet_id);
-    wallet.init(&owner_address, &manager_id);
+    let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let policies_id = env.register_contract(None, Policies);
 
@@ -778,8 +740,10 @@ fn test_set_policies_batch() {
     env.mock_all_auths();
 
     let owner = Address::generate(&env);
-    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
-    manager.init(&owner);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
 
     let delegator = Address::generate(&env);
     let terms_a = Bytes::from_array(&env, &[1, 2, 3]);
@@ -813,14 +777,11 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
     env.mock_all_auths();
 
     let owner_admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&owner_admin);
 
     let (owner_key, owner_address) = generate_signing_identity(&env);
-    let wallet_id = env.register_contract(None, CustomAccount);
-    let wallet = CustomAccountClient::new(&env, &wallet_id);
-    wallet.init(&owner_address, &manager_id);
+    let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let policies_id = env.register_contract(None, Policies);
 

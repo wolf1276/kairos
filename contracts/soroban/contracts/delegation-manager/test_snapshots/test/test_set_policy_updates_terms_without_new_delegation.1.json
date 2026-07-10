@@ -4,7 +4,6 @@
     "nonce": 0
   },
   "auth": [
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -12,7 +11,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "init",
+              "function_name": "__constructor",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -24,18 +23,17 @@
         }
       ]
     ],
-    [],
     [
       [
-        "GDSNB3JCT4ZAJCIJ7ZHP6CG6LQOJEOTYLOTFNOSVBDUAGPSYZRT672FB",
+        "GDWDATIBUDBRDTHLCGCHAY7DS4CJ3RGVRBS24D6VCPTUJ76ENFGHRP2M",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M",
-              "function_name": "init",
+              "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GDSNB3JCT4ZAJCIJ7ZHP6CG6LQOJEOTYLOTFNOSVBDUAGPSYZRT672FB"
+                  "address": "GDWDATIBUDBRDTHLCGCHAY7DS4CJ3RGVRBS24D6VCPTUJ76ENFGHRP2M"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -237,7 +235,7 @@
                                 "symbol": "signature"
                               },
                               "val": {
-                                "bytes": "150011ff22513e776ca946940be234a17a197de8c964902b169788a29fc9ade4da97a267f8ba638c270f4111b571193ea253dbe341a5f67ad7a323f290195b00"
+                                "bytes": "ff33e210927084bf9256431c85c4e47341506a9765fee9c150ff06a25de28705a29cda9814732d1181ece4f232473823a88e06f82691cb4da603cba764ffe00c"
                               }
                             }
                           ]
@@ -374,7 +372,7 @@
       [
         {
           "contract_data": {
-            "contract": "GDSNB3JCT4ZAJCIJ7ZHP6CG6LQOJEOTYLOTFNOSVBDUAGPSYZRT672FB",
+            "contract": "GDWDATIBUDBRDTHLCGCHAY7DS4CJ3RGVRBS24D6VCPTUJ76ENFGHRP2M",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -389,7 +387,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GDSNB3JCT4ZAJCIJ7ZHP6CG6LQOJEOTYLOTFNOSVBDUAGPSYZRT672FB",
+                "contract": "GDWDATIBUDBRDTHLCGCHAY7DS4CJ3RGVRBS24D6VCPTUJ76ENFGHRP2M",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -589,7 +587,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GDSNB3JCT4ZAJCIJ7ZHP6CG6LQOJEOTYLOTFNOSVBDUAGPSYZRT672FB"
+                          "address": "GDWDATIBUDBRDTHLCGCHAY7DS4CJ3RGVRBS24D6VCPTUJ76ENFGHRP2M"
                         }
                       }
                     ]
