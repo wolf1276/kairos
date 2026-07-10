@@ -20,8 +20,12 @@ The **source of truth for deployed testnet contract addresses**. Shape:
 - **Read directly by** repo-level scripts and the mcp-agent smoke test: `scripts/deploy-testnet.ts`, `scripts/test-integration.ts`, `scripts/demo-e2e.ts`, `packages/mcp-agent/scripts/smoke-test.ts`.
 - **Consumed indirectly by** the [backend](../backend/README.md) and [apps/web](../apps/web/README.md), which read the same IDs from environment variables (`DELEGATION_MANAGER_CONTRACT_ID`, `POLICY_CONTRACT_ID`, `CUSTOM_ACCOUNT_CONTRACT_ID`, `CUSTOM_ACCOUNT_WASM_HASH`, `REGISTRY_CONTRACT_ID`). When deploying, copy the values here into those env vars.
 
-> [!NOTE]
-> There is no `contracts.mainnet.json` today — only testnet is deployed. Mainnet deployment is a roadmap item (see the root [README](../README.md#roadmap)).
+## `contracts.mainnet.json`
+
+Same shape as `contracts.testnet.json`, above. Currently all values are empty-string
+placeholders — mainnet has not been deployed yet. Written by
+[`scripts/deploy-mainnet.ts`](../scripts/README.md); see
+[`docs/MAINNET_RUNBOOK.md`](../docs/MAINNET_RUNBOOK.md) for the full deployment procedure.
 
 ## Related
 
