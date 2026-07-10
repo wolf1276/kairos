@@ -502,6 +502,77 @@ fn test_duplicate_propose_upgrade_overwrites_pending_hash() {
     assert!(result.is_err(), "superseded proposal must no longer be executable");
 }
 
+// ---------------------------------------------------------------------------
+// Admin rotation (registry ownership recovery)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_transfer_admin_moves_control_to_new_admin() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let smart_wallet = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    registry.transfer_admin(&new_admin);
+
+    // new admin can register.
+    registry.register(&new_admin, &owner, &smart_wallet);
+    assert_eq!(registry.get_smart_wallet(&owner), Some(smart_wallet));
+}
+
+#[test]
+fn test_old_admin_rejected_after_transfer() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let owner = Address::generate(&env);
+    let smart_wallet = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    registry.transfer_admin(&new_admin);
+
+    // old admin can no longer register.
+    let result = registry.try_register(&admin, &owner, &smart_wallet);
+    assert!(result.is_err(), "old admin must be rejected after transfer_admin");
+}
+
+#[test]
+#[should_panic]
+fn test_new_admin_can_propose_and_execute_upgrade() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+    registry.transfer_admin(&new_admin);
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    registry.propose_upgrade(&hash);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+    registry.upgrade(&hash);
+}
+
+#[test]
+fn test_transfer_admin_without_signature_traps_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    env.mock_all_auths();
+    registry.init(&admin);
+
+    env.set_auths(&[]);
+    let result = registry.try_transfer_admin(&new_admin);
+    assert!(result.is_err());
+}
+
 #[test]
 fn test_ttl_extended_on_repeated_reads_does_not_change_value() {
     // Rent/expiration-adjacent check: repeated get_smart_wallet calls bump TTL as a

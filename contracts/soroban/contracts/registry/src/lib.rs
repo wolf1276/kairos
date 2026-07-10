@@ -75,6 +75,14 @@ impl Registry {
         env.storage().persistent().get(&key)
     }
 
+    // Admin-gated: rotate the admin key. Old admin must sign; new admin takes over
+    // immediately (register/propose_upgrade/cancel_upgrade/upgrade all check this key).
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        stored_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
+    }
+
     // Admin-gated: queue an upgrade to take effect after UPGRADE_DELAY_SECS.
     pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
