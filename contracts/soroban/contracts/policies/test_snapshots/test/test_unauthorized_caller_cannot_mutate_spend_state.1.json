@@ -1,31 +1,11 @@
 {
   "generators": {
-    "address": 2,
+    "address": 6,
     "nonce": 0
   },
   "auth": [
-    [
-      [
-        "GA4ZCZM6K3QWAGGN6MUJ7F42MGOXBUY4AJDS2FOHZ6JQ3DA764S2HYRX",
-        {
-          "function": {
-            "contract_fn": {
-              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "__constructor",
-              "args": [
-                {
-                  "address": "GA4ZCZM6K3QWAGGN6MUJ7F42MGOXBUY4AJDS2FOHZ6JQ3DA764S2HYRX"
-                },
-                {
-                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                }
-              ]
-            }
-          },
-          "sub_invocations": []
-        }
-      ]
-    ],
+    [],
+    [],
     []
   ],
   "ledger": {
@@ -38,39 +18,6 @@
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
-      [
-        {
-          "contract_data": {
-            "contract": "GA4ZCZM6K3QWAGGN6MUJ7F42MGOXBUY4AJDS2FOHZ6JQ3DA764S2HYRX",
-            "key": {
-              "ledger_key_nonce": {
-                "nonce": 801925984706572462
-              }
-            },
-            "durability": "temporary"
-          }
-        },
-        [
-          {
-            "last_modified_ledger_seq": 0,
-            "data": {
-              "contract_data": {
-                "ext": "v0",
-                "contract": "GA4ZCZM6K3QWAGGN6MUJ7F42MGOXBUY4AJDS2FOHZ6JQ3DA764S2HYRX",
-                "key": {
-                  "ledger_key_nonce": {
-                    "nonce": 801925984706572462
-                  }
-                },
-                "durability": "temporary",
-                "val": "void"
-              }
-            },
-            "ext": "v0"
-          },
-          6311999
-        ]
-      ],
       [
         {
           "contract_data": {
@@ -104,18 +51,6 @@
                         },
                         "val": {
                           "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                        }
-                      },
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "Owner"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "GA4ZCZM6K3QWAGGN6MUJ7F42MGOXBUY4AJDS2FOHZ6JQ3DA764S2HYRX"
                         }
                       }
                     ]

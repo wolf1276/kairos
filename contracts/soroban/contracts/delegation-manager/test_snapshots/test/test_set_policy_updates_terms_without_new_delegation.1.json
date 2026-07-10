@@ -25,7 +25,7 @@
     ],
     [
       [
-        "GCD4UQ5MPQG6MOTTWVBMQ3L4QOXHXTW7GXUHMD5F4BRAPY57NZ5Y6SB6",
+        "GDNQJY5OZVFXYZDE6HO6DREDEJQNL2LLYIDQKAMBLN4OEA6KCMY5YYUK",
         {
           "function": {
             "contract_fn": {
@@ -33,7 +33,7 @@
               "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GCD4UQ5MPQG6MOTTWVBMQ3L4QOXHXTW7GXUHMD5F4BRAPY57NZ5Y6SB6"
+                  "address": "GDNQJY5OZVFXYZDE6HO6DREDEJQNL2LLYIDQKAMBLN4OEA6KCMY5YYUK"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -235,7 +235,7 @@
                                 "symbol": "signature"
                               },
                               "val": {
-                                "bytes": "2087c486a950ba4b53e7bdce15ecdbb257a3a4eb7ac7b1e2c1d92a9d19d8c806c9040fef957126856dacdd0838ea54877d5a6b6fe810528fabdb49da95e2870a"
+                                "bytes": "0c371bdb40c3026521b0ad8f97f6203420c82a130284831e66daf66291b7fbc55c0612d79b55165f4c65d220e20f5fbd49190fe1d178c970f5119c83c196160a"
                               }
                             }
                           ]
@@ -372,7 +372,7 @@
       [
         {
           "contract_data": {
-            "contract": "GCD4UQ5MPQG6MOTTWVBMQ3L4QOXHXTW7GXUHMD5F4BRAPY57NZ5Y6SB6",
+            "contract": "GDNQJY5OZVFXYZDE6HO6DREDEJQNL2LLYIDQKAMBLN4OEA6KCMY5YYUK",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -387,7 +387,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GCD4UQ5MPQG6MOTTWVBMQ3L4QOXHXTW7GXUHMD5F4BRAPY57NZ5Y6SB6",
+                "contract": "GDNQJY5OZVFXYZDE6HO6DREDEJQNL2LLYIDQKAMBLN4OEA6KCMY5YYUK",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -587,7 +587,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GCD4UQ5MPQG6MOTTWVBMQ3L4QOXHXTW7GXUHMD5F4BRAPY57NZ5Y6SB6"
+                          "address": "GDNQJY5OZVFXYZDE6HO6DREDEJQNL2LLYIDQKAMBLN4OEA6KCMY5YYUK"
                         }
                       }
                     ]
@@ -736,14 +736,27 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": null
+                    "storage": [
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "DelegationManager"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      }
+                    ]
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          4095
+          100000
         ]
       ],
       [

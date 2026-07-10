@@ -6,7 +6,7 @@ use soroban_sdk::{
     token, Env, IntoVal,
 };
 use custom_account::{CustomAccount, CustomAccountArgs, CustomAccountClient};
-use policies::{Policies, PoliciesClient};
+use policies::{Policies, PoliciesArgs, PoliciesClient};
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
 
@@ -661,7 +661,7 @@ fn test_set_policy_updates_terms_without_new_delegation() {
     let (owner_key, owner_address) = generate_signing_identity(&env);
     let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
-    let policies_id = env.register_contract(None, Policies);
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager_id));
 
     let redeemer = Address::generate(&env);
     let receiver = Address::generate(&env);
@@ -902,7 +902,7 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
     let (owner_key, owner_address) = generate_signing_identity(&env);
     let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
-    let policies_id = env.register_contract(None, Policies);
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager_id));
 
     let redeemer = Address::generate(&env);
     let receiver = Address::generate(&env);

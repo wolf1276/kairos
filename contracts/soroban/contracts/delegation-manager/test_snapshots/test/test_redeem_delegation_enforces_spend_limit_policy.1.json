@@ -25,7 +25,7 @@
     ],
     [
       [
-        "GBRFSG7Q4NZNBZWSOSBCYKSDJWTI7BPQUIEKTS23INOQYOF62CPQ7A3D",
+        "GAFKTZDWXOMQ25QTNN2CFZ2DEZSMGWXX25B6HC2OZBBDHJOE5RWOQW6C",
         {
           "function": {
             "contract_fn": {
@@ -33,7 +33,7 @@
               "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GBRFSG7Q4NZNBZWSOSBCYKSDJWTI7BPQUIEKTS23INOQYOF62CPQ7A3D"
+                  "address": "GAFKTZDWXOMQ25QTNN2CFZ2DEZSMGWXX25B6HC2OZBBDHJOE5RWOQW6C"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -183,7 +183,7 @@
                                 "symbol": "signature"
                               },
                               "val": {
-                                "bytes": "1cb286cd0394b5a1bb83d326f421d0c5faa10b6f37a463b1c14ca9162ce5533d17b7f1a4c01789719cf5b459e5dcee8224502e35757b37b5837896d7eeee2f00"
+                                "bytes": "d5e712a0d765505924fe7a7c9831edae67047ff41845cf6c7ca4302ceed4d89ab57712fdd3da1f56cda2a35e0bfa81d825e35dfc990c6caa54a147ac35ec3708"
                               }
                             }
                           ]
@@ -323,7 +323,7 @@
       [
         {
           "contract_data": {
-            "contract": "GBRFSG7Q4NZNBZWSOSBCYKSDJWTI7BPQUIEKTS23INOQYOF62CPQ7A3D",
+            "contract": "GAFKTZDWXOMQ25QTNN2CFZ2DEZSMGWXX25B6HC2OZBBDHJOE5RWOQW6C",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -338,7 +338,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GBRFSG7Q4NZNBZWSOSBCYKSDJWTI7BPQUIEKTS23INOQYOF62CPQ7A3D",
+                "contract": "GAFKTZDWXOMQ25QTNN2CFZ2DEZSMGWXX25B6HC2OZBBDHJOE5RWOQW6C",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -487,7 +487,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GBRFSG7Q4NZNBZWSOSBCYKSDJWTI7BPQUIEKTS23INOQYOF62CPQ7A3D"
+                          "address": "GAFKTZDWXOMQ25QTNN2CFZ2DEZSMGWXX25B6HC2OZBBDHJOE5RWOQW6C"
                         }
                       }
                     ]
@@ -570,14 +570,27 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": null
+                    "storage": [
+                      {
+                        "key": {
+                          "vec": [
+                            {
+                              "symbol": "DelegationManager"
+                            }
+                          ]
+                        },
+                        "val": {
+                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        }
+                      }
+                    ]
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          4095
+          100000
         ]
       ],
       [

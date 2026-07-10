@@ -25,6 +25,7 @@ pub enum PolicyStateKey {
     // accumulator with the single-token spend limit (tag 2) if both caveats are on one delegation.
     PooledSpent(BytesN<32>),
     PooledLastSpentTime(BytesN<32>),
+    DelegationManager,
 }
 
 #[contracterror]
@@ -49,6 +50,26 @@ pub struct Policies;
 
 #[contractimpl]
 impl Policies {
+    // Binds this Policies instance to a single DelegationManager, exactly like
+    // custom-account's `delegation_manager` binding (see CustomAccount::__constructor).
+    // Runs atomically at deploy time, so there's no window where the hooks exist without
+    // a caller check.
+    pub fn __constructor(env: Env, delegation_manager: Address) {
+        env.storage().instance().set(&PolicyStateKey::DelegationManager, &delegation_manager);
+        env.storage().instance().extend_ttl(10000, 100000);
+    }
+
+    // Every hook mutates or reads policy state on behalf of a specific delegation, so an
+    // unauthorized caller could forge `hash`/`context` to drain, reset, or bypass any
+    // caveat's accounting. Soroban gives contract addresses no signature-based
+    // `require_auth()` bypass: it only succeeds when `delegation_manager` is the actual
+    // direct invoker of this call, so this rejects every external caller before any state
+    // is touched, without changing hook signatures, storage layout, or policy semantics.
+    fn require_manager(env: &Env) {
+        let manager: Address = env.storage().instance().get(&PolicyStateKey::DelegationManager).unwrap();
+        manager.require_auth();
+    }
+
     // before_all hook
     pub fn before_all(
         env: Env,
@@ -56,6 +77,7 @@ impl Policies {
         hash: BytesN<32>,
         context: ExecutionContext,
     ) {
+        Self::require_manager(&env);
         if terms.len() == 0 {
             panic_with_error!(&env, Error::InvalidTerms);
         }
@@ -119,6 +141,7 @@ impl Policies {
         hash: BytesN<32>,
         context: ExecutionContext,
     ) {
+        Self::require_manager(&env);
         if terms.len() == 0 {
             panic_with_error!(&env, Error::InvalidTerms);
         }
@@ -231,18 +254,22 @@ impl Policies {
     }
 
     pub fn after_hook(
-        _env: Env,
+        env: Env,
         _terms: Bytes,
         _hash: BytesN<32>,
         _context: ExecutionContext,
-    ) {}
+    ) {
+        Self::require_manager(&env);
+    }
 
     pub fn after_all(
-        _env: Env,
+        env: Env,
         _terms: Bytes,
         _hash: BytesN<32>,
         _context: ExecutionContext,
-    ) {}
+    ) {
+        Self::require_manager(&env);
+    }
 
     // Parse contract address from 32-byte raw contract ID/public key payload
     fn parse_contract_address(env: &Env, terms: &Bytes, offset: u32) -> Result<Address, Error> {

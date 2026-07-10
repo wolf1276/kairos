@@ -65,6 +65,22 @@ fn make_request_vec(env: &Env, amounts: &[i128]) -> Val {
     vec.into_val(env)
 }
 
+// Stands in for DelegationManager: forwards calls into Policies via `env.invoke_contract`,
+// the same mechanism DelegationManager itself uses (see delegation-manager/src/lib.rs
+// `redeem_delegations`). Soroban authorizes a contract address's `require_auth()` only when
+// that contract is the actual direct invoker of the call, so routing through this stub (as
+// opposed to calling `PoliciesClient` directly from the test) is what exercises the real
+// authorization path rather than bypassing it with `mock_all_auths`.
+#[contract]
+struct ManagerStub;
+
+#[contractimpl]
+impl ManagerStub {
+    pub fn forward(env: Env, policies: Address, hook: Symbol, terms: Bytes, hash: BytesN<32>, context: ExecutionContext) {
+        env.invoke_contract::<Val>(&policies, &hook, (terms, hash, context).into_val(&env));
+    }
+}
+
 fn make_context(env: &Env, target: Address, function: Symbol, args: soroban_sdk::Vec<Val>) -> ExecutionContext {
     ExecutionContext {
         target,
@@ -81,7 +97,8 @@ fn make_context(env: &Env, target: Address, function: Symbol, args: soroban_sdk:
 #[test]
 fn test_target_function_set_whitelist_allows_matching_entry() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -106,7 +123,8 @@ fn test_target_function_set_whitelist_allows_matching_entry() {
 #[should_panic]
 fn test_target_function_set_whitelist_rejects_wrong_function_on_allowed_target() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -124,7 +142,8 @@ fn test_target_function_set_whitelist_rejects_wrong_function_on_allowed_target()
 #[should_panic]
 fn test_target_function_set_whitelist_rejects_unlisted_target() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -141,7 +160,8 @@ fn test_target_function_set_whitelist_rejects_unlisted_target() {
 #[test]
 fn test_pooled_spend_limit_accumulates_across_distinct_protocol_actions() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -172,7 +192,8 @@ fn test_pooled_spend_limit_accumulates_across_distinct_protocol_actions() {
 #[should_panic]
 fn test_pooled_spend_limit_rejects_when_combined_actions_exceed_limit() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -201,7 +222,8 @@ fn test_pooled_spend_limit_rejects_when_combined_actions_exceed_limit() {
 #[test]
 fn test_pooled_spend_limit_resets_after_period_rollover() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -229,7 +251,8 @@ fn test_pooled_spend_limit_resets_after_period_rollover() {
 #[test]
 fn test_pooled_spend_limit_sums_blend_request_vec_amounts() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -257,7 +280,8 @@ fn test_pooled_spend_limit_sums_blend_request_vec_amounts() {
 #[should_panic]
 fn test_pooled_spend_limit_rejects_blend_request_vec_sum_exceeding_limit() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -287,7 +311,8 @@ fn test_pooled_spend_limit_rejects_blend_request_vec_sum_exceeding_limit() {
 #[should_panic]
 fn test_pooled_spend_limit_fails_closed_on_undecodable_amount() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -314,7 +339,8 @@ fn test_pooled_spend_limit_fails_closed_on_undecodable_amount() {
 #[should_panic]
 fn test_pooled_spend_limit_rejects_when_matched_action_missing_tracked_arg() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let blend = Address::generate(&env);
@@ -335,7 +361,8 @@ fn test_pooled_spend_limit_rejects_when_matched_action_missing_tracked_arg() {
 #[should_panic]
 fn test_spend_limit_fails_closed_on_negative_amount() {
     let env = Env::default();
-    let contract_id = env.register(Policies, ());
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
     let client = PoliciesClient::new(&env, &contract_id);
 
     let token = Address::generate(&env);
@@ -362,4 +389,140 @@ fn test_spend_limit_fails_closed_on_negative_amount() {
     ];
     let ctx = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
     client.before_hook(&terms, &hash, &ctx);
+}
+
+// --- P0 fix regression tests: only the configured DelegationManager may invoke hooks ---
+
+fn spend_limit_terms(env: &Env, token: &Address, limit: i128, period: u64) -> Bytes {
+    let token_xdr = token.clone().to_xdr(env);
+    let token_bytes: std::vec::Vec<u8> = token_xdr.iter().collect();
+    let raw_token = &token_bytes[token_bytes.len() - 32..];
+    let mut buf: std::vec::Vec<u8> = std::vec::Vec::new();
+    buf.push(2u8);
+    buf.extend_from_slice(raw_token);
+    buf.extend_from_slice(&limit.to_be_bytes());
+    buf.extend_from_slice(&period.to_be_bytes());
+    Bytes::from_slice(env, &buf)
+}
+
+#[test]
+fn test_delegation_manager_can_call_every_hook() {
+    let env = Env::default();
+    let manager = env.register(ManagerStub, ());
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager));
+    let manager_client = ManagerStubClient::new(&env, &manager);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[1u8; 32]);
+    let args = vec![&env, token.clone().into_val(&env), token.clone().into_val(&env), 100i128.into_val(&env)];
+    let context = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
+
+    // None of these should panic: ManagerStub is the real, direct invoker, exactly as
+    // DelegationManager itself is in production, so `require_auth()` succeeds implicitly.
+    manager_client.forward(&policies_id, &Symbol::new(&env, "before_all"), &terms, &hash, &context);
+    manager_client.forward(&policies_id, &Symbol::new(&env, "before_hook"), &terms, &hash, &context);
+    manager_client.forward(&policies_id, &Symbol::new(&env, "after_hook"), &terms, &hash, &context);
+    manager_client.forward(&policies_id, &Symbol::new(&env, "after_all"), &terms, &hash, &context);
+}
+
+#[test]
+fn test_external_caller_rejected_for_every_hook() {
+    let env = Env::default();
+    let manager = Address::generate(&env);
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager));
+    let client = PoliciesClient::new(&env, &policies_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[2u8; 32]);
+    // Forged context: claims to be a legitimate redeemer/delegate/delegator triple, but the
+    // caller is not DelegationManager, so it must never get far enough to matter.
+    let args = vec![&env, token.clone().into_val(&env), token.clone().into_val(&env), 100i128.into_val(&env)];
+    let context = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
+
+    let calls: [fn(&PoliciesClient, &Bytes, &BytesN<32>, &ExecutionContext); 4] = [
+        |c, t, h, ctx| { c.before_all(t, h, ctx); },
+        |c, t, h, ctx| { c.before_hook(t, h, ctx); },
+        |c, t, h, ctx| { c.after_hook(t, h, ctx); },
+        |c, t, h, ctx| { c.after_all(t, h, ctx); },
+    ];
+    for call in calls {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call(&client, &terms, &hash, &context)));
+        assert!(result.is_err(), "external caller must be rejected");
+    }
+}
+
+#[test]
+fn test_unauthorized_caller_cannot_mutate_spend_state() {
+    let env = Env::default();
+    let manager = Address::generate(&env);
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager));
+    let client = PoliciesClient::new(&env, &policies_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[3u8; 32]);
+    let args = vec![&env, token.clone().into_val(&env), token.clone().into_val(&env), 500i128.into_val(&env)];
+    let context = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.before_hook(&terms, &hash, &context)));
+    assert!(result.is_err());
+
+    // The rejection must land before any accounting write: no Spent entry for this hash.
+    env.as_contract(&policies_id, || {
+        assert!(!env.storage().persistent().has(&PolicyStateKey::Spent(hash.clone())));
+    });
+}
+
+#[test]
+fn test_unauthorized_caller_cannot_mutate_pooled_spend_state() {
+    let env = Env::default();
+    let manager = Address::generate(&env);
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager));
+    let client = PoliciesClient::new(&env, &policies_id);
+
+    let blend = Address::generate(&env);
+    let deposit_fn = Symbol::new(&env, "deposit");
+    let terms = make_pooled_spend_limit_terms(&env, &[(blend.clone(), deposit_fn.clone(), 2, 0)], 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[4u8; 32]);
+    let args = vec![&env, 0i128.into_val(&env), 0i128.into_val(&env), 500i128.into_val(&env)];
+    let context = make_context(&env, blend.clone(), deposit_fn.clone(), args);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| client.before_hook(&terms, &hash, &context)));
+    assert!(result.is_err());
+
+    env.as_contract(&policies_id, || {
+        assert!(!env.storage().persistent().has(&PolicyStateKey::PooledSpent(hash.clone())));
+    });
+}
+
+#[test]
+fn test_unauthorized_caller_cannot_reset_accounting() {
+    let env = Env::default();
+    let manager = env.register(ManagerStub, ());
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager));
+    let manager_client = ManagerStubClient::new(&env, &manager);
+    let external_client = PoliciesClient::new(&env, &policies_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 100u64);
+    let hash = BytesN::from_array(&env, &[5u8; 32]);
+    let args = vec![&env, token.clone().into_val(&env), token.clone().into_val(&env), 900i128.into_val(&env)];
+    let context = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
+
+    // Legitimate spend via the real manager.
+    manager_client.forward(&policies_id, &Symbol::new(&env, "before_hook"), &terms, &hash, &context);
+
+    // An external caller trying to re-run the hook to force a period rollover (which would
+    // zero `current_spent`) must be rejected before it ever reaches the accounting logic.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        external_client.before_hook(&terms, &hash, &context)
+    }));
+    assert!(result.is_err());
+
+    env.as_contract(&policies_id, || {
+        let spent: i128 = env.storage().persistent().get(&PolicyStateKey::Spent(hash.clone())).unwrap();
+        assert_eq!(spent, 900i128, "unauthorized call must not have reset accumulated spend");
+    });
 }

@@ -54,10 +54,11 @@ async function main() {
     const delegationManagerId = managerMatch[1];
     console.log(`DelegationManager Contract ID: ${delegationManagerId}`);
 
-    // 5. Deploy policies
+    // 5. Deploy policies. `--delegation_manager` is a constructor arg: only this
+    // DelegationManager may invoke the policy hooks (see P0 fix in contracts/soroban/contracts/policies).
     console.log('Deploying Policies...');
     const policiesStdout = runCommand(
-      `stellar contract deploy --wasm target/wasm32v1-none/release/policies.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
+      `stellar contract deploy --wasm target/wasm32v1-none/release/policies.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- --delegation_manager ${delegationManagerId}`,
       'contracts/soroban'
     );
     const policiesMatch = policiesStdout.match(/(C[A-Z0-9]{55})/);
