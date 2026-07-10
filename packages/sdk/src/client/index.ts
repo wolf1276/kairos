@@ -1,4 +1,4 @@
-import { Address, Keypair, rpc, Transaction, TransactionBuilder, xdr, Account, StrKey } from '@stellar/stellar-sdk';
+import { Address, Keypair, Operation, rpc, Transaction, TransactionBuilder, xdr, Account, StrKey } from '@stellar/stellar-sdk';
 import { NETWORKS } from '../config';
 import { DelegationModule } from '../delegation';
 import { EventsModule } from '../events';
@@ -124,14 +124,14 @@ export class KairosClient {
    */
   async simulateTx(tx: Transaction): Promise<rpc.Api.SimulateTransactionResponse> {
     const response = await this.rpcProvider.simulateTransaction(tx);
-    if (rpc.Api.isSimulationSuccess(response)) {
-      return response;
-    }
     if (rpc.Api.isSimulationRestore(response)) {
       throw new TransactionSimulationError(
         'Transaction simulation requires storage restoration (restore transaction needed)',
         response
       );
+    }
+    if (rpc.Api.isSimulationSuccess(response)) {
+      return response;
     }
     throw new TransactionSimulationError(
       `Transaction simulation failed: ${response.error}`,
@@ -140,44 +140,112 @@ export class KairosClient {
   }
 
   /**
-   * Submits a transaction to the network.
+   * Builds, signs, and submits a RestoreFootprint transaction using the
+   * preamble from a restore response, then waits for it to complete.
    */
-  async submitTransaction(tx: Transaction, signer: Signer): Promise<TransactionResult> {
-    const localTx = TransactionBuilder.fromXDR(tx.toXDR(), this.networkPassphrase) as Transaction;
+  private async _restoreFootprint(
+    restoreResponse: rpc.Api.SimulateTransactionRestoreResponse,
+    signer: Signer
+  ): Promise<TransactionResult> {
+    const source = await this.waitForAccount(signer.publicKey());
+    const restoreTx = new TransactionBuilder(source, {
+      fee: restoreResponse.restorePreamble.minResourceFee,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .setSorobanData(restoreResponse.restorePreamble.transactionData.build())
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(30)
+      .build();
 
-    // 1. Simulate the transaction to auto-fill footprints and resource fees
-    let simRes: rpc.Api.SimulateTransactionSuccessResponse;
-    try {
-      const sim = await this.simulateTx(localTx);
-      simRes = sim as rpc.Api.SimulateTransactionSuccessResponse;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Simulation failed';
-      return {
-        hash: '',
-        status: 'FAILED',
-        error: msg,
-      };
-    }
+    await signTransaction(restoreTx, signer);
 
-    // 2. Assemble the transaction using the simulation result
-    const assembled = rpc.assembleTransaction(localTx, simRes);
-    let finalTx = assembled.build();
-
-    // 3. Sign the transaction
-    await signTransaction(finalTx, signer);
-
-    // 4. Send the transaction
-    const sendResponse = await this.rpcProvider.sendTransaction(finalTx);
+    const sendResponse = await this.rpcProvider.sendTransaction(restoreTx);
     if (sendResponse.status === 'ERROR') {
       return {
         hash: sendResponse.hash,
         status: 'FAILED',
-        error: `Send transaction failed with status: ERROR`,
+        error: 'Restore transaction failed',
       };
     }
 
-    // 5. Poll the transaction for final result
     return this.pollTransaction(sendResponse.hash);
+  }
+
+  /**
+   * Submits a transaction to the network. If simulation indicates archived
+   * ledger entries need restoration, automatically builds and submits a
+   * RestoreFootprint transaction, then retries the original call.
+   */
+  async submitTransaction(tx: Transaction, signer: Signer): Promise<TransactionResult> {
+    let localTx = TransactionBuilder.fromXDR(tx.toXDR(), this.networkPassphrase) as Transaction;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      // 1. Simulate the transaction to auto-fill footprints and resource fees
+      let simRes: rpc.Api.SimulateTransactionSuccessResponse;
+      try {
+        const sim = await this.simulateTx(localTx);
+        simRes = sim as rpc.Api.SimulateTransactionSuccessResponse;
+      } catch (err) {
+        if (attempt === 0 && err instanceof TransactionSimulationError) {
+          const restoreRes = (err as TransactionSimulationError).details as
+            | rpc.Api.SimulateTransactionRestoreResponse
+            | undefined;
+          if (restoreRes && rpc.Api.isSimulationRestore(restoreRes)) {
+            const restoreResult = await this._restoreFootprint(restoreRes, signer);
+            if (restoreResult.status !== 'SUCCESS') {
+              return restoreResult;
+            }
+            // Restore advanced the source account's sequence — rebuild with a
+            // fresh account so the retry uses the correct (incremented) sequence.
+            const freshAcct = await this.waitForAccount(signer.publicKey());
+            const envelope = localTx.toEnvelope();
+            const ops = envelope.v1().tx().operations();
+            const builder = new TransactionBuilder(freshAcct, {
+              fee: localTx.fee,
+              networkPassphrase: this.networkPassphrase,
+            });
+            for (const op of ops) {
+              builder.addOperation(op);
+            }
+            builder.setTimeout(30);
+            localTx = builder.build() as Transaction;
+            continue;
+          }
+        }
+        const msg = err instanceof Error ? err.message : 'Simulation failed';
+        return {
+          hash: '',
+          status: 'FAILED',
+          error: msg,
+        };
+      }
+
+      // 2. Assemble the transaction using the simulation result
+      const assembled = rpc.assembleTransaction(localTx, simRes);
+      let finalTx = assembled.build();
+
+      // 3. Sign the transaction
+      await signTransaction(finalTx, signer);
+
+      // 4. Send the transaction
+      const sendResponse = await this.rpcProvider.sendTransaction(finalTx);
+      if (sendResponse.status === 'ERROR') {
+        return {
+          hash: sendResponse.hash,
+          status: 'FAILED',
+          error: `Send transaction failed with status: ERROR`,
+        };
+      }
+
+      // 5. Poll the transaction for final result
+      return this.pollTransaction(sendResponse.hash);
+    }
+
+    return {
+      hash: '',
+      status: 'FAILED',
+      error: 'Exceeded maximum retry attempts',
+    };
   }
 
   /**
