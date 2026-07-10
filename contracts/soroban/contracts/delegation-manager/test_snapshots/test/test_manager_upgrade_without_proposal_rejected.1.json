@@ -6,16 +6,13 @@
   "auth": [
     [
       [
-        "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
               "function_name": "__constructor",
               "args": [
-                {
-                  "address": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O"
-                },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 }
@@ -25,7 +22,8 @@
           "sub_invocations": []
         }
       ]
-    ]
+    ],
+    []
   ],
   "ledger": {
     "protocol_version": 22,
@@ -40,7 +38,7 @@
       [
         {
           "contract_data": {
-            "contract": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 801925984706572462
@@ -55,7 +53,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
@@ -97,7 +95,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "DelegationManager"
+                              "symbol": "Owner"
                             }
                           ]
                         },
@@ -109,12 +107,12 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Owner"
+                              "symbol": "Paused"
                             }
                           ]
                         },
                         "val": {
-                          "address": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O"
+                          "bool": false
                         }
                       }
                     ]

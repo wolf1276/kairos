@@ -5,11 +5,16 @@ use soroban_sdk::{
 
 const BUMP_THRESHOLD: u32 = 10000;
 const BUMP_LIMIT: u32 = 100000;
+// P0-3 fix: upgrade timelock. Compromised/malicious admin key can no longer swap the
+// deployed wasm in the same transaction that proposes it — there must be a 3-day gap
+// during which the pending hash is observable on-chain and the upgrade can be cancelled.
+const UPGRADE_DELAY_SECS: u64 = 259200; // 3 days
 
 #[contracttype]
 pub enum DataKey {
     Admin,
     SmartWallet(Address),
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -19,6 +24,8 @@ pub enum RegistryError {
     NotAuthorized = 1,
     AlreadyInitialized = 2,
     AlreadyRegistered = 3,
+    NoPendingUpgrade = 4,
+    TimelockNotElapsed = 5,
 }
 
 #[contract]
@@ -68,10 +75,40 @@ impl Registry {
         env.storage().persistent().get(&key)
     }
 
-    // Admin-gated contract upgrade
+    // Admin-gated: queue an upgrade to take effect after UPGRADE_DELAY_SECS.
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        let unlock_at = env.ledger().timestamp() + UPGRADE_DELAY_SECS;
+        env.storage().instance().set(&DataKey::PendingUpgrade, &(new_wasm_hash, unlock_at));
+    }
+
+    // Admin-gated: cancel a queued upgrade before it executes.
+    pub fn cancel_upgrade(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        admin.require_auth();
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+    }
+
+    // Admin-gated contract upgrade. Only executes a hash that was proposed via
+    // propose_upgrade() at least UPGRADE_DELAY_SECS ago.
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
         admin.require_auth();
+
+        let (pending_hash, unlock_at): (BytesN<32>, u64) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_with_error!(&env, RegistryError::NoPendingUpgrade));
+        if pending_hash != new_wasm_hash {
+            panic_with_error!(&env, RegistryError::NoPendingUpgrade);
+        }
+        if env.ledger().timestamp() < unlock_at {
+            panic_with_error!(&env, RegistryError::TimelockNotElapsed);
+        }
+
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 }

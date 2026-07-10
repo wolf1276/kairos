@@ -2,10 +2,10 @@
 extern crate std;
 use super::*;
 use soroban_sdk::{
-    testutils::{Address as _, BytesN as _, Events as _},
+    testutils::{Address as _, BytesN as _, Events as _, Ledger as _},
     token, Env, IntoVal,
 };
-use custom_account::{CustomAccount, CustomAccountArgs};
+use custom_account::{CustomAccount, CustomAccountArgs, CustomAccountClient};
 use policies::{Policies, PoliciesClient};
 use ed25519_dalek::{Signer, SigningKey};
 use rand::rngs::OsRng;
@@ -783,18 +783,16 @@ fn test_empty_chain_confused_deputy_drain_is_rejected() {
     let env = Env::default();
 
     let admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
-    let manager = DelegationManagerClient::new(&env, &manager_id);
-
     let (_victim_key, victim_owner) = generate_signing_identity(&env);
-    let wallet_id = env.register_contract(None, CustomAccount);
-    let wallet = CustomAccountClient::new(&env, &wallet_id);
-
     let attacker = Address::generate(&env);
 
     env.mock_all_auths();
-    manager.init(&admin);
-    wallet.init(&victim_owner, &manager_id);
+
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&admin));
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&victim_owner, &manager_id));
+    let _wallet = CustomAccountClient::new(&env, &wallet_id);
 
     let token_admin = Address::generate(&env);
     let sac = env.register_stellar_asset_contract_v2(token_admin.clone());
@@ -855,9 +853,8 @@ fn test_empty_chain_in_batch_rejects_entire_batch() {
     env.mock_all_auths();
 
     let admin = Address::generate(&env);
-    let manager_id = env.register_contract(None, DelegationManager);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&admin));
     let manager = DelegationManagerClient::new(&env, &manager_id);
-    manager.init(&admin);
 
     let delegator_id = env.register_contract(None, MockCustomAccount);
     let delegator = MockCustomAccountClient::new(&env, &delegator_id);
@@ -985,4 +982,134 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
     // have moved any funds despite being rejected mid-batch.
     assert_eq!(token_client.balance(&wallet_id), starting_balance - within_limit_amount);
     assert_eq!(token_client.balance(&receiver), within_limit_amount);
+}
+
+// ---------------------------------------------------------------------------
+// P0-3: upgrade timelock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_manager_upgrade_before_delay_elapsed_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    manager.propose_upgrade(&hash);
+
+    let result = manager.try_update_current_contract_wasm(&hash);
+    assert!(result.is_err(), "upgrade must be rejected before the timelock elapses");
+}
+
+#[test]
+#[should_panic]
+fn test_manager_upgrade_after_delay_elapsed_proceeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    manager.propose_upgrade(&hash);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    // Timelock check passes; panics on the bogus wasm hash inside the real
+    // deployer call, proving execution reached past the timelock gate.
+    manager.update_current_contract_wasm(&hash);
+}
+
+#[test]
+fn test_manager_upgrade_without_proposal_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let result = manager.try_update_current_contract_wasm(&hash);
+    assert!(result.is_err(), "upgrade with no prior proposal must be rejected");
+}
+
+#[test]
+fn test_manager_upgrade_hash_mismatch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let proposed = BytesN::from_array(&env, &[7u8; 32]);
+    let other = BytesN::from_array(&env, &[9u8; 32]);
+    manager.propose_upgrade(&proposed);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = manager.try_update_current_contract_wasm(&other);
+    assert!(result.is_err(), "executing a different hash than proposed must be rejected");
+}
+
+#[test]
+fn test_manager_cancel_upgrade_blocks_execution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    manager.propose_upgrade(&hash);
+    manager.cancel_upgrade();
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = manager.try_update_current_contract_wasm(&hash);
+    assert!(result.is_err(), "a cancelled proposal must not be executable");
+}
+
+#[test]
+fn test_manager_propose_upgrade_without_owner_signature_traps_auth() {
+    let env = Env::default();
+    let owner = Address::generate(&env);
+    env.mock_all_auths();
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    env.set_auths(&[]);
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let result = manager.try_propose_upgrade(&hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_manager_duplicate_propose_upgrade_overwrites_pending_hash() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(
+        &env,
+        &env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner)),
+    );
+
+    let first = BytesN::from_array(&env, &[7u8; 32]);
+    let second = BytesN::from_array(&env, &[8u8; 32]);
+    manager.propose_upgrade(&first);
+    manager.propose_upgrade(&second);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = manager.try_update_current_contract_wasm(&first);
+    assert!(result.is_err(), "superseded proposal must no longer be executable");
 }

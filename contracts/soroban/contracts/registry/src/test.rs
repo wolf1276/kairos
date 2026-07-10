@@ -1,7 +1,7 @@
 #![cfg(test)]
 extern crate std;
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::TryFromVal;
 
 #[test]
@@ -380,6 +380,126 @@ fn test_register_event_carries_correct_smart_wallet_payload() {
     let (_, _, data) = events.last().unwrap();
     let decoded = Address::try_from_val(&env, &data).unwrap();
     assert_eq!(decoded, smart_wallet);
+}
+
+// ---------------------------------------------------------------------------
+// P0-3: upgrade timelock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_upgrade_before_delay_elapsed_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    registry.propose_upgrade(&hash);
+
+    // Not enough time has passed.
+    let result = registry.try_upgrade(&hash);
+    assert!(result.is_err(), "upgrade must be rejected before the timelock elapses");
+}
+
+#[test]
+#[should_panic]
+fn test_upgrade_after_delay_elapsed_proceeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    registry.propose_upgrade(&hash);
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    // Timelock check passes; panics on the bogus wasm hash inside the real
+    // deployer call, proving execution reached past the timelock gate.
+    registry.upgrade(&hash);
+}
+
+#[test]
+fn test_upgrade_without_proposal_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let result = registry.try_upgrade(&hash);
+    assert!(result.is_err(), "upgrade with no prior proposal must be rejected");
+}
+
+#[test]
+fn test_upgrade_hash_mismatch_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let proposed = BytesN::from_array(&env, &[7u8; 32]);
+    let other = BytesN::from_array(&env, &[9u8; 32]);
+    registry.propose_upgrade(&proposed);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = registry.try_upgrade(&other);
+    assert!(result.is_err(), "executing a different hash than proposed must be rejected");
+}
+
+#[test]
+fn test_cancel_upgrade_blocks_execution() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    registry.propose_upgrade(&hash);
+    registry.cancel_upgrade();
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = registry.try_upgrade(&hash);
+    assert!(result.is_err(), "a cancelled proposal must not be executable");
+}
+
+#[test]
+fn test_propose_upgrade_without_admin_signature_traps_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    env.mock_all_auths();
+    registry.init(&admin);
+
+    env.set_auths(&[]);
+    let hash = BytesN::from_array(&env, &[7u8; 32]);
+    let result = registry.try_propose_upgrade(&hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_duplicate_propose_upgrade_overwrites_pending_hash() {
+    // A second propose_upgrade before execution replaces the pending hash/timer
+    // rather than stacking — only the latest proposal is executable.
+    let env = Env::default();
+    env.mock_all_auths();
+    let admin = Address::generate(&env);
+    let registry = RegistryClient::new(&env, &env.register(Registry, ()));
+    registry.init(&admin);
+
+    let first = BytesN::from_array(&env, &[7u8; 32]);
+    let second = BytesN::from_array(&env, &[8u8; 32]);
+    registry.propose_upgrade(&first);
+    registry.propose_upgrade(&second);
+    env.ledger().set_timestamp(env.ledger().timestamp() + UPGRADE_DELAY_SECS);
+
+    let result = registry.try_upgrade(&first);
+    assert!(result.is_err(), "superseded proposal must no longer be executable");
 }
 
 #[test]

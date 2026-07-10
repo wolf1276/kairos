@@ -4,18 +4,16 @@
     "nonce": 0
   },
   "auth": [
+    [],
     [
       [
-        "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
         {
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "__constructor",
+              "function_name": "init",
               "args": [
-                {
-                  "address": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O"
-                },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 }
@@ -25,7 +23,27 @@
           "sub_invocations": []
         }
       ]
-    ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "function_name": "propose_upgrade",
+              "args": [
+                {
+                  "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
+    []
   ],
   "ledger": {
     "protocol_version": 22,
@@ -40,7 +58,7 @@
       [
         {
           "contract_data": {
-            "contract": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 801925984706572462
@@ -55,10 +73,43 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
+      [
+        {
+          "contract_data": {
+            "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 5541220902715666415
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 5541220902715666415
                   }
                 },
                 "durability": "temporary",
@@ -97,7 +148,7 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "DelegationManager"
+                              "symbol": "Admin"
                             }
                           ]
                         },
@@ -109,12 +160,19 @@
                         "key": {
                           "vec": [
                             {
-                              "symbol": "Owner"
+                              "symbol": "PendingUpgrade"
                             }
                           ]
                         },
                         "val": {
-                          "address": "GAAMR2ISR4LQXYNRWGEQAWBQGTI2RRR6RU6WNT7EJQVQ3NEAU2PWAV7O"
+                          "vec": [
+                            {
+                              "bytes": "0707070707070707070707070707070707070707070707070707070707070707"
+                            },
+                            {
+                              "u64": 259200
+                            }
+                          ]
                         }
                       }
                     ]

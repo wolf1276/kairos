@@ -53,6 +53,7 @@ pub enum DataKey {
     Locked,
     WalletDelegation(Address, Address), // (delegator, delegate) -> active delegation hash; one per pair, so a wallet can delegate to multiple agents concurrently
     Policy(Address, u64),      // (delegator, policy_id) -> terms bytes, updatable in place
+    PendingUpgrade,
 }
 
 #[contracterror]
@@ -74,11 +75,16 @@ pub enum ManagerError {
     WalletAlreadyDelegated = 13,
     NoActiveDelegation = 14,
     EmptyChain = 15,
+    NoPendingUpgrade = 16,
+    TimelockNotElapsed = 17,
 }
 
 const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
 const BUMP_THRESHOLD: u32 = 10000;
 const BUMP_LIMIT: u32 = 100000;
+// P0-3 fix: upgrade timelock, mirrors registry's propose/execute split (see that
+// contract for rationale).
+const UPGRADE_DELAY_SECS: u64 = 259200; // 3 days
 
 #[contract]
 pub struct DelegationManager;
@@ -135,10 +141,40 @@ impl DelegationManager {
         env.storage().instance().get(&DataKey::Paused).unwrap_or(false)
     }
 
-    // Owner-gated contract upgrade
+    // Owner-gated: queue an upgrade to take effect after UPGRADE_DELAY_SECS.
+    pub fn propose_upgrade(env: Env, new_wasm_hash: BytesN<32>) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        let unlock_at = env.ledger().timestamp() + UPGRADE_DELAY_SECS;
+        env.storage().instance().set(&DataKey::PendingUpgrade, &(new_wasm_hash, unlock_at));
+    }
+
+    // Owner-gated: cancel a queued upgrade before it executes.
+    pub fn cancel_upgrade(env: Env) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+    }
+
+    // Owner-gated contract upgrade. Only executes a hash that was proposed via
+    // propose_upgrade() at least UPGRADE_DELAY_SECS ago.
     pub fn update_current_contract_wasm(env: Env, new_wasm_hash: BytesN<32>) {
         let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
         owner.require_auth();
+
+        let (pending_hash, unlock_at): (BytesN<32>, u64) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .unwrap_or_else(|| panic_with_error!(&env, ManagerError::NoPendingUpgrade));
+        if pending_hash != new_wasm_hash {
+            panic_with_error!(&env, ManagerError::NoPendingUpgrade);
+        }
+        if env.ledger().timestamp() < unlock_at {
+            panic_with_error!(&env, ManagerError::TimelockNotElapsed);
+        }
+
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
         env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
