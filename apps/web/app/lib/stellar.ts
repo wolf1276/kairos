@@ -36,6 +36,22 @@ const SOROBAN_RPC_URLS: Record<string, string> = {
   [Networks.FUTURENET]: "https://rpc-futurenet.stellar.org",
 };
 
+/** Looks up the Horizon URL for a network passphrase — throws instead of silently defaulting to
+ *  testnet if the passphrase isn't one we recognize. */
+function horizonUrlFor(networkPassphrase: string): string {
+  const url = HORIZON_URLS[networkPassphrase];
+  if (!url) throw new Error(`No Horizon URL configured for network: ${networkPassphrase}`);
+  return url;
+}
+
+/** Looks up the Soroban RPC URL for a network passphrase — throws instead of silently defaulting
+ *  to testnet if the passphrase isn't one we recognize. */
+function sorobanRpcUrlFor(networkPassphrase: string): string {
+  const url = SOROBAN_RPC_URLS[networkPassphrase];
+  if (!url) throw new Error(`No Soroban RPC URL configured for network: ${networkPassphrase}`);
+  return url;
+}
+
 // ── Types ──
 
 export interface WalletState {
@@ -174,7 +190,7 @@ async function fetchBalance(
   networkPassphrase: string
 ): Promise<string> {
   const horizonUrl =
-    HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+    horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, {
     allowHttp: !horizonUrl.startsWith("https"),
   });
@@ -234,12 +250,31 @@ export async function connectWallet(address: string): Promise<ConnectResult> {
     };
   }
 
-  const networkPassphrase = net.networkPassphrase || Networks.TESTNET;
-  const networkKey =
-    Object.entries(Networks).find(
-      ([, v]) => v === networkPassphrase
-    )?.[0] ?? "TESTNET";
+  if (!net.networkPassphrase) {
+    return {
+      success: false,
+      error: { kind: "network-error", message: "Wallet did not report a network" },
+    };
+  }
+  const networkPassphrase = net.networkPassphrase;
+  const networkKey = Object.entries(Networks).find(([, v]) => v === networkPassphrase)?.[0];
+  if (!networkKey) {
+    return {
+      success: false,
+      error: {
+        kind: "network-error",
+        message: `Unrecognized wallet network passphrase: ${networkPassphrase}`,
+      },
+    };
+  }
   const isTestnet = networkKey === "TESTNET" || networkKey === "FUTURENET";
+  const sorobanRpcUrl = SOROBAN_RPC_URLS[networkPassphrase];
+  if (!sorobanRpcUrl) {
+    return {
+      success: false,
+      error: { kind: "network-error", message: `No Soroban RPC configured for ${networkKey}` },
+    };
+  }
 
   // 3. Fetch balance
   const balance = await fetchBalance(address, networkPassphrase);
@@ -250,7 +285,7 @@ export async function connectWallet(address: string): Promise<ConnectResult> {
       address,
       network: networkKey,
       networkPassphrase,
-      sorobanRpcUrl: SOROBAN_RPC_URLS[networkPassphrase] || SOROBAN_RPC_URLS[Networks.TESTNET],
+      sorobanRpcUrl,
       balance,
       isTestnet,
     },
@@ -395,8 +430,7 @@ export async function withdrawFromSmartWallet(
   const recipient = destination ?? ownerAddress;
   const rpcUrl =
     sorobanRpcUrl ||
-    SOROBAN_RPC_URLS[networkPassphrase] ||
-    SOROBAN_RPC_URLS[Networks.TESTNET];
+    sorobanRpcUrlFor(networkPassphrase);
 
   const server = new rpc.Server(rpcUrl, {
     allowHttp: !rpcUrl.startsWith("https"),
@@ -516,8 +550,7 @@ export async function delegateXLM(
   if (StrKey.isValidContract(destination)) {
     const rpcUrl =
       sorobanRpcUrl ||
-      SOROBAN_RPC_URLS[networkPassphrase] ||
-      SOROBAN_RPC_URLS[Networks.TESTNET];
+      sorobanRpcUrlFor(networkPassphrase);
     return transferXLMToContract(
       sourceAddress,
       destination,
@@ -528,7 +561,7 @@ export async function delegateXLM(
   }
 
   const horizonUrl =
-    HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+    horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, {
     allowHttp: !horizonUrl.startsWith("https"),
   });
@@ -588,8 +621,7 @@ export async function fetchSmartWalletTokenBalance(
 ): Promise<string> {
   const rpcUrl =
     sorobanRpcUrl ||
-    SOROBAN_RPC_URLS[networkPassphrase] ||
-    SOROBAN_RPC_URLS[Networks.TESTNET];
+    sorobanRpcUrlFor(networkPassphrase);
   const server = new rpc.Server(rpcUrl, {
     allowHttp: !rpcUrl.startsWith("https"),
   });
@@ -643,6 +675,25 @@ export async function fetchSmartWalletBalance(
 export const TESTNET_USDC_ISSUER =
   "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
+/** Mainnet USDC issuer, set via env once a mainnet deployment exists — never hardcoded here (see
+ *  usdcIssuerForNetwork below, which fails loudly on mainnet if this isn't configured, rather
+ *  than silently quoting/reading balances against the testnet issuer). */
+const MAINNET_USDC_ISSUER = process.env.NEXT_PUBLIC_MAINNET_USDC_ISSUER;
+
+/** Picks the right USDC issuer for whatever network the connected wallet is actually on — never
+ *  silently falls back to the testnet issuer for a mainnet wallet. */
+export function usdcIssuerForNetwork(networkPassphrase: string): string {
+  if (networkPassphrase === Networks.PUBLIC) {
+    if (!MAINNET_USDC_ISSUER) {
+      throw new Error(
+        "Mainnet USDC issuer is not configured (set NEXT_PUBLIC_MAINNET_USDC_ISSUER)."
+      );
+    }
+    return MAINNET_USDC_ISSUER;
+  }
+  return TESTNET_USDC_ISSUER;
+}
+
 export interface SwapAsset {
   code: string;
   issuer?: string; // omitted for native XLM
@@ -663,7 +714,7 @@ export async function fetchAccountBalances(
   address: string,
   networkPassphrase: string
 ): Promise<AccountBalance[]> {
-  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const horizonUrl = horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, {
     allowHttp: !horizonUrl.startsWith("https"),
   });
@@ -701,7 +752,7 @@ export async function fetchOrderBookQuote(
   buying: SwapAsset,
   networkPassphrase: string
 ): Promise<OrderBookQuote> {
-  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const horizonUrl = horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, {
     allowHttp: !horizonUrl.startsWith("https"),
   });
@@ -784,7 +835,7 @@ export async function addTrustline(
   networkPassphrase: string
 ): Promise<string> {
   if (!asset.issuer) throw new Error("Native XLM does not need a trustline");
-  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const horizonUrl = horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
 
   const account = await loadAccountForSwap(server, sourceAddress);
@@ -839,7 +890,7 @@ export async function executeSwap(params: {
   networkPassphrase: string;
 }): Promise<SwapResult> {
   const { sourceAddress, sendAsset, sendAmount, destAsset, destMin, networkPassphrase } = params;
-  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const horizonUrl = horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
 
   const account = await loadAccountForSwap(server, sourceAddress);
@@ -876,7 +927,7 @@ export async function executeSwapStrictReceive(params: {
   networkPassphrase: string;
 }): Promise<SwapResult> {
   const { sourceAddress, sendAsset, sendMax, destAsset, destAmount, networkPassphrase } = params;
-  const horizonUrl = HORIZON_URLS[networkPassphrase] ?? HORIZON_URLS[Networks.TESTNET];
+  const horizonUrl = horizonUrlFor(networkPassphrase);
   const server = new Horizon.Server(horizonUrl, { allowHttp: !horizonUrl.startsWith("https") });
 
   const account = await loadAccountForSwap(server, sourceAddress);

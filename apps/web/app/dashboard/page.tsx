@@ -10,7 +10,7 @@ import { useStellarBalances } from "@/app/hooks/useStellarBalances";
 import { useSmartWalletBalances } from "@/app/hooks/useSmartWalletBalances";
 import { useProtocolAllocations } from "@/app/hooks/useProtocolAllocations";
 import { usePortfolioSnapshots, type PortfolioSnapshot } from "@/app/hooks/usePortfolioSnapshots";
-import { fetchOrderBookQuote, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
+import { fetchOrderBookQuote, usdcIssuerForNetwork } from "@/app/lib/stellar";
 import { SmartWalletPanel } from "@/app/components/SmartWalletPanel";
 
 const PANEL_CLS =
@@ -320,13 +320,21 @@ export default function DashboardOverview() {
   useEffect(() => {
     if (!wallet?.networkPassphrase) return;
     let cancelled = false;
-    fetchOrderBookQuote({ code: "XLM" }, { code: "USDC", issuer: TESTNET_USDC_ISSUER }, wallet.networkPassphrase)
-      .then((quote) => {
-        if (!cancelled) setXlmUsdPrice(quote.price);
-      })
-      .catch(() => {
-        if (!cancelled) setXlmUsdPrice(null);
-      });
+    try {
+      fetchOrderBookQuote(
+        { code: "XLM" },
+        { code: "USDC", issuer: usdcIssuerForNetwork(wallet.networkPassphrase) },
+        wallet.networkPassphrase
+      )
+        .then((quote) => {
+          if (!cancelled) setXlmUsdPrice(quote.price);
+        })
+        .catch(() => {
+          if (!cancelled) setXlmUsdPrice(null);
+        });
+    } catch {
+      setXlmUsdPrice(null);
+    }
     return () => {
       cancelled = true;
     };

@@ -59,7 +59,7 @@ The problem is that **trust lives in the wrong place** — the bot holds your ke
 | **Strategy Engine** | A registry of deterministic strategies (DCA, trend/mean-reversion, momentum, breakout, allocation). |
 | **Memory Engine** | Episodic, semantic, and working memory with relevance retrieval and experience intelligence. |
 | **Learning Engine** | Cohort-based learning analytics over trade outcomes (win rate, PnL, confidence, memory influence). |
-| **Protocol Layer** | Pluggable protocol adapters (Aquarius, Blend, Phoenix, Soroswap) with deterministic routing and quote validation. |
+| **Protocol Layer** | Pluggable protocol adapters (Blend, Soroswap) with deterministic routing and quote validation. |
 | **Autonomous Runtime** | Orchestrates the full decision pipeline on a schedule, running against a deterministic paper execution environment. |
 | **Benchmark Framework** | Reproducible, versioned harness that scores providers and models across scenarios with regression tracking. |
 | **Dashboard** | Next.js console for portfolio, agents, delegations, and a live Context Layer inspector. |

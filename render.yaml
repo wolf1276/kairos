@@ -44,8 +44,11 @@ services:
         fromDatabase:
           name: kairos-smart-wallets
           property: connectionString
+      # 'testnet' or 'mainnet' (backend/src/config.ts's getNetwork()). Left unset here
+      # deliberately — set per-environment in the Render dashboard, same pattern as
+      # ALLOWED_ORIGIN/contract IDs below. Defaults to testnet if left unset there too.
       - key: STELLAR_NETWORK
-        value: testnet
+        sync: false
       # Must equal the deployed Vercel frontend's exact origin (scheme + host, no trailing
       # slash) — e.g. https://kairos.vercel.app. Left blank here deliberately (set it in the
       # Render dashboard). CORS fails closed: when unset, getAllowedOrigin() (backend/src/config.ts)

@@ -1,8 +1,6 @@
 // Public surface of the Execution Engine (Phase 7). Callers import only from here.
 export { executeRoute } from './engine.js';
-export { createAquariusRealTransactionProvider } from './aquariusProvider.js';
 export { createSoroswapRealTransactionProvider } from './soroswapProvider.js';
-export { createPhoenixRealTransactionProvider } from './phoenixProvider.js';
 export { createBlendRealTransactionProvider } from './blendProvider.js';
 export { computeSyntheticResourceEstimate, encodeSyntheticXdr } from './resourceEstimate.js';
 export { hashExecutionResult, recomputeTransactionHash, hashResourceEstimate } from './hashing.js';
@@ -21,9 +19,7 @@ export {
 } from './rules.js';
 export { EXECUTION_ENGINE_VERSION, EXECUTION_RESULT_STATUSES, EXECUTION_FAILURE_REASONS, DATA_SOURCES, DEFAULT_RETRY_POLICY } from './types.js';
 
-export type { AquariusRealProviderOptions } from './aquariusProvider.js';
 export type { SoroswapRealProviderOptions } from './soroswapProvider.js';
-export type { PhoenixRealProviderOptions } from './phoenixProvider.js';
 export type { BlendRealProviderOptions } from './blendProvider.js';
 export type { RuleFailure } from './rules.js';
 export type { RetryOutcome, RetryFailure } from './retry.js';

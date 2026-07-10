@@ -6,6 +6,14 @@ function readContractId(key: string): string {
   return val;
 }
 
+function getNetwork(): "testnet" | "mainnet" {
+  const network = process.env.STELLAR_NETWORK || "testnet";
+  if (network !== "testnet" && network !== "mainnet") {
+    throw new Error(`Invalid STELLAR_NETWORK: ${network}`);
+  }
+  return network;
+}
+
 export function getContractConfig() {
   return {
     delegationManager: readContractId("DELEGATION_MANAGER_CONTRACT_ID"),
@@ -26,7 +34,7 @@ export function getKairosClient(): KairosClient {
   if (!sdkClient) {
     const config = getContractConfig();
     sdkClient = new KairosClient({
-      network: "testnet",
+      network: getNetwork(),
       contracts: {
         delegationManager: config.delegationManager,
         policyEngine: config.policyEngine,

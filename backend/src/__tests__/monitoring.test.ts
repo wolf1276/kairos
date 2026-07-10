@@ -175,13 +175,13 @@ describe('buildMonitoringSnapshot — protocol health', () => {
   it('reports UNAVAILABLE (never a fabricated status) when an adapter\'s health() throws', async () => {
     const registry = new ProtocolRegistry();
     registry.register(
-      fakeAdapter('phoenix', async () => {
+      fakeAdapter('blend', async () => {
         throw new Error('rpc down');
       })
     );
 
     const snapshot = await buildMonitoringSnapshot({ registry });
-    expect(snapshot.protocolHealth).toEqual([{ protocol: 'phoenix', status: 'UNAVAILABLE' }]);
+    expect(snapshot.protocolHealth).toEqual([{ protocol: 'blend', status: 'UNAVAILABLE' }]);
   });
 });
 

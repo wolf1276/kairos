@@ -1,0 +1,85 @@
+name: Release
+
+# Builds release WASMs and every workspace's build/test suite, then uploads the WASMs + their
+# SHA256 hashes as artifacts. Does NOT deploy to any network — mainnet deployment is a manual,
+# operator-run step (scripts/deploy-mainnet.ts, see docs/MAINNET_RUNBOOK.md).
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  contracts:
+    name: Contracts (build + test + release WASMs)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts/soroban
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - run: cargo test --workspace
+      - name: Build release WASMs
+        run: stellar contract build || cargo build --release --target wasm32-unknown-unknown --workspace
+      - name: Compute WASM SHA256 hashes
+        run: |
+          find target -path "*/release/*.wasm" -exec sha256sum {} \; | tee wasm-sha256.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contract-wasms
+          path: |
+            contracts/soroban/target/**/release/*.wasm
+            contracts/soroban/wasm-sha256.txt
+
+  sdk:
+    name: SDK (build + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @wolf1276/kairos-sdk build
+      - run: pnpm --filter @wolf1276/kairos-sdk test
+
+  backend:
+    name: Backend (test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @wolf1276/kairos-agent-backend test
+
+  app:
+    name: App (build + lint + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @wolf1276/kairos-sdk build
+      - run: pnpm --filter app build
+      - name: Lint
+        working-directory: apps/web
+        run: pnpm eslint . --ext .ts,.tsx --max-warnings 10
+      - name: Test
+        working-directory: apps/web
+        run: pnpm vitest run

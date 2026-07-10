@@ -6,7 +6,7 @@
   "auth": [
     [
       [
-        "GAKH3OQVM42MVMLMYTNLYDZKBJIY2JXS7L7TX6GNBZJR6IUFRJF7N4X5",
+        "GDJSOI4WVDK2YK7IK4AR34KYKYMKN3INAQMHXDZ7C2UODN7GVVBJORTH",
         {
           "function": {
             "contract_fn": {
@@ -14,7 +14,7 @@
               "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GAKH3OQVM42MVMLMYTNLYDZKBJIY2JXS7L7TX6GNBZJR6IUFRJF7N4X5"
+                  "address": "GDJSOI4WVDK2YK7IK4AR34KYKYMKN3INAQMHXDZ7C2UODN7GVVBJORTH"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -40,7 +40,7 @@
       [
         {
           "contract_data": {
-            "contract": "GAKH3OQVM42MVMLMYTNLYDZKBJIY2JXS7L7TX6GNBZJR6IUFRJF7N4X5",
+            "contract": "GDJSOI4WVDK2YK7IK4AR34KYKYMKN3INAQMHXDZ7C2UODN7GVVBJORTH",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 801925984706572462
@@ -55,7 +55,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GAKH3OQVM42MVMLMYTNLYDZKBJIY2JXS7L7TX6GNBZJR6IUFRJF7N4X5",
+                "contract": "GDJSOI4WVDK2YK7IK4AR34KYKYMKN3INAQMHXDZ7C2UODN7GVVBJORTH",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 801925984706572462
@@ -114,7 +114,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GAKH3OQVM42MVMLMYTNLYDZKBJIY2JXS7L7TX6GNBZJR6IUFRJF7N4X5"
+                          "address": "GDJSOI4WVDK2YK7IK4AR34KYKYMKN3INAQMHXDZ7C2UODN7GVVBJORTH"
                         }
                       }
                     ]

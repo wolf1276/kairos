@@ -1,4 +1,4 @@
-import { Address, Keypair, rpc, Transaction, TransactionBuilder, xdr, Account, StrKey } from '@stellar/stellar-sdk';
+import { Address, BASE_FEE, Keypair, Operation, rpc, Transaction, TransactionBuilder, xdr, Account, StrKey } from '@stellar/stellar-sdk';
 import { NETWORKS } from '../config';
 import { DelegationModule } from '../delegation';
 import { EventsModule } from '../events';
@@ -143,11 +143,25 @@ export class KairosClient {
    * Submits a transaction to the network.
    */
   async submitTransaction(tx: Transaction, signer: Signer): Promise<TransactionResult> {
-    const localTx = TransactionBuilder.fromXDR(tx.toXDR(), this.networkPassphrase) as Transaction;
+    let localTx = TransactionBuilder.fromXDR(tx.toXDR(), this.networkPassphrase) as Transaction;
 
     // 1. Simulate the transaction to auto-fill footprints and resource fees
     let simRes: rpc.Api.SimulateTransactionSuccessResponse;
     try {
+      // A touched ledger entry (smart-wallet instance, SAC balance, delegation storage) can
+      // have its TTL expire from disuse and get archived. Simulation still reports "success"
+      // in that case but also returns a `restorePreamble`; submitting the tx as-is fails
+      // on-chain with an archived-entry error, and every retry re-simulates to the same
+      // archived state — so without restoring first, the caller (e.g. a live agent tick) is
+      // stuck permanently. Restore the entries, then rebuild against live state.
+      const rawSim = await this.rpcProvider.simulateTransaction(localTx);
+      if (rpc.Api.isSimulationRestore(rawSim)) {
+        const restore = await this.restoreArchivedFootprint(localTx, rawSim.restorePreamble, signer);
+        if (restore.status !== 'SUCCESS') return restore;
+        // The restore tx consumed a sequence number from the source account, so rebuild the
+        // original tx with a fresh sequence before re-simulating and submitting for real.
+        localTx = await this.rebuildWithFreshSequence(localTx);
+      }
       const sim = await this.simulateTx(localTx);
       simRes = sim as rpc.Api.SimulateTransactionSuccessResponse;
     } catch (err) {
@@ -178,6 +192,54 @@ export class KairosClient {
 
     // 5. Poll the transaction for final result
     return this.pollTransaction(sendResponse.hash);
+  }
+
+  /**
+   * Submits a `restoreFootprint` transaction for the ledger entries a prior simulation flagged
+   * as archived, signed by the same account that sources the original transaction. Returns the
+   * (non-SUCCESS) result on failure so the caller can bail out instead of submitting a tx that
+   * would fail on-chain.
+   */
+  private async restoreArchivedFootprint(
+    tx: Transaction,
+    restorePreamble: rpc.Api.SimulateTransactionRestoreResponse['restorePreamble'],
+    signer: Signer
+  ): Promise<TransactionResult> {
+    const source = await this.getAccount(tx.source);
+    const restoreTx = new TransactionBuilder(source, {
+      fee: String(Number(BASE_FEE) + Number(restorePreamble.minResourceFee)),
+      networkPassphrase: this.networkPassphrase,
+    })
+      .setSorobanData(restorePreamble.transactionData.build())
+      .addOperation(Operation.restoreFootprint({}))
+      .setTimeout(30)
+      .build();
+
+    await signTransaction(restoreTx, signer);
+    const sendResponse = await this.rpcProvider.sendTransaction(restoreTx);
+    if (sendResponse.status === 'ERROR') {
+      return { hash: sendResponse.hash, status: 'FAILED', error: 'Footprint restore transaction failed to send' };
+    }
+    return this.pollTransaction(sendResponse.hash);
+  }
+
+  /**
+   * Rebuilds a transaction with a freshly-fetched source-account sequence number, preserving its
+   * operations and memo. Soroban data/footprint is re-derived by the subsequent re-simulation.
+   */
+  private async rebuildWithFreshSequence(tx: Transaction): Promise<Transaction> {
+    const source = await this.getAccount(tx.source);
+    const builder = new TransactionBuilder(source, {
+      fee: tx.fee,
+      networkPassphrase: this.networkPassphrase,
+      memo: tx.memo,
+    }).setTimeout(30);
+    // `tx.operations` are decoded operation objects; `addOperation` expects raw `xdr.Operation`s,
+    // which the envelope exposes directly.
+    for (const op of tx.toEnvelope().v1().tx().operations()) {
+      builder.addOperation(op);
+    }
+    return builder.build();
   }
 
   /**

@@ -18,7 +18,18 @@ export const PROTOCOL_REGISTRY: Record<'testnet' | 'mainnet', Partial<Record<Pro
       kind: 'amm',
     },
   },
-  mainnet: {},
+  mainnet: {
+    soroswap: {
+      // Soroswap mainnet router, verified from
+      // https://github.com/soroswap/core/blob/main/public/mainnet.contracts.json.
+      contractId: 'CAG5LRYQ5JVEUI5TEID72EYOVX44TTUJT5BQR2J6J77FH65PCCFAJDDH',
+      kind: 'amm',
+    },
+    // Blend has no mainnet entry yet: v2 mainnet exposes a pool factory
+    // (CDSYOAVXFY7SM5S64IZPPPYB4GVGGLMQVFREPSQQEZVIWXX5R23G4QSU), not a single lending pool
+    // address like this adapter expects (see backend/.env.example) — a specific mainnet pool id
+    // must be resolved through the factory before this can be populated. Never guessed.
+  },
 };
 
 /**

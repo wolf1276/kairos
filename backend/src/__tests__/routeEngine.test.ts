@@ -1,9 +1,11 @@
 // Route Engine (Phase 6.5) — exhaustive test suite. Deterministic, no AI/LLM, no blockchain
-// execution. Every candidate protocol is a real adapter (Aquarius/Phoenix/Soroswap/Blend) backed
-// by its own deterministic test double — no real network call is made anywhere in this file.
+// execution. Soroswap/Blend are real adapters backed by their own deterministic test doubles;
+// 'aquarius'/'phoenix' below are generic multi-candidate fixtures (see genericProtocolAdapter.ts)
+// used only to exercise discovery/ranking/rejection logic with more than two competing
+// protocols — Kairos does not integrate Aquarius or Phoenix. No real network call is made
+// anywhere in this file.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { createAquariusAdapter, createDeterministicRouterClient as createAquariusRouterClient, createDeterministicSorobanRpcClient as createAquariusRpcClient } from '../protocolAdapters/aquarius/index.js';
-import { createPhoenixAdapter, createDeterministicMultihopClient, createDeterministicFactoryClient, createDeterministicPoolClient, createDeterministicSorobanRpcClient as createPhoenixRpcClient } from '../protocolAdapters/phoenix/index.js';
+import { createGenericAdapter } from './helpers/genericProtocolAdapter.js';
 import { createSoroswapAdapter, createDeterministicRouterClient as createSoroswapRouterClient, createDeterministicSorobanRpcClient as createSoroswapRpcClient } from '../protocolAdapters/soroswap/index.js';
 import { createBlendAdapter, createDeterministicBlendPoolClient, createDeterministicSorobanRpcClient as createBlendRpcClient } from '../protocolAdapters/blend/index.js';
 import { ProtocolRegistry } from '../protocolAdapters/index.js';
@@ -16,23 +18,21 @@ const FUTURE_DEADLINE = Math.floor(Date.now() / 1000) + 3600;
 const SUPPORTED = ['XLM', 'USDC', 'AQUA', 'PHO', 'BLND'];
 
 function makeAquarius(overrides: { rates?: Record<string, number>; priceImpactPct?: number; health?: 'READY' | 'DEGRADED' | 'UNAVAILABLE' | 'UNKNOWN' } = {}): ProtocolAdapter {
-  process.env.AQUARIUS_ROUTER_CONTRACT_ID_TESTNET = 'CONTRACT-AQUARIUS-TESTNET';
-  return createAquariusAdapter({
+  return createGenericAdapter('aquarius', {
     supportedAssets: SUPPORTED,
-    routerClient: createAquariusRouterClient({ rates: overrides.rates, priceImpactPct: overrides.priceImpactPct }),
-    sorobanRpcClient: createAquariusRpcClient(),
-    onHealth: () => overrides.health ?? 'READY',
+    supportedActions: ['SWAP', 'SWAP_CHAINED', 'DEPOSIT', 'WITHDRAW', 'CLAIM_REWARDS'],
+    rates: overrides.rates,
+    priceImpactPct: overrides.priceImpactPct,
+    health: overrides.health,
   });
 }
 
 function makePhoenix(overrides: { rates?: Record<string, number>; health?: 'READY' | 'DEGRADED' | 'UNAVAILABLE' | 'UNKNOWN' } = {}): ProtocolAdapter {
-  return createPhoenixAdapter({
+  return createGenericAdapter('phoenix', {
     supportedAssets: SUPPORTED,
-    multihopClient: createDeterministicMultihopClient({ rates: overrides.rates }),
-    factoryClient: createDeterministicFactoryClient({ pools: [{ poolId: 'CPOOL-XLM-USDC', assetA: 'XLM', assetB: 'USDC', poolType: 'xyk' }] }),
-    poolClient: createDeterministicPoolClient(),
-    sorobanRpcClient: createPhoenixRpcClient(),
-    onHealth: () => overrides.health ?? 'READY',
+    supportedActions: ['SWAP', 'SWAP_CHAINED', 'DEPOSIT', 'WITHDRAW'],
+    rates: overrides.rates,
+    health: overrides.health,
   });
 }
 

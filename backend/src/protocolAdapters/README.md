@@ -21,9 +21,7 @@ One subdirectory per venue. Each contains `adapter.ts`, `config.ts`, `hashing.ts
 
 | Protocol | Directory | Notes |
 | :--- | :--- | :--- |
-| Aquarius | `aquarius/` | The most complete adapter — adds `realSorobanRpcClient.ts`, `realRouterClient.ts`, `realBackendApi.ts`, and `production.ts` production wiring. |
 | Blend | `blend/` | Lending. |
-| Phoenix | `phoenix/` | AMM. |
 | Soroswap | `soroswap/` | AMM. |
 
 `testDoubles.ts` in each adapter provides deterministic test fakes so the pipeline can be exercised without live RPC.
@@ -39,4 +37,3 @@ This backend Protocol Layer is separate from, and richer than, the SDK-side [`pa
 
 - [`reasoning/`](../reasoning/README.md) — route discovery/quoting/ranking and per-protocol execution.
 - [`packages/sdk/src/protocols`](../../../packages/sdk/README.md) — SDK-level protocol action builders.
-- `scripts/verifyAquariusLive.ts` — live verification of the Aquarius adapter.

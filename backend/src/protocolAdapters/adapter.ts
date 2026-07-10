@@ -1,5 +1,5 @@
-// The ProtocolAdapter contract. Every protocol integration (Blend, Soroswap, Phoenix — none
-// implemented here) must satisfy this interface. Nothing outside `protocolAdapters/` may call a
+// The ProtocolAdapter contract. Every protocol integration (Blend, Soroswap — none implemented
+// here) must satisfy this interface. Nothing outside `protocolAdapters/` may call a
 // protocol SDK directly; everything goes through an adapter registered in ProtocolRegistry.
 import type {
   ProtocolCapabilities,

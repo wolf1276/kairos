@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Asset } from "@stellar/stellar-sdk";
-import { fetchSmartWalletTokenBalance, TESTNET_USDC_ISSUER } from "@/app/lib/stellar";
+import { fetchSmartWalletTokenBalance, usdcIssuerForNetwork } from "@/app/lib/stellar";
 
 export interface SmartWalletBalances {
   xlmBalance: number;
@@ -41,7 +41,7 @@ export function useSmartWalletBalances(
     setError(null);
     try {
       const nativeSacId = Asset.native().contractId(networkPassphrase);
-      const usdcSacId = new Asset("USDC", TESTNET_USDC_ISSUER).contractId(networkPassphrase);
+      const usdcSacId = new Asset("USDC", usdcIssuerForNetwork(networkPassphrase)).contractId(networkPassphrase);
       const [xlm, usdc] = await Promise.all([
         fetchSmartWalletTokenBalance(address, nativeSacId, networkPassphrase, sorobanRpcUrl),
         fetchSmartWalletTokenBalance(address, usdcSacId, networkPassphrase, sorobanRpcUrl),
