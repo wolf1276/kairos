@@ -82,10 +82,11 @@ async function main() {
     const customAccountId = accountMatch[1];
     console.log(`CustomAccount Contract ID: ${customAccountId}`);
 
-    // 6b. Deploy Registry
+    // 6b. Deploy Registry. Same atomic deploy+constructor pattern as DelegationManager and
+    // CustomAccount above — `--admin` is a constructor arg, not a follow-up `init` transaction.
     console.log('Deploying Registry...');
     const registryStdout = runCommand(
-      `stellar contract deploy --wasm target/wasm32v1-none/release/registry.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
+      `stellar contract deploy --wasm target/wasm32v1-none/release/registry.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- --admin ${deployerAddress}`,
       'contracts/soroban'
     );
     const registryMatch = registryStdout.match(/(C[A-Z0-9]{55})/);
@@ -95,14 +96,8 @@ async function main() {
     const registryId = registryMatch[1];
     console.log(`Registry Contract ID: ${registryId}`);
 
-    // DelegationManager and CustomAccount no longer have separate init steps — both were
-    // constructed atomically at deploy time above (steps 4 and 6).
-
-    // 8b. Initialize Registry
-    console.log('Initializing Registry...');
-    runCommand(
-      `stellar contract invoke --id ${registryId} --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- init --admin ${deployerAddress}`
-    );
+    // DelegationManager, CustomAccount, and Registry no longer have separate init steps —
+    // all three were constructed atomically at deploy time above (steps 4, 6, and 6b).
 
     // 9. Write IDs to config file
     if (!fs.existsSync(CONFIG_DIR)) {

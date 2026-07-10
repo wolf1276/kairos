@@ -12,7 +12,7 @@ Part of the [Kairos Soroban contracts](../../README.md) workspace. 23 tests in [
 
 | Function | Purpose |
 | :--- | :--- |
-| `init(admin)` | Initialize with an admin address. |
+| `__constructor(admin)` | Set the admin address; runs atomically as part of `CreateContractV2` deployment, not a separate call. |
 | `register(admin, owner, smart_wallet)` | Admin-attested mapping of an owner to their Smart Wallet. |
 | `get_smart_wallet(owner) -> Option<Address>` | Read-only lookup of an owner's Smart Wallet. |
 | `upgrade(new_wasm_hash)` | Upgrade the contract code. |

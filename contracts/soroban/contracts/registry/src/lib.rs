@@ -33,7 +33,13 @@ pub struct Registry;
 
 #[contractimpl]
 impl Registry {
-    pub fn init(env: Env, admin: Address) {
+    // Constructor: see CustomAccount::__constructor for the full rationale (same fix,
+    // same contract-level guard rules — this runs atomically inside CreateContractV2,
+    // closing the deploy→init front-running window the old separate `init()` tx left
+    // open (see docs/security/MAINNET_AUDIT.md, P0-1). `__constructor` is still an
+    // ordinary exported function under the hood, so the re-init guard and
+    // `admin.require_auth()` below remain necessary exactly as before.
+    pub fn __constructor(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, RegistryError::AlreadyInitialized);
         }
