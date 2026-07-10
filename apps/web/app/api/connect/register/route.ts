@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getContractConfig } from "@/app/lib/sdk";
-import { lookupRegistry, registerOnChain } from "@/app/lib/sdk/registry";
+import { lookupRegistry, OwnershipMismatchError, registerOnChain } from "@/app/lib/sdk/registry";
 import { registerSmartWallet, requireAuthHeader, requireSmartWalletAddress, withOnboardingErrors } from "../_shared";
 
 /**
@@ -26,6 +26,9 @@ export const POST = withOnboardingErrors(async (request: Request) => {
     try {
       await registerOnChain(owner, smartWallet);
     } catch (err) {
+      if (err instanceof OwnershipMismatchError) {
+        return NextResponse.json({ error: "This smart wallet is not owned by your account", smartWallet }, { status: 400 });
+      }
       console.error("Failed to register smart wallet on-chain registry:", err);
       return NextResponse.json(
         { error: "Wallet mapping saved but registry registration failed — retry to re-link it", smartWallet },
