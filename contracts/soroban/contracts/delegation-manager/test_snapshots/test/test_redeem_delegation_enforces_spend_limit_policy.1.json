@@ -25,7 +25,7 @@
     ],
     [
       [
-        "GB37VYANQSZ7Z2NRAEASUVWTPQ3SUEGXYISTNBJTL3E62UWR3225VRNN",
+        "GD6Z6AWDHBW67OJ3K5B5K72BHQWMDA5UJTFZD7MCJBLHLXMQ2U5LLKWI",
         {
           "function": {
             "contract_fn": {
@@ -33,7 +33,7 @@
               "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GB37VYANQSZ7Z2NRAEASUVWTPQ3SUEGXYISTNBJTL3E62UWR3225VRNN"
+                  "address": "GD6Z6AWDHBW67OJ3K5B5K72BHQWMDA5UJTFZD7MCJBLHLXMQ2U5LLKWI"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
@@ -202,7 +202,7 @@
                                 "symbol": "signature"
                               },
                               "val": {
-                                "bytes": "71c884b78bf058f57ca01711ec8a2c5ff82c050e2bcb7b5a7712818ff0dba8735e00d58b4ab5f6606053bcb6f89d2d826401fd69e2edbcab6f3f06c379850d08"
+                                "bytes": "d34bb9c9f38a07d968183b31afcc72a73d2ee2688f13a0395d82fcf31287c74761811c96ebb63a7f5a56f96878d9f388c2011d65f233a7b1f5bf0da5254faf09"
                               }
                             }
                           ]
@@ -342,7 +342,7 @@
       [
         {
           "contract_data": {
-            "contract": "GB37VYANQSZ7Z2NRAEASUVWTPQ3SUEGXYISTNBJTL3E62UWR3225VRNN",
+            "contract": "GD6Z6AWDHBW67OJ3K5B5K72BHQWMDA5UJTFZD7MCJBLHLXMQ2U5LLKWI",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -357,7 +357,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GB37VYANQSZ7Z2NRAEASUVWTPQ3SUEGXYISTNBJTL3E62UWR3225VRNN",
+                "contract": "GD6Z6AWDHBW67OJ3K5B5K72BHQWMDA5UJTFZD7MCJBLHLXMQ2U5LLKWI",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -551,7 +551,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GB37VYANQSZ7Z2NRAEASUVWTPQ3SUEGXYISTNBJTL3E62UWR3225VRNN"
+                          "address": "GD6Z6AWDHBW67OJ3K5B5K72BHQWMDA5UJTFZD7MCJBLHLXMQ2U5LLKWI"
                         }
                       }
                     ]
