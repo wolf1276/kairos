@@ -117,6 +117,91 @@ blocking for mainnet given the bounded impact.
 
 ---
 
+## P0-2 — Empty delegation chain bypasses Delegation Policy — **[fixed]**
+
+**Severity: P0 (confirmed exploitable, no special conditions).**
+**Contracts: `delegation-manager` (with `custom-account` as the drained target).**
+**Investigated: 2026-07-10.**
+
+### Root cause
+
+`DelegationManager::redeem_delegations` (`contracts/soroban/contracts/delegation-manager/src/lib.rs`)
+special-cased a zero-length delegation chain. Phase 1 (validation) `continue`d past every
+signature, nonce, authority, and duplicate-hash check; phase 2 (execution) then invoked the
+paired call **directly from the DelegationManager**, skipping the entire
+`before_all`/`before_hook`/`after_hook`/`after_all` policy pipeline that non-empty chains run.
+The only gate on the whole path was `redeemer.require_auth()` — satisfied by the attacker's own
+signature.
+
+Because `CustomAccount::execute_from_executor` authorizes solely on
+`delegation_manager.require_auth()` (auto-satisfied whenever the manager is the direct caller),
+an attacker sets the empty-chain execution to target a *victim* wallet's `execute_from_executor`
+and turns the manager into a confused deputy: any wallet on this manager was drainable by anyone,
+with no delegation, no victim signature, and zero policy enforcement.
+
+### Verified
+
+1. `redeem_delegations` callable with an empty chain — confirmed (the `chain.len() == 0` branch).
+2. Authorization required — only `redeemer.require_auth()`, i.e. the attacker's own key.
+3. Principal executing the downstream call — the **DelegationManager** (via `env.invoke_contract`).
+4. Empty chain bypassed **all** of: policy validation, caveats, spend limits, permission checks,
+   capability checks, and delegation validation — confirmed.
+5. Reachable without the SDK — confirmed. The SDK's `validateDelegationChains`
+   (`packages/sdk/src/execution/index.ts`) rejects empty chains client-side only; it is not an
+   on-chain boundary.
+6. Reachable via a raw Soroban `invoke_contract` transaction — confirmed.
+7. Moves funds / invokes arbitrary contracts — confirmed, via the `execute_from_executor`
+   confused-deputy route.
+8. Reachable in production — confirmed.
+
+### Proof of exploit
+
+Reproduced at the contract level (`soroban-env-host`, not mocked assertions). Real
+`CustomAccount` wallet + real SAC token; auth scoped with `mock_auths` to **only the attacker**
+to prove the victim signs nothing. Pre-fix: wallet balance `500_000_000 → 0`, attacker
+`0 → 500_000_000`. The PoC is retained as the regression test
+`test_empty_chain_confused_deputy_drain_is_rejected` (now asserting rejection).
+
+### Fix
+
+Reject empty chains in phase 1 with `ManagerError::EmptyChain` (releasing the reentrancy guard
+first, matching every other early-exit), and remove the phase-2 direct-invoke branch. Every
+execution is now backed by at least one validated delegation. A caller wanting a no-delegation
+self-execution uses their own wallet's `execute()`, not this path. No public-API, storage-layout,
+delegation-architecture, or SDK change (the new error is appended; existing discriminants are
+unchanged).
+
+### Regression tests added
+
+In `contracts/soroban/contracts/delegation-manager/src/test.rs`:
+
+- `test_empty_chain_confused_deputy_drain_is_rejected` — the exploit payload now reverts with
+  `EmptyChain` and moves zero funds.
+- `test_empty_chain_in_batch_rejects_entire_batch` — an empty chain mixed with a valid one
+  reverts the whole batch; the valid chain's nonce is untouched.
+
+Existing coverage exercises the rest of the matrix (valid chain succeeds, policy + spend-limit
+enforced, invalid-signature / disabled / replay rejected, SDK-side empty-chain rejection).
+
+### Verification run
+
+- Contract tests: delegation-manager 20/20, custom-account 11/11, policies 11/11, registry 23/23
+  — all pass.
+- Wasm build (`wasm32v1-none --release`): all contracts compile clean; no warnings in
+  `delegation-manager`.
+- SDK tests (`packages/sdk`): 34/34 pass (unaffected — no SDK code changed). SDK typecheck
+  (`tsc --noEmit`): clean.
+- Backend: no TS changed; the backend only ever sends non-empty `[[delegation]]`
+  (`backend/src/protocolExecutionService.ts`). Pre-existing `better-sqlite3` native-binding
+  failures in the audit sandbox are unrelated (same environment gap noted in P0-1).
+
+### Remaining issues
+
+None. The removed branch had no legitimate caller (SDK rejects empty chains; backend sends
+non-empty), so nothing depends on the old behavior.
+
+---
+
 ## Template for future findings
 
 ```

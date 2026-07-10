@@ -1,7 +1,7 @@
 #![no_std]
 use soroban_sdk::{
     contract, contractimpl, contracttype, contracterror, symbol_short, Address, Bytes, BytesN, Env, Symbol, Val, Vec,
-    panic_with_error, log, IntoVal, xdr::ToXdr,
+    panic_with_error, IntoVal, xdr::ToXdr,
 };
 
 #[contracttype]
@@ -572,16 +572,15 @@ impl DelegationManager {
             let execution = executions.get(i).unwrap();
             let hashes = delegation_hashes_batch.get(i).unwrap();
 
-            if chain.len() > 0 {
-                let root_delegator = chain.get(chain.len() - 1).unwrap().delegator.clone();
-                let root_delegation_hash = hashes.get(chain.len() - 1).unwrap();
+            // Every chain is non-empty (empty chains are rejected in phase 1, P0-2).
+            let root_delegator = chain.get(chain.len() - 1).unwrap().delegator.clone();
+            let root_delegation_hash = hashes.get(chain.len() - 1).unwrap();
 
-                // Publish rich redeemed event containing delegator, delegation hash, and execution info
-                env.events().publish(
-                    (symbol_short!("redeemed"), redeemer.clone()),
-                    (root_delegator, root_delegation_hash.clone(), execution.clone()),
-                );
-            }
+            // Publish rich redeemed event containing delegator, delegation hash, and execution info
+            env.events().publish(
+                (symbol_short!("redeemed"), redeemer.clone()),
+                (root_delegator, root_delegation_hash.clone(), execution.clone()),
+            );
         }
 
         // Release Reentrancy Guard
