@@ -261,10 +261,12 @@ export class WalletModule {
       .build();
 
     const simRes = await this.client.simulateTx(tx);
-    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
-      return scValToBigInt(simRes.result.retval);
+    // A missing `result` means the RPC response was malformed, not that the balance is 0 —
+    // silently returning 0n would look like a genuine (empty) balance answer. Throw instead.
+    if (!rpc.Api.isSimulationSuccess(simRes) || !simRes.result) {
+      throw new RpcError(`Failed to fetch balance for ${address}: malformed simulation response (missing result).`, simRes);
     }
-    return 0n;
+    return scValToBigInt(simRes.result.retval);
   }
 
   /**

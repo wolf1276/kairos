@@ -85,10 +85,13 @@ export class DelegationModule {
       .build();
 
     const simRes = await this.client.simulateTx(tx);
-    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
-      return scValToBigInt(simRes.result.retval);
+    // `simulateTx` always succeeds-or-throws, but it does not guarantee `result` is present
+    // (a malformed/degraded RPC response can omit it). Returning 0n in that case would look
+    // like a genuine "fresh nonce" answer rather than "we couldn't get one" — throw instead.
+    if (!rpc.Api.isSimulationSuccess(simRes) || !simRes.result) {
+      throw new RpcError(`Failed to fetch nonce for ${delegator}: malformed simulation response (missing result).`, simRes);
     }
-    return 0n;
+    return scValToBigInt(simRes.result.retval);
   }
 
   /**
@@ -124,10 +127,13 @@ export class DelegationModule {
       .build();
 
     const simRes = await this.client.simulateTx(tx);
-    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
-      return { disabled: simRes.result.retval.b() };
+    // Same malformed-response gap as `getNonce` above, but higher stakes here: this is a
+    // revocation check, so silently returning `disabled: false` on an ambiguous RPC response
+    // would let a caller treat a revoked delegation as still active. Throw instead.
+    if (!rpc.Api.isSimulationSuccess(simRes) || !simRes.result) {
+      throw new RpcError(`Failed to check disabled status for delegation ${hash}: malformed simulation response (missing result).`, simRes);
     }
-    return { disabled: false };
+    return { disabled: simRes.result.retval.b() };
   }
 
   /**
@@ -514,12 +520,14 @@ export class DelegationModule {
       .build();
 
     const simRes = await this.client.simulateTx(tx);
-    if (rpc.Api.isSimulationSuccess(simRes) && simRes.result) {
-      const opt = simRes.result.retval;
-      if (opt.switch().name === 'scvVoid') return null;
-      return Buffer.from(opt.bytes()).toString('hex');
+    // As above: a missing `result` means the RPC response was malformed, not that no
+    // delegation exists. Only `scvVoid` is a confirmed "none" answer.
+    if (!rpc.Api.isSimulationSuccess(simRes) || !simRes.result) {
+      throw new RpcError(`Failed to look up wallet delegation for ${delegator}/${delegate}: malformed simulation response (missing result).`, simRes);
     }
-    return null;
+    const opt = simRes.result.retval;
+    if (opt.switch().name === 'scvVoid') return null;
+    return Buffer.from(opt.bytes()).toString('hex');
   }
 
   /**
