@@ -85,14 +85,19 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
     const risk = riskChecks(config, decision, ctx, { capital: row.capital, realizedPnl: pnlBefore.realizedPnl, unrealizedPnl: pnlBefore.unrealizedPnl });
     logEvent({ agentId: row.id, owner: row.owner, eventType: 'risk_check', mode: row.mode, mpcAccount: row.public_key, pair: config.pair, message: `Risk ${risk.ok ? 'passed' : `blocked: ${risk.reason}`}` });
 
-    const willExecute = side !== null && policy.ok && !delegationBlocks && risk.ok;
-
     // The yield role's reallocation deploys idle capital into a real protocol (Blend deposit)
-    // rather than a spot buy, when protocol execution is turned on for live agents. Paper mode
-    // and the strategic/balancer roles are untouched — they have no real protocol venue mapped
-    // yet (see decisionEngine.ts's simulated yield venues), so they keep using the legacy
-    // spot-trade path exactly as before.
+    // rather than a spot buy, when protocol execution is turned on for live agents.
     const useProtocolExecution = config.role === 'yield' && row.mode === 'live' && isProtocolExecutionEnabled();
+
+    // P0-3: every live role except yield-with-protocol-execution had no Smart-Wallet-custodied
+    // execution route and fell back to the legacy direct-custody spot-trade path (tick.ts's
+    // executeQuantTrade, signed by the agent's own Turnkey key against Horizon directly) — no
+    // on-chain Delegation validation, no on-chain Policy enforcement. Block instead of falling
+    // back; paper mode is untouched (row.mode !== 'live' short-circuits this to false), so
+    // simulated trading keeps working exactly as before. See docs/security/MAINNET_AUDIT.md.
+    const legacyPathBlocked = row.mode === 'live' && !useProtocolExecution;
+
+    const willExecute = side !== null && policy.ok && !delegationBlocks && !legacyPathBlocked && risk.ok;
 
     let tradeId: string | null = null;
     let executionResult: string;
@@ -152,7 +157,7 @@ export async function runRoleTick(row: AgentRow, config: RoleStrategyConfig): Pr
         throw error;
       }
     } else {
-      executionResult = side === null ? 'no-action' : !policy.ok ? `blocked:policy` : delegationBlocks ? 'blocked:delegation' : !risk.ok ? 'blocked:risk' : 'held';
+      executionResult = side === null ? 'no-action' : !policy.ok ? `blocked:policy` : delegationBlocks ? 'blocked:delegation' : legacyPathBlocked ? 'blocked:custody' : !risk.ok ? 'blocked:risk' : 'held';
       recordTick(row.id, { ok: true, message: `${config.role}: ${decision.action} (${executionResult}) — ${decision.reasoning.slice(0, 100)}` });
     }
 
