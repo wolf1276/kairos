@@ -1,4 +1,4 @@
-import { Address, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
+import { Address, hash as sha256, Keypair, Operation, rpc, TransactionBuilder, xdr } from '@stellar/stellar-sdk';
 import { KairosClient } from '../client';
 import { ROOT_AUTHORITY } from '../constants';
 import { Caveat, Delegation, TransactionResult } from '../types';
@@ -48,11 +48,21 @@ export class DelegationModule {
     );
     const hashBuffer = Buffer.from(hashStr, 'hex');
 
+    // The CustomAccount contract's `is_valid_signature` (contracts/soroban/contracts/
+    // custom-account/src/lib.rs) never verifies a raw signature over `hashBuffer` — it verifies
+    // against the SEP-53-wrapped payload `SHA-256("Stellar Signed Message:\n" + hex(hash))`,
+    // the same convention a browser wallet's `signMessage` produces (see apps/web/app/lib/
+    // stellar.ts signDelegationHashWithWallet). Signing the raw hash here produces a signature
+    // that looks well-formed (right length) but fails on-chain `ed25519_verify` with
+    // `Error(Crypto, InvalidInput)` — so this wrap must happen for every signer, not just
+    // wallet-driven ones.
+    const signedPayload = sha256(Buffer.from(`Stellar Signed Message:\n${hashStr}`, 'utf8'));
+
     let signatureBuffer: Buffer;
     if (typeof params.signer === 'function') {
-      signatureBuffer = await params.signer(hashBuffer);
+      signatureBuffer = await params.signer(signedPayload);
     } else {
-      signatureBuffer = params.signer.sign(hashBuffer);
+      signatureBuffer = params.signer.sign(signedPayload);
     }
 
     if (signatureBuffer.length !== 64) {
