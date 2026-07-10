@@ -17,9 +17,12 @@ vi.mock("@/app/lib/sdk", () => ({
   getContractConfig: () => ({ registry: "REGISTRY_CONTRACT_ID" }),
 }));
 
+class OwnershipMismatchError extends Error {}
+
 vi.mock("@/app/lib/sdk/registry", () => ({
   registerOnChain,
   lookupRegistry,
+  OwnershipMismatchError,
 }));
 
 vi.mock("../_shared", async () => {
@@ -83,6 +86,19 @@ describe("POST /api/connect/register", () => {
 
     expect(res.status).toBe(502);
     expect(data.success).toBeUndefined();
+  });
+
+  it("ownership mismatch -> permanent 400, not a retryable 502", async () => {
+    backendFetchMock.mockResolvedValueOnce({ ok: true, status: 200, data: { owner: OWNER } });
+    registerOnChain.mockRejectedValueOnce(new OwnershipMismatchError("not your wallet"));
+
+    const { POST } = await import("./route");
+    const res = await POST(req({ smartWallet: SMART_WALLET }));
+    const data = await res.json();
+
+    expect(res.status).toBe(400);
+    expect(data.success).toBeUndefined();
+    expect(lookupRegistry).not.toHaveBeenCalled();
   });
 
   it("DB persistence failure -> request fails before touching registry", async () => {
