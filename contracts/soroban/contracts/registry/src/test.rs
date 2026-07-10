@@ -1,8 +1,54 @@
 #![cfg(test)]
 extern crate std;
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
-use soroban_sdk::TryFromVal;
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{IntoVal, TryFromVal};
+
+// ---------------------------------------------------------------------------
+// M1 REPRODUCTION: register binds an owner->wallet with ONLY the admin's
+// authorization; the owner never signs. Unlike mock_all_auths (which fakes
+// *every* address's consent and so can't distinguish "owner authorized" from
+// "owner didn't"), this grants a single auth entry for the admin only. If the
+// contract required owner.require_auth(), this call would trap. It does not.
+// ---------------------------------------------------------------------------
+#[test]
+fn m1_admin_binds_owner_without_owner_auth() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let owner = Address::generate(&env);       // a real user who NEVER authorizes
+    let attacker_wallet = Address::generate(&env);
+
+    let registry_id = env.register(Registry, ());
+    let registry = RegistryClient::new(&env, &registry_id);
+
+    // init needs the admin's auth (only).
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &registry_id,
+            fn_name: "init",
+            args: (admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    registry.init(&admin);
+
+    // Grant EXACTLY ONE auth entry: the admin, for this register call. The owner
+    // is deliberately NOT in the auth set.
+    env.mock_auths(&[MockAuth {
+        address: &admin,
+        invoke: &MockAuthInvoke {
+            contract: &registry_id,
+            fn_name: "register",
+            args: (admin.clone(), owner.clone(), attacker_wallet.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    // Succeeds — proving the owner's authorization is not required to bind them.
+    registry.register(&admin, &owner, &attacker_wallet);
+    assert_eq!(registry.get_smart_wallet(&owner), Some(attacker_wallet));
+}
 
 #[test]
 fn test_init_and_register() {
