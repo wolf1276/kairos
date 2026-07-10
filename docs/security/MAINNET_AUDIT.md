@@ -281,6 +281,147 @@ non-empty), so nothing depends on the old behavior.
 
 ---
 
+## P0-3 — Live role/quant/limit trading bypasses Smart Wallet custody — **[fixed]**
+
+**Severity: P0 (confirmed exploitable in production, no special conditions — every live trade
+after initial funding).**
+**Backend: `backend/src/tick.ts`, `backend/src/roleTick.ts`.**
+**Investigated: 2026-07-10.**
+
+### Executive summary
+
+Two live-mode execution paths never went through `CustomAccount.execute()` /
+`execute_from_executor()` / `DelegationManager.redeem_delegations()` — they built, signed
+(via the agent's own Turnkey-MPC key), and submitted classic Stellar path-payment operations
+**directly to Horizon**, entirely outside Smart Wallet / Delegation / Policy custody. This
+affected every live quant/limit-strategy agent, and every live role agent (`strategic`,
+`balancer` always; `yield` whenever `ENABLE_PROTOCOL_EXECUTION` was unset, the default).
+
+### Root cause
+
+- `backend/src/tick.ts` — `executeQuantTrade` (quant strategy, live mode) and
+  `executeLimitOrder` (limit strategy, live mode) used `@stellar/stellar-sdk`'s
+  `TransactionBuilder` + `Operation.pathPaymentStrictSend/StrictReceive`, signed via
+  `getAgentSigner(row)` (Turnkey), and called `server.submitTransaction` on Horizon directly.
+- `backend/src/roleTick.ts` — `runRoleTick`'s fallback branch called the same
+  `executeQuantTrade` for every live role-agent trade except `yield` with
+  `ENABLE_PROTOCOL_EXECUTION=true`.
+
+Real user capital does reach the agent's own account in production: the "Add Agent" flow
+(`apps/web/app/dashboard/agents/AgentCreationWizard.tsx`) registers a spend-limit delegation,
+then calls `withdrawFromSmartWallet(...)` to move capital out of the smart wallet into the
+agent's raw Turnkey Stellar address before the agent starts. That one-time withdrawal is
+correctly owner-authorized and delegation-bounded — but the delegation only gates the
+one-time transfer. Every subsequent trade moved that capital via a raw Horizon transaction
+the backend signed unilaterally: no further on-chain Delegation validation, no on-chain
+Policy enforcement (spend limits / target whitelist / time restriction) ever ran again for
+that capital. The only remaining guardrails were backend-DB, soft, mutable checks
+(`capabilityGate`/`allocationGate`/`maxSlippagePct`), not cryptographic ones — despite the UI's
+claim that the agent "will only ever be able to spend from your smart wallet, up to the limit."
+
+### Verified
+
+1. Direct backend execution outside Smart Wallet — confirmed (`tick.ts` built and submitted
+   classic Stellar ops via `@stellar/stellar-sdk` directly, not `client.execution.execute`).
+2. Skips Delegation validation — confirmed (on-chain `redeem_delegations` never invoked for
+   the trade itself).
+3. Skips Policy enforcement — confirmed (on-chain `policies` contract never invoked).
+4. Moves user funds without ongoing Smart Wallet authorization — confirmed, for every trade
+   after the initial funding transfer.
+5. Legacy path bypassing custody — confirmed; the code's own comments call it the "legacy
+   spot-trade path," and `protocolExecutionService.ts`'s header independently corroborates it
+   ("unlike the legacy direct-custody trading loop (executionEngine.ts) which trades from the
+   agent's own Turnkey-signed keypair").
+6. Reachable in production — confirmed (real funding flow traced end to end, not
+   dead/unreachable code).
+7. SDK-level bypass — none found. `packages/sdk/src/execution/index.ts`'s `execute()` always
+   routes through `redeem_delegations`; no SDK call invokes a protocol contract directly.
+8. `protocolAdapters/*/realTransactionBuilder.ts` (blend/soroswap/phoenix/aquarius) — confirmed
+   safe. They only build unsigned XDR (no `signTransaction`/`submitTransaction`/
+   `getAgentSigner` calls anywhere in that directory) and feed the delegation-routed SDK path,
+   not a raw-signing fallback.
+9. Other feature flags — swept `backend/src/config.ts`; `ENABLE_PROTOCOL_EXECUTION` is the only
+   execution-routing flag. The rest (network, port, DB path, JWT secret, dev allowlist, etc.)
+   are unrelated to trade execution.
+
+### Proof of exploit
+
+1. Static trace: funding flow (`provisionService.ts` comment + `AgentCreationWizard.tsx` +
+   `stellar.ts`'s `withdrawFromSmartWallet`) → capital lands in the agent's own Turnkey account
+   → `executeQuantTrade`/`executeLimitOrder` sign and submit against Horizon directly.
+2. `backend/src/__tests__/roleTickProtocolExecution.test.ts`'s pre-existing test ("falls back
+   to the legacy spot-trade path when protocol execution is disabled") was already passing
+   **before any fix**, proving the buggy behavior: a live `role: 'yield'` agent with
+   `ENABLE_PROTOCOL_EXECUTION` unset called `executeQuantTrade`, not `executeProtocolAction`.
+3. `roleTick.ts`'s `useProtocolExecution = config.role === 'yield' && ...` confirms
+   `strategic`/`balancer` roles had no protocol-execution branch at all — they always hit the
+   legacy path in live mode regardless of the flag.
+
+### Fix
+
+Block the unsafe live path rather than retrofit classic-Stellar path payments into the
+Soroban delegation/policy pipeline (`execute`/`execute_from_executor` only invoke Soroban
+contract functions, not classic DEX path payments — a genuine architecture change, out of
+scope). Paper mode is unaffected (never moves real funds); DCA and yield-with-protocol-
+execution (the already-safe, delegation-routed paths) are unaffected.
+
+- **`backend/src/tick.ts`**: `executeQuantTrade` (still exported, same signature) and
+  `executeLimitOrder` (private) now throw immediately with a clear, auditable message before
+  any account load, signing, or submission. Removed the now-dead Horizon-specific
+  implementation and its unused imports.
+- **`backend/src/roleTick.ts`**: added a `legacyPathBlocked = row.mode === 'live' &&
+  !useProtocolExecution` gate, folded into `willExecute` (same pattern as the existing
+  `delegationBlocks` gate), producing a clean `executionResult = 'blocked:custody'` decision
+  record instead of relying solely on the caught exception from `tick.ts`. The `tick.ts` throw
+  remains as defense in depth for any future caller that reaches `executeQuantTrade` directly.
+- `routes/agents.ts`'s `/trades/:tradeId/reverse` endpoint calls the same `executeQuantTrade`
+  for live mode — covered by the same throw, no separate fix needed.
+
+### Files modified
+
+- `backend/src/tick.ts`
+- `backend/src/roleTick.ts`
+- `backend/src/__tests__/roleTickProtocolExecution.test.ts` (rewrote the test asserting the
+  vulnerable fallback to assert blocking; added coverage for `strategic`-role blocking and
+  paper-mode non-regression)
+
+### Tests added
+
+- `backend/src/__tests__/roleTickProtocolExecution.test.ts` — 5 tests: yield routes through
+  `executeProtocolAction` when enabled; live reallocation blocked (not routed to legacy) when
+  disabled; paper mode never uses `executeProtocolAction`; live `strategic` blocked even with
+  the flag on (no route exists for that role); paper-mode `strategic` unaffected.
+- `backend/src/__tests__/p0-3-liveCustodyBypass.test.ts` (new) — 5 tests: `executeQuantTrade`
+  rejects immediately with the custody error; `runQuantTick`/`runLimitTick` in live mode fail
+  cleanly with `recordCompletedTrade` never called; `runQuantTick`/`runLimitTick` in paper mode
+  execute normally (regression: legitimate path unaffected).
+
+### Verification run
+
+- Backend tests: full suite, `backend/node_modules/.bin/vitest run` — 79 files passed, 5
+  pre-existing skips (real-DB tests, same sandbox gap as P0-1/P0-2/P1-3), 1650/1650 passing.
+- Backend typecheck (`tsc --noEmit`): one pre-existing, unrelated error in
+  `priceHistory.test.ts` (a `fetch` mock type mismatch); confirmed present on `main` before
+  this change via `git stash`, untouched by this fix.
+- Production build (`tsup`): clean, `dist/index.js` built successfully.
+- SDK: confirmed (read-only) that `execute()` always routes through `redeem_delegations`; no
+  SDK or contract code changed by this fix, so SDK/contract test suites are unaffected.
+
+### Remaining issues
+
+Blocking live trading for `strategic`/`balancer` roles (and `quant`/`limit` legacy strategies)
+is a real **product capability regression**, not just a narrow patch — those roles currently
+have no safe replacement (unlike `yield`, which already has `executeProtocolAction`/Blend).
+This was judged the correct "smallest safe fix" given the hard invariant (funds must always
+remain under Smart Wallet custody) and matches this doc's own P0-2 precedent (fully removing
+the unsafe branch rather than patching it in place). **Live `strategic`/`balancer` role agents,
+and any live `quant`/`limit` strategy, will fail every tick cleanly (with a clear audit-trail
+reason)** until a Smart-Wallet-custodied swap route is built for them (e.g. extending the
+`soroswap` protocol adapter the way `blend` was extended for the `yield` role). That follow-up
+work is out of scope for this fix.
+
+---
+
 ## P1-3 — Malformed Registry RPC response read as "wallet not found" — **[fixed]**
 
 **Severity: P1 (exploitable only under a specific RPC-response shape, not every RPC failure;
