@@ -18,10 +18,14 @@ export class WalletModule {
   constructor(private client: KairosClient) {}
 
   /**
-   * Builds the deterministic CreateContract host function + resulting contract address
-   * for a CustomAccount deploy, given a fixed salt. Shared by the plain self-deploy path
-   * (`create`) and the sponsored-deploy path (`prepareSponsoredDeploy`/`submitSponsoredDeploy`)
-   * so both compute byte-for-byte the same preimage/address for a given salt.
+   * Builds the deterministic CreateContractV2 host function + resulting contract address
+   * for a CustomAccount deploy, given a fixed salt. The wallet's `__constructor` (owner,
+   * delegation_manager) runs atomically as part of this same host operation — see
+   * docs/security/MAINNET_AUDIT.md, P0-1: this closes the on-chain window a separate,
+   * later `init` transaction used to leave open for a front-runner to self-claim the
+   * address. Shared by the plain self-deploy path (`create`) and the sponsored-deploy
+   * path (`prepareSponsoredDeploy`/`submitSponsoredDeploy`) so both compute byte-for-byte
+   * the same preimage/address for a given salt.
    */
   private buildDeployArtifacts(ownerAddress: string, wasmHash: string, salt: Buffer): DeployArtifacts {
     const preimage = xdr.ContractIdPreimage.contractIdPreimageFromAddress(
@@ -33,11 +37,16 @@ export class WalletModule {
     const executable = xdr.ContractExecutable.contractExecutableWasm(
       Buffer.from(wasmHash, 'hex')
     );
-    const createContractArgs = new xdr.CreateContractArgs({
+    const constructorArgs = [
+      Address.fromString(ownerAddress).toScVal(),
+      Address.fromString(this.client.contracts.delegationManager).toScVal(),
+    ];
+    const createContractArgs = new xdr.CreateContractArgsV2({
       contractIdPreimage: preimage,
       executable,
+      constructorArgs,
     });
-    const func = xdr.HostFunction.hostFunctionTypeCreateContract(createContractArgs);
+    const func = xdr.HostFunction.hostFunctionTypeCreateContractV2(createContractArgs);
 
     const networkId = xdr.Hash.fromXDR(hash(Buffer.from(this.client.networkPassphrase)));
     const preimageContractId = new xdr.HashIdPreimageContractId({
@@ -52,14 +61,17 @@ export class WalletModule {
   }
 
   /**
-   * Deploys a new CustomAccount (smart wallet) instance and initializes it. The `payer`
-   * must control `ownerAddress`'s key (it signs the deploy transaction itself), since
-   * Soroban only auto-authorizes a `CreateContract` call when the embedded owner address
-   * equals the transaction's source account. For deploying a wallet on behalf of an
-   * address the caller does NOT hold a key for (e.g. sponsoring a connected Freighter
-   * wallet's onboarding), use `prepareSponsoredDeploy`/`submitSponsoredDeploy` instead,
-   * which authorize the owner address via a separately-signed authorization entry.
-   * @param payer The Keypair that pays fees and signs the deploy/init transactions.
+   * Deploys a new CustomAccount (smart wallet) instance, atomically initialized in the
+   * same operation (see `buildDeployArtifacts` — CreateContractV2 + constructor, no
+   * separate init transaction/window). The `payer` must control `ownerAddress`'s key (it
+   * signs the deploy transaction itself), since Soroban only auto-authorizes a
+   * `CreateContract` call — and the constructor's `owner.require_auth()` inside it — when
+   * the embedded owner address equals the transaction's source account. For deploying a
+   * wallet on behalf of an address the caller does NOT hold a key for (e.g. sponsoring a
+   * connected Freighter wallet's onboarding), use `prepareSponsoredDeploy`/
+   * `submitSponsoredDeploy` instead, which authorize the owner address via a
+   * separately-signed authorization entry.
+   * @param payer The Keypair that pays fees and signs the deploy transaction.
    * @param wasmHash The hex string of the uploaded CustomAccount WASM hash.
    * @param ownerAddress The address that will own the deployed wallet (contract ID salt
    *   and `Owner` storage are bound to this address). Defaults to `payer.publicKey()`.
@@ -92,23 +104,7 @@ export class WalletModule {
     const result = await this.client.submitTransaction(tx, payer);
     if (result.status !== 'SUCCESS') {
       const errMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || `status=${result.status} hash=${result.hash}`);
-      throw new ExecutionFailedError(`Failed to deploy CustomAccount contract: ${errMsg}`);
-    }
-
-    let initialized = false;
-    let lastError: string | undefined;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        await this.initializeWallet(smartWalletAddress, payer, ownerAddress);
-        initialized = true;
-        break;
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : 'Unknown error';
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-    if (!initialized) {
-      throw new ExecutionFailedError(`Failed to initialize CustomAccount: ${lastError || 'Unknown error'}`);
+      throw new ExecutionFailedError(`Failed to deploy and initialize CustomAccount contract: ${errMsg}`);
     }
 
     return {
@@ -122,10 +118,11 @@ export class WalletModule {
    * Prepares a sponsored CustomAccount deployment: `funderAddress` will pay all fees as
    * the transaction's source account, but Soroban still requires the embedded owner
    * address (a connected wallet whose key the server doesn't hold) to separately
-   * authorize the `CreateContract` call. Returns the unsigned authorization entry (as
-   * base64 XDR) for the owner's wallet to sign — e.g. via Freighter's `signAuthEntry` —
-   * plus the deterministic salt/contract address needed to reconstruct and submit the
-   * exact same deployment in `submitSponsoredDeploy`.
+   * authorize both contract creation and the constructor call that atomically
+   * initializes it (`owner.require_auth()` inside `__constructor`). Returns the unsigned
+   * authorization entry (as base64 XDR) for the owner's wallet to sign — e.g. via
+   * Freighter's `signAuthEntry` — plus the deterministic salt/contract address needed to
+   * reconstruct and submit the exact same deployment in `submitSponsoredDeploy`.
    */
   async prepareSponsoredDeploy(
     funderAddress: string,
@@ -150,7 +147,10 @@ export class WalletModule {
       .build();
 
     // Simulating with empty auth surfaces the exact unsigned SorobanAuthorizationEntry
-    // Soroban requires for the owner address embedded in the CreateContract preimage.
+    // Soroban requires for the owner address embedded in the CreateContractV2 preimage —
+    // one entry covering both authorizing contract creation itself and the nested
+    // `owner.require_auth()` inside `__constructor`, since Soroban auth entries are keyed
+    // per address across the whole invocation tree, not per call.
     // `simulateTx` always either returns a success response or throws, but its type
     // signature is the general union, so narrow it here to access `.result`.
     const simRes = await this.client.simulateTx(tx);
@@ -207,23 +207,7 @@ export class WalletModule {
     const result = await this.client.submitTransaction(tx, funder);
     if (result.status !== 'SUCCESS') {
       const errMsg = typeof result.error === 'object' ? JSON.stringify(result.error) : (result.error || `status=${result.status} hash=${result.hash}`);
-      throw new ExecutionFailedError(`Failed to deploy CustomAccount contract: ${errMsg}`);
-    }
-
-    let initialized = false;
-    let lastError: string | undefined;
-    for (let attempt = 1; attempt <= 4; attempt++) {
-      try {
-        await this.initializeWallet(smartWalletAddress, funder, ownerAddress);
-        initialized = true;
-        break;
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : 'Unknown error';
-        await new Promise(resolve => setTimeout(resolve, 5000));
-      }
-    }
-    if (!initialized) {
-      throw new ExecutionFailedError(`Failed to initialize CustomAccount: ${lastError || 'Unknown error'}`);
+      throw new ExecutionFailedError(`Failed to deploy and initialize CustomAccount contract: ${errMsg}`);
     }
 
     return {
@@ -231,35 +215,6 @@ export class WalletModule {
       owner: ownerAddress,
       delegationManager: this.client.contracts.delegationManager,
     };
-  }
-
-  /**
-   * Initializes the wallet with owner and delegation manager.
-   */
-  private async initializeWallet(contractId: string, payer: Keypair, ownerAddress: string): Promise<void> {
-    const sourceAccount = await this.client.getAccount(payer.publicKey());
-
-    const initOp = Operation.invokeContractFunction({
-      contract: contractId,
-      function: 'init',
-      args: [
-        Address.fromString(ownerAddress).toScVal(),
-        Address.fromString(this.client.contracts.delegationManager).toScVal(),
-      ],
-    });
-
-    const tx = new TransactionBuilder(sourceAccount, {
-      fee: '100000',
-      networkPassphrase: this.client.networkPassphrase,
-    })
-      .addOperation(initOp)
-      .setTimeout(30)
-      .build();
-
-    const result = await this.client.submitTransaction(tx, payer);
-    if (result.status !== 'SUCCESS') {
-      throw new ExecutionFailedError(`Failed to initialize CustomAccount: ${result.error}`);
-    }
   }
 
   /**

@@ -38,10 +38,13 @@ async function main() {
     const customAccountWasmHash = wasmHashMatch[1];
     console.log(`CustomAccount Wasm Hash: ${customAccountWasmHash}`);
 
-    // 4. Deploy delegation-manager
+    // 4. Deploy delegation-manager. `--owner` is a constructor argument here, not a
+    // separate `init` call: the contract's `__constructor` runs atomically inside this
+    // same CreateContractV2 deploy operation (see docs/security/MAINNET_AUDIT.md, P0-1),
+    // so there is no on-chain window where the manager exists uninitialized.
     console.log('Deploying DelegationManager...');
     const managerStdout = runCommand(
-      `stellar contract deploy --wasm target/wasm32v1-none/release/delegation_manager.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
+      `stellar contract deploy --wasm target/wasm32v1-none/release/delegation_manager.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- --owner ${deployerAddress}`,
       'contracts/soroban'
     );
     const managerMatch = managerStdout.match(/(C[A-Z0-9]{55})/);
@@ -64,10 +67,12 @@ async function main() {
     const policyEngineId = policiesMatch[1];
     console.log(`Policies Contract ID: ${policyEngineId}`);
 
-    // 6. Deploy a custom account instance for verification/general use
+    // 6. Deploy a custom account instance for verification/general use. Same atomic
+    // deploy+constructor pattern as DelegationManager above — `--owner` and
+    // `--delegation_manager` are constructor args, not a follow-up `init` transaction.
     console.log('Deploying CustomAccount Instance...');
     const accountStdout = runCommand(
-      `stellar contract deploy --wasm target/wasm32v1-none/release/custom_account.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK}`,
+      `stellar contract deploy --wasm target/wasm32v1-none/release/custom_account.wasm --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- --owner ${deployerAddress} --delegation_manager ${delegationManagerId}`,
       'contracts/soroban'
     );
     const accountMatch = accountStdout.match(/(C[A-Z0-9]{55})/);
@@ -90,17 +95,8 @@ async function main() {
     const registryId = registryMatch[1];
     console.log(`Registry Contract ID: ${registryId}`);
 
-    // 7. Initialize DelegationManager
-    console.log('Initializing DelegationManager...');
-    runCommand(
-      `stellar contract invoke --id ${delegationManagerId} --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- init --owner ${deployerAddress}`
-    );
-
-    // 8. Initialize CustomAccount
-    console.log('Initializing CustomAccount...');
-    runCommand(
-      `stellar contract invoke --id ${customAccountId} --source ${DEPLOYER_ALIAS} --network ${NETWORK} -- init --owner ${deployerAddress} --delegation_manager ${delegationManagerId}`
-    );
+    // DelegationManager and CustomAccount no longer have separate init steps — both were
+    // constructed atomically at deploy time above (steps 4 and 6).
 
     // 8b. Initialize Registry
     console.log('Initializing Registry...');

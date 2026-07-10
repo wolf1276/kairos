@@ -33,18 +33,23 @@ pub struct CustomAccount;
 
 #[contractimpl]
 impl CustomAccount {
-    // Initialize custom account
-    pub fn init(env: Env, owner: Address, delegation_manager: Address) {
+    // Constructor: runs atomically inside the CreateContractV2 host operation that
+    // creates this contract (soroban-sdk 22 / protocol 22, see
+    // soroban-env-host::host::lifecycle::call_constructor). There is no on-chain state
+    // where this contract exists but is uninitialized: the address doesn't exist until
+    // this function has already run as part of the same operation. That closes the
+    // residual self-claim race that a separate, post-deploy `init()` transaction left
+    // open (see docs/security/MAINNET_AUDIT.md, P0-1).
+    //
+    // `__constructor` is still an ordinary exported function under the hood (Soroban
+    // does not block calling it again after creation), so the re-init guard and
+    // `owner.require_auth()` below remain necessary, exactly as they were for the old
+    // `init()`: they stop a second, direct `__constructor` call from resetting
+    // ownership, and stop anyone from claiming a `owner` they don't hold the key for.
+    pub fn __constructor(env: Env, owner: Address, delegation_manager: Address) {
         if env.storage().instance().has(&DataKey::Owner) {
             panic_with_error!(&env, AccountError::AlreadyInitialized);
         }
-        // P0-1 fix: require the claimed owner's own authorization. Without this, `init`
-        // was callable by anyone with any `owner` argument, letting a third party (an
-        // observer front-running the deploy tx, or a malicious sponsor/relayer) claim a
-        // wallet that was never theirs. Combined with the deploy+init atomicity fix in
-        // `WalletModule` (which removes the separate-transaction window entirely), this
-        // also stops a sponsoring funder from silently substituting a different owner
-        // than the one the real owner authorized.
         owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage().instance().set(&DataKey::DelegationManager, &delegation_manager);
