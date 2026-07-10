@@ -25,7 +25,7 @@
     ],
     [
       [
-        "GDBNEXQ5LUAO5GSC4QAKTG5RDM2EEHGR26LGGB24N73B7GPRTEIZUIKY",
+        "GDGANEMWI5DXFTU55CKOPRS3MWIOQTNQNIEIXZ2G2JDZAUKOUHCE2IFF",
         {
           "function": {
             "contract_fn": {
@@ -33,7 +33,7 @@
               "function_name": "__constructor",
               "args": [
                 {
-                  "address": "GDBNEXQ5LUAO5GSC4QAKTG5RDM2EEHGR26LGGB24N73B7GPRTEIZUIKY"
+                  "address": "GDGANEMWI5DXFTU55CKOPRS3MWIOQTNQNIEIXZ2G2JDZAUKOUHCE2IFF"
                 },
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -168,7 +168,7 @@
       [
         {
           "contract_data": {
-            "contract": "GDBNEXQ5LUAO5GSC4QAKTG5RDM2EEHGR26LGGB24N73B7GPRTEIZUIKY",
+            "contract": "GDGANEMWI5DXFTU55CKOPRS3MWIOQTNQNIEIXZ2G2JDZAUKOUHCE2IFF",
             "key": {
               "ledger_key_nonce": {
                 "nonce": 5541220902715666415
@@ -183,7 +183,7 @@
             "data": {
               "contract_data": {
                 "ext": "v0",
-                "contract": "GDBNEXQ5LUAO5GSC4QAKTG5RDM2EEHGR26LGGB24N73B7GPRTEIZUIKY",
+                "contract": "GDGANEMWI5DXFTU55CKOPRS3MWIOQTNQNIEIXZ2G2JDZAUKOUHCE2IFF",
                 "key": {
                   "ledger_key_nonce": {
                     "nonce": 5541220902715666415
@@ -364,7 +364,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GDBNEXQ5LUAO5GSC4QAKTG5RDM2EEHGR26LGGB24N73B7GPRTEIZUIKY"
+                          "address": "GDGANEMWI5DXFTU55CKOPRS3MWIOQTNQNIEIXZ2G2JDZAUKOUHCE2IFF"
                         }
                       }
                     ]

@@ -54,6 +54,7 @@ pub enum DataKey {
     WalletDelegation(Address, Address), // (delegator, delegate) -> active delegation hash; one per pair, so a wallet can delegate to multiple agents concurrently
     Policy(Address, u64),      // (delegator, policy_id) -> terms bytes, updatable in place
     PendingUpgrade,
+    PoliciesContract, // the single Kairos Policies contract every caveat.enforcer must reference
 }
 
 #[contracterror]
@@ -77,6 +78,8 @@ pub enum ManagerError {
     EmptyChain = 15,
     NoPendingUpgrade = 16,
     TimelockNotElapsed = 17,
+    NoCaveats = 18,
+    InvalidEnforcer = 19,
 }
 
 const ROOT_AUTHORITY: [u8; 32] = [0xff; 32];
@@ -282,6 +285,20 @@ impl DelegationManager {
         env.events().publish((symbol_short!("del_dis"), delegator), hash);
     }
 
+    // Binds this manager to the single Kairos Policies contract that every delegation
+    // caveat's enforcer must reference (see H2 fix in redeem_delegations). Owner-only,
+    // updatable in place like other protocol config here — no storage layout or API
+    // change beyond this single admin setter.
+    pub fn set_policies_contract(env: Env, policies: Address) {
+        let owner: Address = env.storage().instance().get(&DataKey::Owner).unwrap();
+        owner.require_auth();
+        env.storage().instance().set(&DataKey::PoliciesContract, &policies);
+    }
+
+    pub fn get_policies_contract(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::PoliciesContract).unwrap()
+    }
+
     // Update policy terms in place for (delegator, policy_id). Does not touch the
     // Delegation struct, its hash, or its signature — caveats reference policy_id
     // via a marker-prefixed terms blob (see resolve_terms), so this lets Policy
@@ -447,6 +464,29 @@ impl DelegationManager {
                 }
                 used_hashes.push_back(hash.clone());
                 hashes.push_back(hash.clone());
+
+                // H2 fix: a delegation with zero caveats has no policy constraining it and
+                // must never be treated as valid authorization.
+                if delegation.caveats.len() == 0 {
+                    env.storage().instance().remove(&lock_key);
+                    panic_with_error!(&env, ManagerError::NoCaveats);
+                }
+
+                // H2 fix: every caveat's enforcer must be the configured Kairos Policies
+                // contract. Otherwise a delegation could point its enforcer at an
+                // arbitrary/no-op contract that always allows the action, bypassing real
+                // policy checks entirely while still satisfying the non-zero-caveats rule.
+                let policies_contract: Address = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::PoliciesContract)
+                    .unwrap();
+                for caveat in delegation.caveats.iter() {
+                    if caveat.enforcer != policies_contract {
+                        env.storage().instance().remove(&lock_key);
+                        panic_with_error!(&env, ManagerError::InvalidEnforcer);
+                    }
+                }
 
                 if Self::is_delegation_disabled(env.clone(), hash.clone()) {
                     env.storage().instance().remove(&lock_key);

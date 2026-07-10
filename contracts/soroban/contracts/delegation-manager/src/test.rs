@@ -71,6 +71,31 @@ impl DummyContract {
     }
 }
 
+/// A harmless no-op caveat enforcer: every hook is a no-op that always allows the
+/// action. Used to give delegations a non-empty `caveats` vec (required since the H2
+/// fix rejects zero-caveat delegations) in tests that aren't exercising policy logic.
+#[contract]
+pub struct NoopEnforcer;
+
+#[contractimpl]
+impl NoopEnforcer {
+    pub fn before_all(_env: Env, _terms: Bytes, _hash: BytesN<32>, _context: ExecutionContext) {}
+    pub fn before_hook(_env: Env, _terms: Bytes, _hash: BytesN<32>, _context: ExecutionContext) {}
+    pub fn after_hook(_env: Env, _terms: Bytes, _hash: BytesN<32>, _context: ExecutionContext) {}
+    pub fn after_all(_env: Env, _terms: Bytes, _hash: BytesN<32>, _context: ExecutionContext) {}
+}
+
+/// Registers a fresh `NoopEnforcer`, configures it as the manager's Policies contract
+/// (required since the H2 fix rejects any caveat whose enforcer isn't the configured
+/// Policies contract), and returns a caveat pointing at it — a harmless stand-in caveat
+/// for tests that need a non-empty `caveats` vec but aren't testing policy/caveat
+/// semantics themselves.
+fn noop_caveat(env: &Env, manager: &DelegationManagerClient) -> Caveat {
+    let enforcer = env.register_contract(None, NoopEnforcer);
+    manager.set_policies_contract(&enforcer);
+    Caveat { enforcer, terms: Bytes::new(env) }
+}
+
 #[contract]
 pub struct MockCustomAccount;
 
@@ -206,7 +231,7 @@ fn test_disable_and_enable_delegation() {
         delegate: delegate.clone(),
         delegator: delegator.clone(),
         authority: BytesN::from_array(&env, &[0u8; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -244,7 +269,7 @@ fn test_redeem_delegation_pipeline() {
         delegate: delegate.clone(),
         delegator: delegator_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -304,7 +329,7 @@ fn test_redeem_delegation_moves_token_balance_with_i128_precision() {
         delegate: redeemer.clone(),
         delegator: wallet_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 7,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -362,7 +387,7 @@ fn test_redeem_delegation_rejects_invalid_signature() {
         delegate: redeemer.clone(),
         delegator: wallet_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 1,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -409,7 +434,7 @@ fn test_redeem_delegation_nonce_replay_protection() {
         delegate: delegate.clone(),
         delegator: delegator_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -458,7 +483,7 @@ fn test_redeem_delegation_reusable_nonce_stays_usable() {
         delegate: delegate.clone(),
         delegator: delegator_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: u64::MAX,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -501,7 +526,7 @@ fn test_redeem_delegation_rejects_disabled_delegation() {
         delegate: delegate.clone(),
         delegator: delegator_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -518,6 +543,170 @@ fn test_redeem_delegation_rejects_disabled_delegation() {
 
     let result = manager.try_redeem_delegations(&delegate, &contexts, &executions);
     assert!(result.is_err(), "a disabled delegation must not be redeemable");
+}
+
+/// H2 fix: a delegation with zero caveats has no policy constraining it whatsoever and
+/// must be rejected outright, before signature/nonce/disabled checks even matter.
+#[test]
+#[should_panic]
+fn test_redeem_delegation_zero_caveats_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner_admin = Address::generate(&env);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    let delegator_id = env.register_contract(None, MockCustomAccount);
+    let delegator = MockCustomAccountClient::new(&env, &delegator_id);
+    delegator.init(&owner_admin, &manager_id);
+
+    let delegate = Address::generate(&env);
+    let target = env.register_contract(None, DummyContract);
+
+    let delegation = Delegation {
+        delegate: delegate.clone(),
+        delegator: delegator_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::new(&env),
+        salt: 0,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let execution = Execution {
+        target,
+        function: Symbol::new(&env, "test"),
+        args: Vec::new(&env),
+    };
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation])]);
+    let executions = Vec::from_array(&env, [execution]);
+
+    manager.redeem_delegations(&delegate, &contexts, &executions);
+}
+
+/// A delegation carrying a single (no-op) caveat is not rejected by the H2 zero-caveats
+/// check and redeems normally.
+#[test]
+fn test_redeem_delegation_single_caveat_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner_admin = Address::generate(&env);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    let delegator_id = env.register_contract(None, MockCustomAccount);
+    let delegator = MockCustomAccountClient::new(&env, &delegator_id);
+    delegator.init(&owner_admin, &manager_id);
+
+    let delegate = Address::generate(&env);
+    let target = env.register_contract(None, DummyContract);
+
+    let delegation = Delegation {
+        delegate: delegate.clone(),
+        delegator: delegator_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
+        salt: 0,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let execution = Execution {
+        target,
+        function: Symbol::new(&env, "test"),
+        args: Vec::new(&env),
+    };
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation])]);
+    let executions = Vec::from_array(&env, [execution]);
+
+    manager.redeem_delegations(&delegate, &contexts, &executions);
+    assert_eq!(manager.get_nonce(&delegator_id), 1);
+}
+
+/// H2 fix: a caveat whose enforcer is NOT the configured Kairos Policies contract must be
+/// rejected before any hook executes, even though it satisfies the (unrelated) non-zero
+/// caveats rule. This is the arbitrary/no-op-enforcer bypass the fix closes.
+#[test]
+#[should_panic]
+fn test_redeem_delegation_rejects_enforcer_other_than_configured_policies() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner_admin = Address::generate(&env);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    // Configure the real Policies contract as the only allowed enforcer...
+    let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager_id));
+    manager.set_policies_contract(&policies_id);
+
+    let delegator_id = env.register_contract(None, MockCustomAccount);
+    let delegator = MockCustomAccountClient::new(&env, &delegator_id);
+    delegator.init(&owner_admin, &manager_id);
+
+    let delegate = Address::generate(&env);
+    let target = env.register_contract(None, DummyContract);
+
+    // ...but the delegation's caveat points at an arbitrary no-op enforcer instead.
+    let rogue_enforcer = env.register_contract(None, NoopEnforcer);
+    let delegation = Delegation {
+        delegate: delegate.clone(),
+        delegator: delegator_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::from_array(&env, [Caveat { enforcer: rogue_enforcer, terms: Bytes::new(&env) }]),
+        salt: 0,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let execution = Execution {
+        target,
+        function: Symbol::new(&env, "test"),
+        args: Vec::new(&env),
+    };
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation])]);
+    let executions = Vec::from_array(&env, [execution]);
+
+    manager.redeem_delegations(&delegate, &contexts, &executions);
+}
+
+/// A delegation carrying multiple caveats redeems normally — the H2 check only rejects
+/// zero caveats, not multiple.
+#[test]
+fn test_redeem_delegation_multi_caveat_succeeds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner_admin = Address::generate(&env);
+    let manager_id = env.register(DelegationManager, DelegationManagerArgs::__constructor(&owner_admin));
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    let delegator_id = env.register_contract(None, MockCustomAccount);
+    let delegator = MockCustomAccountClient::new(&env, &delegator_id);
+    delegator.init(&owner_admin, &manager_id);
+
+    let delegate = Address::generate(&env);
+    let target = env.register_contract(None, DummyContract);
+
+    let shared_caveat = noop_caveat(&env, &manager);
+    let delegation = Delegation {
+        delegate: delegate.clone(),
+        delegator: delegator_id.clone(),
+        authority: BytesN::from_array(&env, &[0xff; 32]),
+        caveats: Vec::from_array(&env, [shared_caveat.clone(), shared_caveat]),
+        salt: 0,
+        nonce: 0,
+        signature: BytesN::from_array(&env, &[0u8; 64]),
+    };
+    let execution = Execution {
+        target,
+        function: Symbol::new(&env, "test"),
+        args: Vec::new(&env),
+    };
+    let contexts = Vec::from_array(&env, [Vec::from_array(&env, [delegation])]);
+    let executions = Vec::from_array(&env, [execution]);
+
+    manager.redeem_delegations(&delegate, &contexts, &executions);
+    assert_eq!(manager.get_nonce(&delegator_id), 1);
 }
 
 /// Registering a delegation records it as the active delegation for that (delegator,
@@ -662,6 +851,7 @@ fn test_set_policy_updates_terms_without_new_delegation() {
     let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager_id));
+    manager.set_policies_contract(&policies_id);
 
     let redeemer = Address::generate(&env);
     let receiver = Address::generate(&env);
@@ -867,7 +1057,7 @@ fn test_empty_chain_in_batch_rejects_entire_batch() {
         delegate: delegate.clone(),
         delegator: delegator_id.clone(),
         authority: BytesN::from_array(&env, &[0xff; 32]),
-        caveats: Vec::new(&env),
+        caveats: Vec::from_array(&env, [noop_caveat(&env, &manager)]),
         salt: 0,
         nonce: 0,
         signature: BytesN::from_array(&env, &[0u8; 64]),
@@ -903,6 +1093,7 @@ fn test_redeem_delegation_enforces_spend_limit_policy() {
     let wallet_id = env.register(CustomAccount, CustomAccountArgs::__constructor(&owner_address, &manager_id));
 
     let policies_id = env.register(Policies, PoliciesArgs::__constructor(&manager_id));
+    manager.set_policies_contract(&policies_id);
 
     let redeemer = Address::generate(&env);
     let receiver = Address::generate(&env);
