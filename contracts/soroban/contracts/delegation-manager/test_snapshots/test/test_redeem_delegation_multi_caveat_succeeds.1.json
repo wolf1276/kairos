@@ -97,6 +97,26 @@
                                         }
                                       }
                                     ]
+                                  },
+                                  {
+                                    "map": [
+                                      {
+                                        "key": {
+                                          "symbol": "enforcer"
+                                        },
+                                        "val": {
+                                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4"
+                                        }
+                                      },
+                                      {
+                                        "key": {
+                                          "symbol": "terms"
+                                        },
+                                        "val": {
+                                          "bytes": ""
+                                        }
+                                      }
+                                    ]
                                   }
                                 ]
                               }
@@ -186,8 +206,6 @@
         }
       ]
     ],
-    [],
-    [],
     []
   ],
   "ledger": {

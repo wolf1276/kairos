@@ -33,7 +33,13 @@ pub struct Registry;
 
 #[contractimpl]
 impl Registry {
-    pub fn init(env: Env, admin: Address) {
+    // Constructor: see CustomAccount::__constructor for the full rationale (same fix,
+    // same contract-level guard rules — this runs atomically inside CreateContractV2,
+    // closing the deploy→init front-running window the old separate `init()` tx left
+    // open (see docs/security/MAINNET_AUDIT.md, P0-1). `__constructor` is still an
+    // ordinary exported function under the hood, so the re-init guard and
+    // `admin.require_auth()` below remain necessary exactly as before.
+    pub fn __constructor(env: Env, admin: Address) {
         if env.storage().instance().has(&DataKey::Admin) {
             panic_with_error!(&env, RegistryError::AlreadyInitialized);
         }
@@ -73,6 +79,14 @@ impl Registry {
             env.storage().persistent().extend_ttl(&key, BUMP_THRESHOLD, BUMP_LIMIT);
         }
         env.storage().persistent().get(&key)
+    }
+
+    // Admin-gated: rotate the admin key. Old admin must sign; new admin takes over
+    // immediately (register/propose_upgrade/cancel_upgrade/upgrade all check this key).
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).unwrap();
+        stored_admin.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &new_admin);
     }
 
     // Admin-gated: queue an upgrade to take effect after UPGRADE_DELAY_SECS.

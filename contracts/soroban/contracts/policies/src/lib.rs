@@ -25,6 +25,7 @@ pub enum PolicyStateKey {
     // accumulator with the single-token spend limit (tag 2) if both caveats are on one delegation.
     PooledSpent(BytesN<32>),
     PooledLastSpentTime(BytesN<32>),
+    DelegationManager,
 }
 
 #[contracterror]
@@ -42,6 +43,10 @@ pub enum Error {
     // a decode failure here previously meant an unbounded spend was accounted as 0 (see
     // the Blend `submit(Vec<Request>)` bypass this error was introduced to close).
     AmountDecodeFailed = 6,
+    // Raised when a spend-limit-whitelisted token is called with a function other than
+    // transfer/xfer (e.g. approve, transfer_from, burn, clawback, mint). Previously such
+    // calls fell through the tag-2 branch unaccounted and unchecked (see H1).
+    FunctionNotAllowed = 7,
 }
 
 #[contract]
@@ -49,6 +54,26 @@ pub struct Policies;
 
 #[contractimpl]
 impl Policies {
+    // Binds this Policies instance to a single DelegationManager, exactly like
+    // custom-account's `delegation_manager` binding (see CustomAccount::__constructor).
+    // Runs atomically at deploy time, so there's no window where the hooks exist without
+    // a caller check.
+    pub fn __constructor(env: Env, delegation_manager: Address) {
+        env.storage().instance().set(&PolicyStateKey::DelegationManager, &delegation_manager);
+        env.storage().instance().extend_ttl(10000, 100000);
+    }
+
+    // Every hook mutates or reads policy state on behalf of a specific delegation, so an
+    // unauthorized caller could forge `hash`/`context` to drain, reset, or bypass any
+    // caveat's accounting. Soroban gives contract addresses no signature-based
+    // `require_auth()` bypass: it only succeeds when `delegation_manager` is the actual
+    // direct invoker of this call, so this rejects every external caller before any state
+    // is touched, without changing hook signatures, storage layout, or policy semantics.
+    fn require_manager(env: &Env) {
+        let manager: Address = env.storage().instance().get(&PolicyStateKey::DelegationManager).unwrap();
+        manager.require_auth();
+    }
+
     // before_all hook
     pub fn before_all(
         env: Env,
@@ -56,6 +81,7 @@ impl Policies {
         hash: BytesN<32>,
         context: ExecutionContext,
     ) {
+        Self::require_manager(&env);
         if terms.len() == 0 {
             panic_with_error!(&env, Error::InvalidTerms);
         }
@@ -119,6 +145,7 @@ impl Policies {
         hash: BytesN<32>,
         context: ExecutionContext,
     ) {
+        Self::require_manager(&env);
         if terms.len() == 0 {
             panic_with_error!(&env, Error::InvalidTerms);
         }
@@ -141,7 +168,14 @@ impl Policies {
                 // Decode spend/transfer amount from args. SEP-41 `transfer(from, to, amount)`
                 // and `xfer` both carry the amount as the third argument (index 2), not the
                 // `to` address at index 1.
-                if context.target == token && (context.function == Symbol::new(&env, "transfer") || context.function == Symbol::new(&env, "xfer")) {
+                if context.target == token {
+                    // H1: any other function on the whitelisted token (approve, transfer_from,
+                    // burn, clawback, mint, ...) must be rejected outright, not silently waved
+                    // through unaccounted — an approve() here would hand an attacker-controlled
+                    // spender an allowance the spend limit never sees.
+                    if context.function != Symbol::new(&env, "transfer") && context.function != Symbol::new(&env, "xfer") {
+                        panic_with_error!(&env, Error::FunctionNotAllowed);
+                    }
                     // A whitelisted spend-limited token call whose args don't carry an amount
                     // at the expected index is not a spend we can safely ignore — reject it
                     // rather than silently skipping accounting (fail closed).
@@ -231,18 +265,22 @@ impl Policies {
     }
 
     pub fn after_hook(
-        _env: Env,
+        env: Env,
         _terms: Bytes,
         _hash: BytesN<32>,
         _context: ExecutionContext,
-    ) {}
+    ) {
+        Self::require_manager(&env);
+    }
 
     pub fn after_all(
-        _env: Env,
+        env: Env,
         _terms: Bytes,
         _hash: BytesN<32>,
         _context: ExecutionContext,
-    ) {}
+    ) {
+        Self::require_manager(&env);
+    }
 
     // Parse contract address from 32-byte raw contract ID/public key payload
     fn parse_contract_address(env: &Env, terms: &Bytes, offset: u32) -> Result<Address, Error> {

@@ -1,10 +1,9 @@
 {
   "generators": {
-    "address": 6,
+    "address": 2,
     "nonce": 0
   },
   "auth": [
-    [],
     []
   ],
   "ledger": {
@@ -39,27 +38,14 @@
                     "executable": {
                       "wasm": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
                     },
-                    "storage": [
-                      {
-                        "key": {
-                          "vec": [
-                            {
-                              "symbol": "DelegationManager"
-                            }
-                          ]
-                        },
-                        "val": {
-                          "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
-                        }
-                      }
-                    ]
+                    "storage": null
                   }
                 }
               }
             },
             "ext": "v0"
           },
-          100000
+          4095
         ]
       ],
       [
@@ -80,7 +66,7 @@
             },
             "ext": "v0"
           },
-          100000
+          4095
         ]
       ]
     ]
