@@ -5,7 +5,28 @@
   },
   "auth": [
     [],
-    [],
+    [
+      [
+        "GDFQN3WOD7TF2W6NBM7Y3LVQFTZE6HQLPL24MWYLPKEE52YOWCRDS6NG",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "function_name": "init",
+              "args": [
+                {
+                  "address": "GDFQN3WOD7TF2W6NBM7Y3LVQFTZE6HQLPL24MWYLPKEE52YOWCRDS6NG"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
     []
   ],
   "ledger": {
@@ -18,6 +39,39 @@
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
+      [
+        {
+          "contract_data": {
+            "contract": "GDFQN3WOD7TF2W6NBM7Y3LVQFTZE6HQLPL24MWYLPKEE52YOWCRDS6NG",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 801925984706572462
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "GDFQN3WOD7TF2W6NBM7Y3LVQFTZE6HQLPL24MWYLPKEE52YOWCRDS6NG",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 801925984706572462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
       [
         {
           "contract_data": {
@@ -62,7 +116,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GCZRVUV3AYJYKPYHG2NSW2NB6LMWDWYFZEMGZVIL4PQSKU7F6XRBW5F7"
+                          "address": "GDFQN3WOD7TF2W6NBM7Y3LVQFTZE6HQLPL24MWYLPKEE52YOWCRDS6NG"
                         }
                       }
                     ]

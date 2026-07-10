@@ -38,6 +38,14 @@ impl CustomAccount {
         if env.storage().instance().has(&DataKey::Owner) {
             panic_with_error!(&env, AccountError::AlreadyInitialized);
         }
+        // P0-1 fix: require the claimed owner's own authorization. Without this, `init`
+        // was callable by anyone with any `owner` argument, letting a third party (an
+        // observer front-running the deploy tx, or a malicious sponsor/relayer) claim a
+        // wallet that was never theirs. Combined with the deploy+init atomicity fix in
+        // `WalletModule` (which removes the separate-transaction window entirely), this
+        // also stops a sponsoring funder from silently substituting a different owner
+        // than the one the real owner authorized.
+        owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage().instance().set(&DataKey::DelegationManager, &delegation_manager);
         env.storage().instance().extend_ttl(10000, 100000);

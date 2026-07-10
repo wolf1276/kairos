@@ -5,7 +5,28 @@
   },
   "auth": [
     [],
-    [],
+    [
+      [
+        "GD7GAZ77N5VDKXWQGFGF3TUXRIYGR3UMFKOFCKCZSRGPPY6FSD6GV55O",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "function_name": "init",
+              "args": [
+                {
+                  "address": "GD7GAZ77N5VDKXWQGFGF3TUXRIYGR3UMFKOFCKCZSRGPPY6FSD6GV55O"
+                },
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                }
+              ]
+            }
+          },
+          "sub_invocations": []
+        }
+      ]
+    ],
     []
   ],
   "ledger": {
@@ -18,6 +39,39 @@
     "min_temp_entry_ttl": 16,
     "max_entry_ttl": 6312000,
     "ledger_entries": [
+      [
+        {
+          "contract_data": {
+            "contract": "GD7GAZ77N5VDKXWQGFGF3TUXRIYGR3UMFKOFCKCZSRGPPY6FSD6GV55O",
+            "key": {
+              "ledger_key_nonce": {
+                "nonce": 801925984706572462
+              }
+            },
+            "durability": "temporary"
+          }
+        },
+        [
+          {
+            "last_modified_ledger_seq": 0,
+            "data": {
+              "contract_data": {
+                "ext": "v0",
+                "contract": "GD7GAZ77N5VDKXWQGFGF3TUXRIYGR3UMFKOFCKCZSRGPPY6FSD6GV55O",
+                "key": {
+                  "ledger_key_nonce": {
+                    "nonce": 801925984706572462
+                  }
+                },
+                "durability": "temporary",
+                "val": "void"
+              }
+            },
+            "ext": "v0"
+          },
+          6311999
+        ]
+      ],
       [
         {
           "contract_data": {
@@ -62,7 +116,7 @@
                           ]
                         },
                         "val": {
-                          "address": "GD5O7OA4I2HP4YOUDIIXVN3H3FJX2LU4DQEQJPSBC7GRXQXFI6UIGQAL"
+                          "address": "GD7GAZ77N5VDKXWQGFGF3TUXRIYGR3UMFKOFCKCZSRGPPY6FSD6GV55O"
                         }
                       }
                     ]

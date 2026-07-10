@@ -90,6 +90,119 @@ impl MockCustomAccount {
     }
 }
 
+// --- P0-1: unauthenticated init() / front-run ownership takeover (DelegationManager) ---
+//
+// Same defect as CustomAccount::init: no `.require_auth()` anywhere in `init()`, only an
+// AlreadyInitialized-style reentry guard. `scripts/deploy-testnet.ts` deploys the manager
+// and initializes it in two separate `stellar contract` invocations (two separate
+// transactions), so the same front-running window applied to the protocol singleton. Fixed
+// the same way: `owner.require_auth()` in `init()`. This is a one-time, operator-run
+// deployment (not exposed to end users like CustomAccount's per-wallet init), so it was not
+// worth the SDK-level atomicity rework — see "Remaining Issues" in the audit report.
+
+#[test]
+fn test_exploit_manager_front_run_init_steals_ownership_pre_fix() {
+    let env = Env::default();
+
+    let legit_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    // Attacker front-runs the deployer's own init tx, self-authorizing as the new owner —
+    // reproduces the exploit exactly as it behaved before the fix (an attacker claiming
+    // themselves as owner still satisfies `owner.require_auth()` trivially).
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &manager_id,
+            fn_name: "init",
+            args: (attacker.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    manager.init(&attacker);
+
+    // Deployer's legitimate init (the real second transaction) now fails.
+    let legit_init = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        manager.init(&legit_owner);
+    }));
+    assert!(
+        legit_init.is_err(),
+        "legitimate deployer's init() unexpectedly succeeded after attacker's front-run"
+    );
+
+    let stored_owner: Address = env.as_contract(&manager_id, || {
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    });
+    assert_eq!(stored_owner, attacker, "attacker should now own the DelegationManager");
+}
+
+// --- Regression tests for the fix ---
+
+#[test]
+fn test_manager_legitimate_init_succeeds_with_owner_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+    manager.init(&owner);
+
+    let stored_owner: Address = env.as_contract(&manager_id, || {
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    });
+    assert_eq!(stored_owner, owner);
+}
+
+#[test]
+#[should_panic]
+fn test_manager_unauthorized_init_is_rejected() {
+    let env = Env::default();
+    // No mocked auths: nobody's signature is available for `owner`.
+    let owner = Address::generate(&env);
+    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
+    manager.init(&owner);
+}
+
+#[test]
+#[should_panic]
+fn test_manager_front_run_cannot_impersonate_a_different_owner() {
+    let env = Env::default();
+
+    let legit_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+
+    let manager_id = env.register_contract(None, DelegationManager);
+    let manager = DelegationManagerClient::new(&env, &manager_id);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &manager_id,
+            fn_name: "init",
+            args: (legit_owner.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    manager.init(&legit_owner);
+}
+
+#[test]
+#[should_panic]
+fn test_manager_double_initialization_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let manager = DelegationManagerClient::new(&env, &env.register_contract(None, DelegationManager));
+    manager.init(&owner);
+    manager.init(&other);
+}
+
 #[test]
 fn test_manager_init_and_pause() {
     let env = Env::default();

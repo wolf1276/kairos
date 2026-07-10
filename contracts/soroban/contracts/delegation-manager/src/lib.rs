@@ -89,6 +89,10 @@ impl DelegationManager {
         if env.storage().instance().has(&DataKey::Owner) {
             panic_with_error!(&env, ManagerError::NotAuthorized);
         }
+        // P0-1 fix: require the claimed owner's own authorization, matching the same
+        // hardening applied to CustomAccount::init. See that function's comment for the
+        // full rationale.
+        owner.require_auth();
         env.storage().instance().set(&DataKey::Owner, &owner);
         env.storage().instance().set(&DataKey::Paused, &false);
         env.storage().instance().extend_ttl(BUMP_THRESHOLD, BUMP_LIMIT);

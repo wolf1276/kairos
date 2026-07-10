@@ -30,6 +30,149 @@ fn test_custom_account_initialization() {
     account.init(&owner, &manager);
 }
 
+// --- P0-1: unauthenticated init() / front-run ownership takeover ---
+//
+// `init()` used to never call `.require_auth()` on anything (contrast with `execute()`,
+// which calls `owner.require_auth()`). It only guarded against re-initialization.
+// Deployment and initialization are two separate transactions in every real flow
+// (`WalletModule.create`, `submitSponsoredDeploy`, `scripts/deploy-testnet.ts`), and the
+// contract address is deterministic and known before the init transaction lands. The
+// exploit test below (kept, still passing) reproduces the takeover exactly as it behaved
+// before the fix, by calling the pre-fix code path directly (no owner auth mocked, only
+// the double-init guard active). The regression tests after it prove the fixed behavior:
+// `owner.require_auth()` now rejects any init that doesn't carry the claimed owner's own
+// signature — a caller can no longer initialize a wallet with an owner they don't control.
+//
+// Note: this contract-level check alone does not stop an attacker from self-initializing
+// an uninitialized wallet with *themselves* as owner (they can legitimately sign for their
+// own address) — it stops impersonation of a specific victim owner. Closing the self-claim
+// race requires removing the separate-transaction window itself, which is fixed at the SDK
+// layer: `WalletModule.create`/`submitSponsoredDeploy` now submit deploy+init as a single
+// atomic multi-operation transaction (see `packages/sdk/src/wallet/index.ts`), so no
+// transaction ever exists on the wire for an attacker to race against.
+
+#[test]
+fn test_exploit_front_run_init_steals_ownership_pre_fix() {
+    let env = Env::default();
+
+    let legit_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let manager = Address::generate(&env);
+
+    // "Deploy" step: the contract exists at a known, deterministic address but is not yet
+    // initialized — this is the on-chain window between the CreateContract tx confirming
+    // and the separate `init` tx landing.
+    let account_id = env.register(CustomAccount, ());
+    let account = CustomAccountClient::new(&env, &account_id);
+
+    // Attacker observes the deployed-but-uninitialized wallet and front-runs the legitimate
+    // init call, claiming ownership for themselves. Only the attacker's own auth is mocked
+    // (mirroring what an attacker can actually produce: a signature over their own address),
+    // reproducing the exact pre-fix exploit — which still succeeds today because an
+    // attacker claiming themselves as owner satisfies `owner.require_auth()` trivially.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &account_id,
+            fn_name: "init",
+            args: (attacker.clone(), manager.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    account.init(&attacker, &manager);
+
+    // The legitimate owner's init (submitted in the real flow's second transaction) now
+    // fails: the wallet is already claimed.
+    let legit_init = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        account.init(&legit_owner, &manager);
+    }));
+    assert!(
+        legit_init.is_err(),
+        "legitimate owner's init() unexpectedly succeeded after attacker's front-run"
+    );
+
+    // Confirm ownership was actually stolen, not just that a second init failed.
+    let stored_owner: Address = env.as_contract(&account_id, || {
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    });
+    assert_eq!(stored_owner, attacker, "attacker should now own the wallet");
+    assert_ne!(stored_owner, legit_owner, "legitimate owner was locked out");
+}
+
+// --- Regression tests for the fix ---
+
+#[test]
+fn test_legitimate_init_succeeds_with_owner_auth() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let manager = Address::generate(&env);
+
+    let account_id = env.register(CustomAccount, ());
+    let account = CustomAccountClient::new(&env, &account_id);
+    account.init(&owner, &manager);
+
+    let stored_owner: Address = env.as_contract(&account_id, || {
+        env.storage().instance().get(&DataKey::Owner).unwrap()
+    });
+    assert_eq!(stored_owner, owner);
+}
+
+#[test]
+#[should_panic]
+fn test_unauthorized_init_is_rejected() {
+    let env = Env::default();
+    // No mocked auths at all: nobody's signature is available for `owner`.
+    let owner = Address::generate(&env);
+    let manager = Address::generate(&env);
+
+    let account = CustomAccountClient::new(&env, &env.register(CustomAccount, ()));
+    account.init(&owner, &manager);
+}
+
+#[test]
+#[should_panic]
+fn test_front_run_cannot_impersonate_a_different_owner() {
+    let env = Env::default();
+
+    let legit_owner = Address::generate(&env);
+    let attacker = Address::generate(&env);
+    let manager = Address::generate(&env);
+
+    let account_id = env.register(CustomAccount, ());
+    let account = CustomAccountClient::new(&env, &account_id);
+
+    // Attacker only has their own signature, but tries to initialize the wallet with the
+    // real owner's address (e.g. to grief a specific victim, or simply because they don't
+    // hold that key at all). Only the attacker's auth is mocked, not legit_owner's.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attacker,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &account_id,
+            fn_name: "init",
+            args: (legit_owner.clone(), manager.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+    account.init(&legit_owner, &manager);
+}
+
+#[test]
+#[should_panic]
+fn test_double_initialization_is_rejected() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    let manager = Address::generate(&env);
+
+    let account = CustomAccountClient::new(&env, &env.register(CustomAccount, ()));
+    account.init(&owner, &manager);
+    account.init(&other, &manager);
+}
+
 #[test]
 fn test_custom_account_execution_from_executor() {
     let env = Env::default();
@@ -120,6 +263,9 @@ fn test_is_valid_signature_rejects_raw_unwrapped_signature() {
 #[test]
 fn test_check_auth_accepts_standard_account_signature() {
     let env = Env::default();
+    // Only needed to authorize the `init` setup call below — `__check_auth` itself is
+    // invoked directly further down, bypassing the mocked-auth machinery entirely.
+    env.mock_all_auths();
 
     let signing_key = SigningKey::generate(&mut OsRng);
     let strkey =
@@ -151,6 +297,9 @@ fn test_check_auth_accepts_standard_account_signature() {
 #[should_panic]
 fn test_check_auth_rejects_wrong_signer() {
     let env = Env::default();
+    // Only needed to authorize the `init` setup call below, so the panic this test expects
+    // comes from `__check_auth` rejecting the wrong signer, not from the setup call itself.
+    env.mock_all_auths();
 
     let signing_key = SigningKey::generate(&mut OsRng);
     let wrong_key = SigningKey::generate(&mut OsRng);
