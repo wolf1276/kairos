@@ -60,11 +60,33 @@ export class RegistryModule {
     if (!rpc.Api.isSimulationSuccess(simRes)) {
       throw new RpcError(`Registry lookup for ${owner} did not simulate successfully.`, simRes);
     }
-    const retval = simRes.result?.retval;
+    // `isSimulationSuccess` only checks for a `transactionData` field — it does NOT guarantee
+    // `result` is present. The underlying SDK omits `result` entirely when the RPC response's
+    // `results` array is empty (a malformed/incomplete response from a degraded RPC node or
+    // proxy), which is distinct from a real invocation result. Treating a missing `result` the
+    // same as a present `result` with `scvVoid` would silently read "we can't tell" as "no
+    // wallet" — the exact fail-open bug this lookup exists to avoid. Only a `result` that is
+    // actually present is a confirmed answer from the contract.
+    if (!simRes.result) {
+      throw new RpcError(`Registry lookup for ${owner} returned a malformed simulation response (missing result).`, simRes);
+    }
+    const retval = simRes.result.retval;
     if (!retval || retval.switch().name === 'scvVoid') {
       return null;
     }
-    return Address.fromScVal(retval).toString();
+    // A present, non-void retval is expected to be an Address ScVal (the contract's return
+    // type). `Address.fromScVal` throws a raw TypeError for any other ScVal shape (e.g. a
+    // malformed/incompatible RPC response) — normalize that into the same RpcError used for
+    // every other "couldn't get a confirmed answer from the Registry" case above, instead of
+    // letting an SDK-internal TypeError leak out of this method.
+    try {
+      return Address.fromScVal(retval).toString();
+    } catch (err) {
+      throw new RpcError(
+        `Registry lookup for ${owner} returned a malformed retval (expected an Address ScVal): ${err instanceof Error ? err.message : String(err)}`,
+        retval
+      );
+    }
   }
 
   /**

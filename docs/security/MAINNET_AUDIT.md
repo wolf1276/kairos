@@ -281,6 +281,157 @@ non-empty), so nothing depends on the old behavior.
 
 ---
 
+## P1-3 — Malformed Registry RPC response read as "wallet not found" — **[fixed]**
+
+**Severity: P1 (exploitable only under a specific RPC-response shape, not every RPC failure;
+fail-open outcome is a duplicate/orphaned smart-wallet deploy, not a fund-drain).**
+**Packages: `packages/sdk` (`RegistryModule.getSmartWallet`).**
+**Investigated: 2026-07-10.**
+
+### Scope and starting hypothesis
+
+Given hypothesis (from an external audit note, not trusted going in): "Registry/RPC failures
+can be interpreted as wallet-not-found, allowing `Create Smart Wallet` to run for an owner who
+already has one." Investigated every path from a Registry lookup to a `Wallet Found` /
+`Wallet Not Found` / `Registry Error` verdict, without modifying any code until a concrete
+failure was reproduced with a test.
+
+### What was already correct (not a bug, verified not just assumed)
+
+An earlier pass (commit `baa0d2a`, "WIP: mainnet readiness fixes") had already hardened most of
+this path and left comments/tests documenting it:
+
+- `RegistryModule.getSmartWallet` (`packages/sdk/src/registry/index.ts`) wraps the simulate call
+  in try/catch and rethrows any `KairosError` or wraps any other throw as `RpcError` — RPC
+  timeout, RPC unavailable, network error, and simulation failure (`TransactionSimulationError`)
+  all throw, never return `null`.
+- `apps/web/app/lib/sdk/registry.ts`'s `lookupRegistry` passes those throws straight through.
+- `apps/web/app/api/connect/check/route.ts` catches that throw and returns an explicit
+  `{status: "error"}` / HTTP 502 — never `{status: "new"}`.
+- `apps/web/app/hooks/useSmartWallets.ts`'s `mergeSmartWallets` treats a thrown/failed Registry
+  check as `checkFailed: true`, distinct from a confirmed-empty result.
+- `apps/web/app/api/delegate-sdk/route.ts`'s `PREPARE_WALLET_DEPLOY` handler calls
+  `lookupRegistry` as a hard gate before deploying; a throw there is uncaught inside the handler
+  and falls through to the route's outer catch, which returns HTTP 500 — `ensureFundedTestnetAccount`
+  and `prepareSponsoredDeploy` are never reached.
+
+All of the above were re-verified with new/existing tests in this pass (see "Regression tests
+added"), not just re-read — every scenario in "Verified" below has a passing test that would fail
+if the fail-open behavor regressed.
+
+### Root cause (the part that was still broken)
+
+`RegistryModule.getSmartWallet` determined "no wallet" using:
+
+```ts
+const retval = simRes.result?.retval;
+if (!retval || retval.switch().name === 'scvVoid') {
+  return null;
+}
+```
+
+`rpc.Api.isSimulationSuccess` (from `@stellar/stellar-sdk`) only checks `"transactionData" in
+sim` — it does not require `result` to be present. The SDK's own response parser
+(`parseSuccessful` in `@stellar/stellar-sdk/lib/rpc/parsers.js`) omits the `result` field
+entirely whenever the raw RPC response's `results` array is empty (`sim.results.length === 0`)
+instead of containing exactly one entry for the one operation being simulated — a malformed or
+incomplete response shape (e.g. from a degraded RPC node, misbehaving proxy/load balancer, or a
+partial/interrupted response) that is still `"transactionData" in sim === true`, i.e. still
+classified as a *successful* simulation.
+
+In that case `simRes.result` is `undefined`, so `simRes.result?.retval` is `undefined`, and the
+`!retval` branch fires — collapsing "the response didn't actually tell us anything" into the
+same `return null` as "the contract explicitly confirmed no registration" (a real `scvVoid`).
+That `null` is Registry's canonical "wallet not found" signal to every caller in the chain above.
+
+### Verified
+
+Confirmed at the type-guard level and via the real (not mocked-away) `@stellar/stellar-sdk`
+parsing code, then reproduced against the actual `getSmartWallet` method:
+
+```
+isSimulationSuccess({ transactionData: {}, latestLedger: 100 })  // no `result` key
+  -> true
+```
+
+A test that mocks `simulateTx` to resolve with exactly that shape
+(`{ latestLedger: 100, transactionData: {} }`, no `result`) made `getSmartWallet` resolve to
+`null` pre-fix — confirmed failing before the fix, confirmed passing (throws `RpcError`) after.
+
+For each failure mode in scope, the verdict `getSmartWallet` (and everything downstream of it)
+now produces:
+
+| Failure mode | Verdict |
+| --- | --- |
+| Wallet registered, simulation succeeds with a real address | Wallet Found |
+| Simulation succeeds with `result.retval` = `scvVoid` | Wallet Not Found |
+| RPC timeout | Registry Error (throws `RpcError`) |
+| RPC unavailable / connection refused | Registry Error (throws `RpcError`) |
+| Simulation failure (contract trap / non-success sim response) | Registry Error (throws `TransactionSimulationError`) |
+| Horizon/RPC 5xx surfaced as a thrown error during simulate | Registry Error (throws `RpcError`) |
+| Invalid/unconfigured Registry contract ID | Registry Error (throws `RpcError`, before any RPC call) |
+| Network error (e.g. `ETIMEDOUT`) | Registry Error (throws `RpcError`) |
+| Malformed response (`transactionData` present, `result` missing) | Registry Error (throws `RpcError`) — **was Wallet Not Found pre-fix** |
+
+`Registry Error` never reaches `PREPARE_WALLET_DEPLOY`'s deploy step — verified via the
+route-level regression test (below), which asserts `ensureFundedTestnetAccount` and
+`prepareSponsoredDeploy` are not called when the Registry lookup throws.
+
+### Fix
+
+`packages/sdk/src/registry/index.ts`: added an explicit `if (!simRes.result) throw new
+RpcError(...)` check before reading `retval`, so a `result`-less "success" response is treated as
+an ambiguous/malformed answer (must throw) rather than folded into the same branch as a
+confirmed `scvVoid`. Smallest possible change — no change to the method's public signature, no
+change to any caller, no change to the `scvVoid` → `null` mapping for an actually-confirmed empty
+result.
+
+### Regression tests added
+
+`packages/sdk/src/registry/index.test.ts`:
+- `P1-3: malformed response (transactionData present, no result entry) must throw, not return
+  null` — the direct repro/regression test for the root cause above.
+- `invalid contract ID: Registry contract not configured throws before any RPC call`.
+- `Horizon/RPC 5xx surfaced during simulation throws, never returns null`.
+
+Plus pre-existing coverage in the same file for wallet-found, wallet-not-found (real `scvVoid`),
+RPC failure, simulation failure, and network timeout.
+
+`apps/web/app/api/delegate-sdk/route.test.ts`:
+- `P1-3: Registry lookup failure (RPC/timeout/malformed) must never fall through to deploy` —
+  asserts a thrown Registry lookup during `PREPARE_WALLET_DEPLOY` returns HTTP 500 and never
+  calls `ensureFundedTestnetAccount` / `prepareSponsoredDeploy`.
+
+### Verification run
+
+- SDK tests (`packages/sdk`): 37/37 pass, including 9/9 in `registry/index.test.ts` (up from 6).
+- Web app tests (`apps/web`): 33/33 pass across all suites, including 12/12 across
+  `delegate-sdk/route.test.ts` + `connect/check/route.test.ts`.
+- SDK typecheck (`tsc --noEmit`): clean.
+- Web app typecheck (`tsc --noEmit`): clean (after clearing a stale, gitignored
+  `.next/dev/types` cache referencing an already-removed route — unrelated to this change).
+- Backend: no backend TypeScript changed by this fix. `backend/src` typecheck and test run both
+  hit pre-existing, unrelated environment gaps in this sandbox — `better-sqlite3` native bindings
+  not built for the installed Node version (same gap noted in P0-1/P0-2) and an unbuilt workspace
+  package `@wolf1276/kairos-turnkey-signer` — neither touches Registry/wallet-lookup code.
+
+### Remaining issues
+
+None for the Registry-lookup fail-open behavior itself. Previously noted here but out of scope
+for this finding: `Address.fromScVal(retval)` (same file, success path) used to throw a plain
+`TypeError` rather than an `RpcError` if a *present* `result.retval` was some other non-address,
+non-void `ScVal` (verified via direct probing: `scvU32`/`scvBool`/`scvString`/`scvVec`/`scvMap`
+all threw `TypeError address not set`). This always failed closed (threw, never returned `null`),
+so it never reproduced the P1-3 fail-open behavior — it was a minor error-classification
+inconsistency, not a security bug. **Fixed 2026-07-10**: the call is now wrapped in a try/catch
+that normalizes any thrown error into the existing `RpcError`, matching every other Registry
+failure mode in the table above. See `packages/sdk/src/registry/index.ts` (the
+`Address.fromScVal` call at the end of `getSmartWallet`) and the
+`malformed retval (present but not an Address ScVal) throws RpcError, not a raw TypeError` test
+in `packages/sdk/src/registry/index.test.ts`.
+
+---
+
 ## Template for future findings
 
 ```

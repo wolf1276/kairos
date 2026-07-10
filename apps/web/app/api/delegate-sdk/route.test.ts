@@ -73,4 +73,27 @@ describe("POST /api/delegate-sdk PREPARE_WALLET_DEPLOY", () => {
     expect(data.alreadyExists).toBeUndefined();
     expect(prepareSponsoredDeploy).toHaveBeenCalledWith("FUNDER_PUBLIC_KEY", owner, "wasm-hash");
   });
+
+  it("P1-3: Registry lookup failure (RPC/timeout/malformed) must never fall through to deploy", async () => {
+    // lookupRegistry throws (never returns null) for anything that isn't a confirmed "no
+    // wallet" verdict — see packages/sdk/src/registry/index.ts. This route must propagate
+    // that failure as an error response, not treat the throw (or any falsy read) as
+    // "registry has no wallet" and proceed to deploy a possibly-duplicate smart wallet.
+    const owner = "GABC_OWNER";
+    lookupRegistryMock.mockRejectedValueOnce(new Error("RPC Error: Registry lookup failed: connection refused"));
+
+    const { POST } = await import("./route");
+    const res = await POST(
+      new Request("http://localhost/api/delegate-sdk", {
+        method: "POST",
+        body: JSON.stringify({ action: "PREPARE_WALLET_DEPLOY", owner }),
+      })
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(500);
+    expect(data.success).toBeUndefined();
+    expect(ensureFundedTestnetAccount).not.toHaveBeenCalled();
+    expect(prepareSponsoredDeploy).not.toHaveBeenCalled();
+  });
 });
