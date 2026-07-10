@@ -43,6 +43,10 @@ pub enum Error {
     // a decode failure here previously meant an unbounded spend was accounted as 0 (see
     // the Blend `submit(Vec<Request>)` bypass this error was introduced to close).
     AmountDecodeFailed = 6,
+    // Raised when a spend-limit-whitelisted token is called with a function other than
+    // transfer/xfer (e.g. approve, transfer_from, burn, clawback, mint). Previously such
+    // calls fell through the tag-2 branch unaccounted and unchecked (see H1).
+    FunctionNotAllowed = 7,
 }
 
 #[contract]
@@ -164,7 +168,14 @@ impl Policies {
                 // Decode spend/transfer amount from args. SEP-41 `transfer(from, to, amount)`
                 // and `xfer` both carry the amount as the third argument (index 2), not the
                 // `to` address at index 1.
-                if context.target == token && (context.function == Symbol::new(&env, "transfer") || context.function == Symbol::new(&env, "xfer")) {
+                if context.target == token {
+                    // H1: any other function on the whitelisted token (approve, transfer_from,
+                    // burn, clawback, mint, ...) must be rejected outright, not silently waved
+                    // through unaccounted — an approve() here would hand an attacker-controlled
+                    // spender an allowance the spend limit never sees.
+                    if context.function != Symbol::new(&env, "transfer") && context.function != Symbol::new(&env, "xfer") {
+                        panic_with_error!(&env, Error::FunctionNotAllowed);
+                    }
                     // A whitelisted spend-limited token call whose args don't carry an amount
                     // at the expected index is not a spend we can safely ignore — reject it
                     // rather than silently skipping accounting (fail closed).

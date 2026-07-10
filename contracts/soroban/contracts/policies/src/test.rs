@@ -526,3 +526,88 @@ fn test_unauthorized_caller_cannot_reset_accounting() {
         assert_eq!(spent, 900i128, "unauthorized call must not have reset accumulated spend");
     });
 }
+
+// H1 regression: tag-2 spend-limit must reject any function other than transfer/xfer on the
+// whitelisted token — approve/transfer_from/burn/clawback/mint previously fell through the
+// before_hook's `if` unaccounted and unchecked, letting a delegate hand an attacker-controlled
+// spender an unlimited allowance via token.approve(...) with zero spend-limit enforcement.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_approve_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[42u8; 32]);
+
+    let attacker = Address::generate(&env);
+    let huge_amount = i128::MAX;
+    // SEP-41 approve(from, spender, amount, live_until_ledger)
+    let args = vec![
+        &env,
+        token.clone().into_val(&env),
+        attacker.clone().into_val(&env),
+        huge_amount.into_val(&env),
+        1_000_000u32.into_val(&env),
+    ];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "approve"), args);
+
+    // Must panic now instead of silently waving the call through unaccounted.
+    client.before_hook(&terms, &hash, &ctx);
+}
+
+// Same shape but for transfer_from — also not transfer/xfer, also must be rejected.
+#[test]
+#[should_panic]
+fn test_h1_spend_limit_rejects_transfer_from_on_whitelisted_token() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[43u8; 32]);
+
+    let spender = Address::generate(&env);
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let args = vec![
+        &env,
+        spender.clone().into_val(&env),
+        from.clone().into_val(&env),
+        to.clone().into_val(&env),
+        500i128.into_val(&env),
+    ];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "transfer_from"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+}
+
+// Sanity: legitimate transfer/xfer calls on the whitelisted token are unaffected by the H1 fix.
+#[test]
+fn test_h1_fix_still_allows_transfer_within_limit() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(Policies, PoliciesArgs::__constructor(&Address::generate(&env)));
+    let client = PoliciesClient::new(&env, &contract_id);
+
+    let token = Address::generate(&env);
+    let terms = spend_limit_terms(&env, &token, 1000i128, 1000u64);
+    let hash = BytesN::from_array(&env, &[44u8; 32]);
+
+    let from = Address::generate(&env);
+    let to = Address::generate(&env);
+    let args = vec![&env, from.clone().into_val(&env), to.clone().into_val(&env), 500i128.into_val(&env)];
+    let ctx = make_context(&env, token.clone(), Symbol::new(&env, "transfer"), args);
+
+    client.before_hook(&terms, &hash, &ctx);
+
+    env.as_contract(&contract_id, || {
+        let spent: i128 = env.storage().persistent().get(&PolicyStateKey::Spent(hash.clone())).unwrap();
+        assert_eq!(spent, 500i128);
+    });
+}
