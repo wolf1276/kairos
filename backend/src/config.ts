@@ -85,6 +85,12 @@ export function isProtocolExecutionEnabled(): boolean {
   return process.env.ENABLE_PROTOCOL_EXECUTION === 'true';
 }
 
+/** When true, trade decisions skip the LLM and use the deterministic technicals-only fallback.
+ *  Set DISABLE_TRADE_LLM=true to avoid burning scarce LLM free-tier quota on trading ticks. */
+export function isTradeLlmDisabled(): boolean {
+  return process.env.DISABLE_TRADE_LLM === 'true';
+}
+
 /** Stellar public keys allowed to reach the hidden Developer Mode surface (`/api/dev/*`).
  *  Comma-separated, whitespace-trimmed. Empty/unset by default — nobody has dev access in a
  *  deployment unless this is explicitly configured, so it's read from process.env directly

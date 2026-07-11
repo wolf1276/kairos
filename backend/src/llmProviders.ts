@@ -114,22 +114,28 @@ function resolveOpenRouterApiKey(): string | undefined {
   return process.env.OPENROUTER_API_KEY || process.env.OPENROUTER || undefined;
 }
 
-/** OpenRouter fronts many models behind one key/endpoint — each fallback model (default Llama,
- *  GPT-OSS, Nvidia Nemotron) is just this same call shape with a different `model` id, so they're
- *  built from one factory rather than copy-pasted adapters. */
-function makeOpenRouterProvider(name: string, model: string): ProviderAdapter {
+/** Any OpenAI-compatible /chat/completions endpoint (OpenRouter, Nvidia NIM) is the same call
+ *  shape — just a different base URL, key, and `model` id — so they're all built from one factory
+ *  rather than copy-pasted adapters. `resolveKey` returns undefined when unconfigured (provider
+ *  skipped) or the bearer token. */
+function makeOpenAICompatProvider(
+  name: string,
+  baseUrl: string,
+  model: string,
+  resolveKey: () => string | undefined
+): ProviderAdapter {
   return {
     name,
-    configured: () => Boolean(resolveOpenRouterApiKey()),
+    configured: () => Boolean(resolveKey()),
     async call(system, user) {
-      const apiKey = resolveOpenRouterApiKey();
-      if (!apiKey) throw new ProviderCallError('authentication', 'OPENROUTER_API_KEY unset');
+      const apiKey = resolveKey();
+      if (!apiKey) throw new ProviderCallError('authentication', `${name} API key unset`);
 
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
       let res: Response;
       try {
-        res = await fetch(`${OPENROUTER_BASE_URL}/chat/completions`, {
+        res = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -195,10 +201,13 @@ const geminiProvider: ProviderAdapter = {
  *  three are skipped together as unconfigured; if it's set but one model errors (rate limit,
  *  outage), failover just tries the next model id on the same key. A provider that isn't
  *  configured (missing API key) is skipped, not treated as a failure. */
+const openRouter = (name: string, model: string) =>
+  makeOpenAICompatProvider(name, OPENROUTER_BASE_URL, model, resolveOpenRouterApiKey);
+
 const PROVIDERS: ProviderAdapter[] = [
-  makeOpenRouterProvider('openrouter', OPENROUTER_MODEL),
-  makeOpenRouterProvider('gpt-oss', GPT_OSS_MODEL),
-  makeOpenRouterProvider('nvidia', NVIDIA_MODEL),
+  openRouter('openrouter', OPENROUTER_MODEL),
+  openRouter('gpt-oss', GPT_OSS_MODEL),
+  openRouter('nvidia', NVIDIA_MODEL),
   geminiProvider,
 ];
 
