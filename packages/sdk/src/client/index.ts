@@ -290,24 +290,30 @@ export class KairosClient {
   }
 
   /**
-   * Reads instance/persistent storage of a contract.
+   * Reads a key set via `env.storage().instance()` (e.g. CustomAccount's `DataKey::Owner`) —
+   * instance storage lives inside the contract's single ContractInstance ledger entry, not as
+   * its own top-level ContractData entry, so the lookup key is the special
+   * `scvLedgerKeyContractInstance()` marker, and the actual value is found by scanning that
+   * entry's `storage` map for a matching key. A soroban-sdk #[contracttype] enum's unit variant
+   * (e.g. `DataKey::Owner`) serializes as `ScVal::Vec([Symbol(variantName)])`, not a bare Symbol.
    */
   async readInstanceStorage(contractId: string, keyName: string): Promise<xdr.ScVal | null> {
-    const keyScVal = xdr.ScVal.scvSymbol(keyName);
+    const keyScVal = xdr.ScVal.scvVec([xdr.ScVal.scvSymbol(keyName)]);
     const ledgerKey = xdr.LedgerKey.contractData(
       new xdr.LedgerKeyContractData({
         contract: Address.fromString(contractId).toScAddress(),
-        key: keyScVal,
+        key: xdr.ScVal.scvLedgerKeyContractInstance(),
         durability: xdr.ContractDataDurability.persistent(),
       })
     );
 
     const res = await this.rpcProvider.getLedgerEntries(ledgerKey);
-    if (res.entries && res.entries.length > 0) {
-      const val = res.entries[0].val.contractData().val();
-      return val;
-    }
-    return null;
+    if (!res.entries || res.entries.length === 0) return null;
+    const instance = res.entries[0].val.contractData().val().instance();
+    const storage = instance.storage() ?? [];
+    const wantedXdr = keyScVal.toXDR('base64');
+    const match = storage.find((e) => e.key().toXDR('base64') === wantedXdr);
+    return match ? match.val() : null;
   }
 
   /**
