@@ -9,7 +9,6 @@ import { ADX, ATR, EMA, MACD, RSI, ROC, SMA } from 'technicalindicators';
 import { getCandles } from './priceHistory.js';
 import { getStrategy, listStrategyMeta } from './strategies/index.js';
 import { chatCompletionWithFallback } from './llmProviders.js';
-import { isTradeLlmDisabled } from './config.js';
 import type { AgentDecision, IndicatorSnapshot, MarketContext, RegimeMetrics } from './types.js';
 import type { Candle } from './strategies/index.js';
 
@@ -94,7 +93,6 @@ async function chatJson(
   system: string,
   user: string
 ): Promise<{ raw: unknown; parsed: Record<string, unknown>; provider: string } | null> {
-  if (isTradeLlmDisabled()) return null; // use deterministic fallback, don't touch the LLM
   let result: { content: string; provider: string };
   try {
     result = await chatCompletionWithFallback(system, user);

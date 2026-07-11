@@ -9,6 +9,7 @@
 // AgentSpec, no regex/heuristic fallback.
 import { RISK_LEVELS, EXECUTION_STYLES } from '@kairos/types';
 import type { RiskLevel, ExecutionStyle, AgentSpec, IntentParseResult } from '@kairos/types';
+import { chatCompletionWithFallback, AllProvidersFailedError } from './llmProviders.js';
 
 export { RISK_LEVELS, EXECUTION_STYLES };
 export type { RiskLevel, ExecutionStyle, AgentSpec, IntentParseResult };
@@ -110,29 +111,10 @@ function parseCompletion(content: string): RawIntentResponse | null {
   return parseRaw(json);
 }
 
-// ponytail: LLM intent parsing removed — every free provider is out of daily quota, so the wizard
-// was hard-blocking on 'failed'. This deterministic keyword parse never calls a provider and always
-// returns a usable spec, so agent creation always proceeds. Upgrade path: restore the LLM call
-// (git history / SYSTEM_PROMPT above still here) when real quota is available.
-function riskFromText(t: string): RiskLevel {
-  if (/\b(conservative|safe|low[\s-]?risk|preserv|cautious|stable)\b/i.test(t)) return 'conservative';
-  if (/\b(aggressive|high[\s-]?risk|risky|max(imi[sz]e)?|degen|moonshot)\b/i.test(t)) return 'aggressive';
-  return 'balanced';
-}
-
-function objectiveFromText(t: string): string {
-  if (/\b(income|yield|dividend|interest|passive)\b/i.test(t)) return 'Income Generation';
-  if (/\b(preserv|protect|hedge|capital)\b/i.test(t)) return 'Capital Preservation';
-  return 'Long-term Growth';
-}
-
-function missionFromText(t: string): string {
-  const words = t.replace(/\s+/g, ' ').trim().split(' ').slice(0, 4).join(' ');
-  return words.length > 2 ? words.replace(/^./, (c) => c.toUpperCase()) : 'Portfolio Agent';
-}
-
-/** Deterministic, no-LLM intent parse. Derives a spec from keywords in the goal text and always
- *  succeeds (only empty input asks for clarification), so the wizard never blocks on provider quota. */
+/** Runs the natural-language goal through the shared LLM provider fallback chain and returns a
+ *  validated AgentSpec, or a request for clarification. Never fabricates a missing field, and
+ *  never falls back to regex/heuristic parsing — if every configured provider fails, the caller
+ *  gets a 'failed' status. */
 export async function parseIntent(goalText: string): Promise<IntentParseResult> {
   const trimmed = goalText.trim();
   if (!trimmed) {
@@ -143,17 +125,57 @@ export async function parseIntent(goalText: string): Promise<IntentParseResult> 
     };
   }
 
-  const capitalMatch = trimmed.match(/(\$?\s?\d[\d,]*(?:\.\d+)?\s?%?)/);
+  let result: { content: string; provider: string };
+  try {
+    result = await chatCompletionWithFallback(SYSTEM_PROMPT, trimmed, {
+      validate: (content) => parseCompletion(content) !== null,
+    });
+  } catch (err) {
+    return {
+      status: 'failed',
+      spec: null,
+      clarifyingQuestions: [],
+      error: err instanceof AllProvidersFailedError ? err.message : String(err),
+    };
+  }
+
+  const raw = parseCompletion(result.content);
+  if (!raw) {
+    return {
+      status: 'failed',
+      spec: null,
+      clarifyingQuestions: [],
+      error: `Intent parsing failed: ${result.provider} returned a response that did not match the expected shape.`,
+    };
+  }
+
+  const confidence = typeof raw.confidence === 'number' && raw.confidence >= 0 && raw.confidence <= 1 ? raw.confidence : 0;
+  const questions = extractQuestions(raw.clarifyingQuestions);
+
+  const missing: string[] = [];
+  if (!raw.mission) missing.push(REQUIRED_FIELD_QUESTIONS.mission);
+  if (!raw.objective) missing.push(REQUIRED_FIELD_QUESTIONS.objective);
+  if (!raw.riskLevel) missing.push(REQUIRED_FIELD_QUESTIONS.riskLevel);
+  if (!raw.executionStyle) missing.push(REQUIRED_FIELD_QUESTIONS.executionStyle);
+
+  if (missing.length > 0 || confidence < CONFIDENCE_THRESHOLD) {
+    const merged = Array.from(new Set([...questions, ...missing]));
+    return {
+      status: 'needs_clarification',
+      spec: null,
+      clarifyingQuestions: merged.length > 0 ? merged : ['Could you say more about what you want this agent to do?'],
+    };
+  }
 
   return {
     status: 'ok',
     spec: {
-      mission: missionFromText(trimmed),
-      objective: objectiveFromText(trimmed),
-      riskLevel: riskFromText(trimmed),
-      suggestedCapital: capitalMatch ? capitalMatch[1].trim() : null,
-      executionStyle: /\b(check|approve|confirm|ask me|guided|manual)\b/i.test(trimmed) ? 'guided' : 'autonomous',
-      confidence: 1,
+      mission: raw.mission!,
+      objective: raw.objective!,
+      riskLevel: raw.riskLevel!,
+      suggestedCapital: raw.suggestedCapital,
+      executionStyle: raw.executionStyle!,
+      confidence,
     },
     clarifyingQuestions: [],
   };
