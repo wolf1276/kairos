@@ -21,8 +21,9 @@ cp .env.example .env
 # AUTH_JWT_SECRET signs the session tokens issued after wallet-signature login:
 openssl rand -hex 32
 #
-# HUGGINGFACE_API_KEY (optional) enables LLM decisions/intent parsing; a deterministic
-# fallback is used when it's unset or the API is unavailable.
+# OPENROUTER_API_KEY / GEMINI_API_KEY (both optional) enable LLM decisions/intent parsing
+# (llmProviders.ts fallback chain); a deterministic fallback is used when none are set or every
+# provider is unavailable.
 
 pnpm --filter @wolf1276/kairos-agent-backend dev
 ```

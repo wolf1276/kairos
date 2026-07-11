@@ -40,6 +40,25 @@ function extractContractId(stdout: string, label: string): string {
   return match[1];
 }
 
+/** SDF ships the CLI's `mainnet` network entry with an unset RPC URL — `stellar network ls --long`
+ *  shows it as the literal string `Bring Your Own: <docs link>`, because there is no free public
+ *  Soroban RPC for mainnet (unlike testnet). Every `stellar contract upload/deploy` call below
+ *  fails on this with a cryptic `Invalid URL Bring Your Own: ...` error if it's never been set —
+ *  check for it up front with a clear, actionable message instead. See docs/MAINNET_RUNBOOK.md
+ *  section 1a for how to set a real one (public/commercial RPC, or self-hosted). */
+function checkMainnetRpcConfigured(): void {
+  const output = runCommand(`stellar network ls --long`);
+  const mainnetBlock = output.split(/\n\n+/).find((block) => block.startsWith('Name: mainnet'));
+  if (!mainnetBlock || /RPC url: Bring Your Own/.test(mainnetBlock)) {
+    throw new Error(
+      `The 'mainnet' network has no real RPC URL configured (stellar network ls --long shows ` +
+        `"Bring Your Own"). Set one first — see docs/MAINNET_RUNBOOK.md section 1a — e.g.:\n` +
+        `  stellar network add mainnet --rpc-url <your-rpc-url> ` +
+        `--network-passphrase "Public Global Stellar Network ; September 2015" --overwrite`
+    );
+  }
+}
+
 async function main() {
   if (fs.existsSync(CONFIG_FILE) && !FORCE) {
     throw new Error(
@@ -47,6 +66,8 @@ async function main() {
         `Re-run with --confirm (or --force) if you intend to redeploy and overwrite it.`
     );
   }
+
+  checkMainnetRpcConfigured();
 
   // 1. Build the contracts (runs in contracts/soroban)
   console.log('Building Soroban contracts...');

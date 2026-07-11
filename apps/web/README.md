@@ -60,7 +60,7 @@ These are composed so pages read a single, already-sequenced wallet state:
 
 Feature-grouped, deterministic logic that runs client/server-side (distinct from the agent backend):
 
-- `lib/decision/` — natural-language intent → `TradingProfile`. `intentParser.ts` (regex, deterministic), `hfIntentParser.ts` (Hugging Face structured parse, prompt-injection-hardened, with validation), `hfAdvisor.ts` (`HfAdvisor.advise()` → advisory BUY/SELL/HOLD `TradeProposal`, with an RSI+MACD deterministic fallback), `displayMapper.ts` (mode display summaries).
+- `lib/decision/` — `types.ts` (shared decision types), `displayMapper.ts` (mode display summaries). Natural-language intent parsing and advisory decisions now live server-side in `backend/src/intentParser.ts` and `backend/src/decisionEngine.ts` (LLM fallback chain: OpenRouter → GPT-OSS → Nvidia → Gemini, in `backend/src/llmProviders.ts`).
 - `lib/strategy/` — `StrategyEngine.evaluate(MarketSnapshot)`: EMA20/EMA50 golden/death-cross signal (needs ≥52 candles).
 - `app/lib/sdk/` — server-side SDK glue: `getKairosClient`, `getFunderKeypair`, registry lookup/register, sponsored wallet deploy.
 
@@ -69,7 +69,6 @@ Feature-grouped, deterministic logic that runs client/server-side (distinct from
 | Variable | Purpose |
 | :--- | :--- |
 | `NEXT_PUBLIC_AGENTS_BACKEND_URL` | Agent-backend base URL (default `http://localhost:4001`). Inlined into the client bundle at build time — must be set before the build. |
-| `HUGGINGFACE_API_KEY` | Enables HF intent parsing / advisory (deterministic fallback when unset). |
 | `FUNDER_SECRET_KEY` | Funder keypair for sponsored onboarding/delegation operations. |
 | `STELLAR_NETWORK`, `STELLAR_RPC_URL`, `STELLAR_NETWORK_PASSPHRASE` | Stellar network config. |
 | `DELEGATION_MANAGER_CONTRACT_ID`, `POLICY_CONTRACT_ID`, `CUSTOM_ACCOUNT_CONTRACT_ID`, `CUSTOM_ACCOUNT_WASM_HASH`, `REGISTRY_CONTRACT_ID` | Deployed contract config (from [`configs/contracts.testnet.json`](../../configs/README.md)). |

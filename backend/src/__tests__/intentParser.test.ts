@@ -1,27 +1,18 @@
 // Step 1 of Agent Creation (agentcreation.md): Natural Language -> Intent Parser (with provider
-// failover: Hugging Face -> OpenRouter -> Gemini) -> Validated AgentSpec. Covers: valid goal,
+// failover: OpenRouter -> GPT-OSS -> Nvidia -> Gemini) -> Validated AgentSpec. Covers: valid goal,
 // ambiguous goal, missing information, parser failure, provider fallover on transient failures,
 // and validation still being enforced after a fallover. No agent/wallet/delegation creation
 // happens anywhere in this flow.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const chatCompletion = vi.fn();
 const generateContent = vi.fn();
 const fetchMock = vi.fn();
-
-vi.mock('@huggingface/inference', () => ({
-  HfInference: vi.fn().mockImplementation(() => ({ chatCompletion })),
-}));
 
 vi.mock('@google/generative-ai', () => ({
   GoogleGenerativeAI: vi.fn().mockImplementation(() => ({
     getGenerativeModel: () => ({ generateContent }),
   })),
 }));
-
-function hfContent(json: unknown) {
-  return { choices: [{ message: { content: JSON.stringify(json) } }] };
-}
 
 function openRouterFetchResponse(json: unknown) {
   return {
@@ -31,6 +22,8 @@ function openRouterFetchResponse(json: unknown) {
     text: async () => '',
   };
 }
+
+const FAILED_FETCH_RESPONSE = { ok: false, status: 503, json: async () => ({}), text: async () => 'Service Unavailable' };
 
 const VALID_SPEC = {
   mission: 'Yield Optimization',
@@ -43,17 +36,20 @@ const VALID_SPEC = {
 };
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  // Plain mockReset (not vi.resetAllMocks) — that would also wipe the GoogleGenerativeAI mock's
+  // own mockImplementation set once above, breaking getGenerativeModel on every test after the
+  // first. Only the two mocks each test reassigns need their queued/once implementations cleared.
+  fetchMock.mockReset();
+  generateContent.mockReset();
   vi.resetModules();
   vi.stubGlobal('fetch', fetchMock);
-  process.env.HUGGINGFACE_API_KEY = 'test-hf-key';
   process.env.OPENROUTER_API_KEY = 'test-openrouter-key';
   process.env.GEMINI_API_KEY = 'test-gemini-key';
 });
 
 describe('parseIntent', () => {
   it('returns a validated AgentSpec for a clear, unambiguous goal (primary succeeds)', async () => {
-    chatCompletion.mockResolvedValue(hfContent(VALID_SPEC));
+    fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
     const { parseIntent } = await import('../intentParser.js');
     const result = await parseIntent('Maximize yield while keeping risk low');
 
@@ -67,13 +63,12 @@ describe('parseIntent', () => {
       confidence: 0.94,
     });
     expect(result.clarifyingQuestions).toEqual([]);
-    expect(fetchMock).not.toHaveBeenCalled();
     expect(generateContent).not.toHaveBeenCalled();
   });
 
   it('asks clarification when the model reports low confidence on an ambiguous goal', async () => {
-    chatCompletion.mockResolvedValue(
-      hfContent({
+    fetchMock.mockResolvedValue(
+      openRouterFetchResponse({
         mission: 'Portfolio Manager',
         objective: 'Growth',
         riskLevel: 'balanced',
@@ -92,8 +87,8 @@ describe('parseIntent', () => {
   });
 
   it('asks clarification (never fabricates) when a required field is missing', async () => {
-    chatCompletion.mockResolvedValue(
-      hfContent({
+    fetchMock.mockResolvedValue(
+      openRouterFetchResponse({
         mission: 'Growth Agent',
         objective: null,
         riskLevel: null,
@@ -113,7 +108,6 @@ describe('parseIntent', () => {
   });
 
   it('reports failure without calling any provider when no provider is configured', async () => {
-    delete process.env.HUGGINGFACE_API_KEY;
     delete process.env.OPENROUTER_API_KEY;
     delete process.env.GEMINI_API_KEY;
     const { parseIntent } = await import('../intentParser.js');
@@ -121,8 +115,7 @@ describe('parseIntent', () => {
 
     expect(result.status).toBe('failed');
     expect(result.spec).toBeNull();
-    expect(result.error).toMatch(/no intent-parsing provider is configured/i);
-    expect(chatCompletion).not.toHaveBeenCalled();
+    expect(result.error).toMatch(/no llm provider is configured/i);
     expect(fetchMock).not.toHaveBeenCalled();
     expect(generateContent).not.toHaveBeenCalled();
   });
@@ -132,71 +125,54 @@ describe('parseIntent', () => {
     const result = await parseIntent('   ');
 
     expect(result.status).toBe('needs_clarification');
-    expect(chatCompletion).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
   describe('provider fallover', () => {
-    it('falls over to OpenRouter when Hugging Face is rate-limited (429)', async () => {
-      chatCompletion.mockRejectedValue(Object.assign(new Error('429 Too Many Requests'), { status: 429 }));
-      fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
+    it('falls over to the next OpenRouter model when the primary is rate-limited (429)', async () => {
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({}), text: async () => 'Too Many Requests' })
+        .mockResolvedValueOnce(openRouterFetchResponse(VALID_SPEC));
 
       const { parseIntent } = await import('../intentParser.js');
       const result = await parseIntent('Maximize yield while keeping risk low');
 
       expect(result.status).toBe('ok');
       expect(result.spec?.mission).toBe('Yield Optimization');
-      expect(fetchMock).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it('falls over to OpenRouter when Hugging Face reports exhausted credits', async () => {
-      chatCompletion.mockRejectedValue(new Error('You have insufficient credits to complete this request'));
-      fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
+    it('falls over to the next OpenRouter model when the primary reports exhausted credits', async () => {
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, status: 402, json: async () => ({}), text: async () => 'insufficient credits' })
+        .mockResolvedValueOnce(openRouterFetchResponse(VALID_SPEC));
 
       const { parseIntent } = await import('../intentParser.js');
       const result = await parseIntent('Maximize yield while keeping risk low');
 
       expect(result.status).toBe('ok');
-      expect(fetchMock).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it('falls over to OpenRouter when Hugging Face times out', async () => {
-      chatCompletion.mockRejectedValue(new Error('The operation was aborted'));
-      fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
+    it('falls over to the next OpenRouter model when the primary returns a malformed response', async () => {
+      fetchMock
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: async () => ({ choices: [{ message: { content: 'not json at all' } }] }),
+          text: async () => '',
+        })
+        .mockResolvedValueOnce(openRouterFetchResponse(VALID_SPEC));
 
       const { parseIntent } = await import('../intentParser.js');
       const result = await parseIntent('Maximize yield while keeping risk low');
 
       expect(result.status).toBe('ok');
-      expect(fetchMock).toHaveBeenCalled();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
     });
 
-    it('falls over to OpenRouter when Hugging Face returns a malformed response', async () => {
-      chatCompletion.mockResolvedValue({ choices: [{ message: { content: 'not json at all' } }] });
-      fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
-
-      const { parseIntent } = await import('../intentParser.js');
-      const result = await parseIntent('Maximize yield while keeping risk low');
-
-      expect(result.status).toBe('ok');
-      expect(fetchMock).toHaveBeenCalled();
-    });
-
-    it('does not retry on an invalid API key, but still falls over to the next provider', async () => {
-      chatCompletion.mockRejectedValue(Object.assign(new Error('Invalid API key'), { status: 401 }));
-      fetchMock.mockResolvedValue(openRouterFetchResponse(VALID_SPEC));
-
-      const { parseIntent } = await import('../intentParser.js');
-      const result = await parseIntent('Maximize yield while keeping risk low');
-
-      expect(result.status).toBe('ok');
-      // Non-retryable: only one attempt against Hugging Face before moving on.
-      expect(chatCompletion).toHaveBeenCalledTimes(1);
-    });
-
-    it('falls over to Gemini when both Hugging Face and OpenRouter fail', async () => {
-      chatCompletion.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
-      fetchMock.mockResolvedValue({ ok: false, status: 503, json: async () => ({}), text: async () => 'Service Unavailable' });
+    it('falls over to Gemini when every OpenRouter model fails', async () => {
+      fetchMock.mockResolvedValue(FAILED_FETCH_RESPONSE);
       generateContent.mockResolvedValue({ response: { text: () => JSON.stringify(VALID_SPEC) } });
 
       const { parseIntent } = await import('../intentParser.js');
@@ -207,8 +183,7 @@ describe('parseIntent', () => {
     });
 
     it('returns failure (never a fabricated spec) when every provider fails', async () => {
-      chatCompletion.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
-      fetchMock.mockResolvedValue({ ok: false, status: 503, json: async () => ({}), text: async () => 'Service Unavailable' });
+      fetchMock.mockResolvedValue(FAILED_FETCH_RESPONSE);
       generateContent.mockRejectedValue(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
 
       const { parseIntent } = await import('../intentParser.js');
@@ -216,22 +191,23 @@ describe('parseIntent', () => {
 
       expect(result.status).toBe('failed');
       expect(result.spec).toBeNull();
-      expect(result.error).toMatch(/every configured provider/i);
+      expect(result.error).toMatch(/every configured llm provider failed/i);
     });
 
     it('still enforces validation (clarification, not fabrication) after falling over to a secondary provider', async () => {
-      chatCompletion.mockRejectedValue(Object.assign(new Error('429 Too Many Requests'), { status: 429 }));
-      fetchMock.mockResolvedValue(
-        openRouterFetchResponse({
-          mission: 'Growth Agent',
-          objective: null,
-          riskLevel: null,
-          suggestedCapital: null,
-          executionStyle: 'autonomous',
-          confidence: 0.9,
-          clarifyingQuestions: [],
-        })
-      );
+      fetchMock
+        .mockResolvedValueOnce({ ok: false, status: 429, json: async () => ({}), text: async () => 'Too Many Requests' })
+        .mockResolvedValueOnce(
+          openRouterFetchResponse({
+            mission: 'Growth Agent',
+            objective: null,
+            riskLevel: null,
+            suggestedCapital: null,
+            executionStyle: 'autonomous',
+            confidence: 0.9,
+            clarifyingQuestions: [],
+          })
+        );
 
       const { parseIntent } = await import('../intentParser.js');
       const result = await parseIntent('grow my XLM');

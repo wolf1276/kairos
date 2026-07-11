@@ -1,25 +1,16 @@
-// Backend decision engine for the autonomous multi-agent system. Ports the frontend HfAdvisor
-// (apps/web/lib/decision/hfAdvisor.ts) server-side so the scheduler can reason without a
-// cross-service hop, and generalizes it into three role-specific decision functions
+// Backend decision engine for the autonomous multi-agent system, generalized into three
+// role-specific decision functions
 // (strategic / yield / portfolio-balancer). Every function returns a structured AgentDecision
 // with reasoning + confidence and NEVER hardcodes the action: the LLM chooses it, and a
-// deterministic indicator-driven heuristic is used only as a graceful fallback when
-// HUGGINGFACE_API_KEY is unset or the model call fails.
-import { HfInference } from '@huggingface/inference';
+// deterministic indicator-driven heuristic is used only as a graceful fallback when every
+// configured LLM provider (llmProviders.ts — OpenRouter/GPT-OSS/Nvidia/Gemini) fails or none is
+// configured.
 import { ADX, ATR, EMA, MACD, RSI, ROC, SMA } from 'technicalindicators';
 import { getCandles } from './priceHistory.js';
 import { getStrategy, listStrategyMeta } from './strategies/index.js';
-import { getHuggingFaceApiKey } from './config.js';
+import { chatCompletionWithFallback } from './llmProviders.js';
 import type { AgentDecision, IndicatorSnapshot, MarketContext, RegimeMetrics } from './types.js';
 import type { Candle } from './strategies/index.js';
-
-const MODEL = 'meta-llama/Llama-3.1-8B-Instruct';
-const MAX_RETRIES = 2;
-const BACKOFF_MS = 1500;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((r) => setTimeout(r, ms));
-}
 
 function lastOf<T>(a: T[]): T | undefined {
   return a.length ? a[a.length - 1] : undefined;
@@ -98,39 +89,22 @@ export async function buildMarketContext(pair: string, intervalSeconds: number):
   return { pair, price, change24h, volume24h, indicators, regime, candles };
 }
 
-function hf(): HfInference | null {
-  const key = getHuggingFaceApiKey();
-  return key ? new HfInference(key) : null;
-}
-
-async function chatJson(system: string, user: string): Promise<{ raw: unknown; parsed: Record<string, unknown> } | null> {
-  const client = hf();
-  if (!client) return null;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) await sleep(BACKOFF_MS * attempt);
-    try {
-      const res = await client.chatCompletion({
-        model: MODEL,
-        max_tokens: 700,
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-      });
-      const content = res.choices?.[0]?.message?.content;
-      if (!content) continue;
-      const cleaned = content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
-      try {
-        return { raw: content, parsed: JSON.parse(cleaned) as Record<string, unknown> };
-      } catch {
-        continue;
-      }
-    } catch {
-      if (attempt < MAX_RETRIES - 1) continue;
-    }
+async function chatJson(
+  system: string,
+  user: string
+): Promise<{ raw: unknown; parsed: Record<string, unknown>; provider: string } | null> {
+  let result: { content: string; provider: string };
+  try {
+    result = await chatCompletionWithFallback(system, user);
+  } catch {
+    return null;
   }
-  return null;
+  const cleaned = result.content.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+  try {
+    return { raw: result.content, parsed: JSON.parse(cleaned) as Record<string, unknown>, provider: result.provider };
+  } catch {
+    return null;
+  }
 }
 
 function clampConfidence(v: unknown, def: number): number {
@@ -185,7 +159,7 @@ export async function decideStrategic(ctx: MarketContext): Promise<AgentDecision
         confidence: clampConfidence(p.confidence, 0.6),
         reasoning: typeof p.reasoning === 'string' ? p.reasoning : `Selected ${selected} for ${ctx.regime.regime} regime.`,
         selectedStrategy: selected,
-        llmModel: MODEL,
+        llmModel: llm.provider,
         llmPromptSummary: `Strategic decision over ${ctx.pair} (${ctx.regime.regime}), ${listStrategyMeta().length} strategies`,
         llmResponseRaw: llm.raw,
       };
@@ -260,7 +234,7 @@ export async function decideYield(ctx: MarketContext, idleCapitalUsd: number): P
       confidence: clampConfidence(p.confidence, 0.6),
       reasoning: typeof p.reasoning === 'string' ? p.reasoning : 'Yield reallocation decision.',
       yieldVenue: action === 'reallocate' ? venue : null,
-      llmModel: MODEL,
+      llmModel: llm.provider,
       llmPromptSummary: `Yield decision, idle $${idleCapitalUsd.toFixed(2)}, ${venues.length} venues`,
       llmResponseRaw: llm.raw,
     };
@@ -306,7 +280,7 @@ export async function decideBalancer(
       confidence: clampConfidence(p.confidence, 0.6),
       reasoning: typeof p.reasoning === 'string' ? p.reasoning : 'Rebalance decision.',
       targetAllocation: { xlmPct: tx, usdcPct: 100 - tx },
-      llmModel: MODEL,
+      llmModel: llm.provider,
       llmPromptSummary: `Balancer decision, drift XLM ${(current.xlmPct - target.xlmPct).toFixed(1)}%`,
       llmResponseRaw: llm.raw,
     };

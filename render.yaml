@@ -79,11 +79,10 @@ services:
         value: 30000
       - key: REASONING_PROVIDER
         value: openrouter
-      # Intent-parser failover chain (backend/src/intentParser.ts): HF -> OpenRouter (also backs
-      # the GPT-OSS and Nvidia Nemotron fallback models, same key, different model id) -> Gemini.
-      # HF/Gemini are optional — omit to skip that provider, not treated as a config error.
-      - key: HUGGINGFACE_API_KEY
-        sync: false
+      # LLM fallback chain (backend/src/llmProviders.ts, used by both intentParser.ts and
+      # decisionEngine.ts): OpenRouter (also backs the GPT-OSS and Nvidia Nemotron fallback
+      # models, same key, different model id) -> Gemini. Gemini is optional — omit to skip it,
+      # not treated as a config error.
       - key: OPENROUTER_API_KEY
         sync: false
       - key: GEMINI_API_KEY

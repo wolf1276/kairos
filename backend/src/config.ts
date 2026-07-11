@@ -66,14 +66,9 @@ export function getAuthJwtSecret(): string {
   return readRequiredEnv('AUTH_JWT_SECRET');
 }
 
-/** Optional — when unset, the decision engine falls back to deterministic heuristic reasoning. */
-export function getHuggingFaceApiKey(): string | undefined {
-  return process.env.HUGGINGFACE_API_KEY || undefined;
-}
-
-/** Optional — additional fallback provider for the agent-creation intent parser
- *  (intentParser.ts), tried after Hugging Face and OpenRouter. If none of the configured
- *  providers succeed, the parser returns a failure status rather than fabricating a spec. */
+/** Optional — last provider in the LLM fallback chain (llmProviders.ts). If none of the
+ *  configured providers succeed, callers fall back to deterministic heuristic reasoning
+ *  (decisionEngine.ts) or a failure status (intentParser.ts) rather than fabricating output. */
 export function getGeminiApiKey(): string | undefined {
   return process.env.GEMINI_API_KEY || undefined;
 }

@@ -8,7 +8,8 @@ mainnet cutover: contracts, Render backend, Vercel frontend.
 
 - Audited contract source at the commit intended for mainnet (no unaudited changes since the
   last security review).
-- `stellar` CLI installed and configured with network `mainnet`.
+- `stellar` CLI installed and configured with network `mainnet`, **including a working RPC URL**
+  (see 1a — the CLI ships this as an unset "Bring Your Own" placeholder, not a real endpoint).
 - A funded mainnet deployer account, and a separate `deployer` CLI key alias
   (`stellar keys generate deployer --network mainnet`, or import an existing key).
 - Render account with access to the project's Blueprint (`render.yaml`).
@@ -16,6 +17,43 @@ mainnet cutover: contracts, Render backend, Vercel frontend.
 - Turnkey production organization + API key pair (MPC key custody — must be a **separate**
   Turnkey org from testnet; never reuse testnet Turnkey credentials for mainnet).
 - A managed Postgres instance for smart-wallet ownership (Render Blueprint provisions this).
+
+## 1a. Get a mainnet Soroban RPC endpoint
+
+Unlike testnet, SDF does not run a free public Soroban RPC for mainnet. `stellar network ls
+--long` shows the mainnet entry's RPC URL as literally `Bring Your Own: <link>` — it must be set
+before any `stellar contract upload/deploy --network mainnet` command will work. There are two
+real options; which one to use is an infrastructure decision, not a code change:
+
+**Option A — a public/commercial RPC endpoint** (fastest to get running):
+Every option here is still third-party infrastructure you don't control — free community
+endpoints (e.g. `https://mainnet.sorobanrpc.com`, Nodies, OnFinality, Lightsail) or paid providers
+(QuickNode, Ankr, Blockdaemon, etc.) — see the current list at
+https://developers.stellar.org/docs/data/apis/rpc/providers. Then:
+```
+stellar network add mainnet \
+  --rpc-url <your-chosen-rpc-url> \
+  --network-passphrase "Public Global Stellar Network ; September 2015" \
+  --overwrite
+```
+
+**Option B — self-host your own node** (no third-party RPC dependency at all):
+`stellar-rpc` requires a local Captive Core instance and syncs against the public network
+directly — the docker images `stellar/quickstart` (dev) and `stellar/stellar-rpc` (production)
+both support this; see the official
+[Admin Guide](https://developers.stellar.org/docs/data/apis/rpc/admin-guide) and
+[Prerequisites](https://developers.stellar.org/docs/data/apis/rpc/admin-guide/prerequisites).
+Minimum specs per the current docs: 4–8 vCPU, 16GB RAM, 350GB SSD-backed persistent volume at
+≥3K IOPS (7-day retention default; +40GB per additional retention day), plus initial ledger
+catchup time before the node is usable. This is real infrastructure to operate long-term, not a
+one-off setup for a single deploy — pick this only if avoiding third-party RPC dependency
+outweighs that operational cost. Once synced and running:
+```
+stellar network add mainnet \
+  --rpc-url http://<your-host>:<port> \
+  --network-passphrase "Public Global Stellar Network ; September 2015" \
+  --overwrite
+```
 
 ## 2. Fund the deployer account
 
