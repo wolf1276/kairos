@@ -9,10 +9,10 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { getGeminiApiKey } from './config.js';
 
 const OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-const OPENROUTER_MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
+const OPENROUTER_MODEL = 'meta-llama/llama-3.3-70b-instruct:free';
 const GPT_OSS_MODEL = 'openai/gpt-oss-20b:free';
 const NVIDIA_MODEL = 'nvidia/nemotron-nano-9b-v2:free';
-const GEMINI_MODEL = 'gemini-2.0-flash';
+const GEMINI_MODEL = 'gemini-2.5-flash';
 
 // 1 = no retry within a provider — on any failure, move to the next provider immediately. With
 // several providers configured, retrying the same one before failing over just adds visible
@@ -255,6 +255,34 @@ async function runProvider(
   throw lastError;
 }
 
+/** Returns a canned, shape-correct completion for each of the four known callers (intent parser +
+ *  the three role decision agents), selected by a marker in that caller's system prompt. Only used
+ *  when LLM_MOCK is set — lets the full agent-creation / role-tick flow be exercised end-to-end
+ *  without spending scarce free-tier LLM quota (every free provider caps at 20–50 requests/day).
+ *  ponytail: canned static responses, not a real model — never enable in production (gated by env). */
+function mockCompletion(system: string): string {
+  if (/Intent Parser/i.test(system)) {
+    return JSON.stringify({
+      mission: 'Growth Agent',
+      objective: 'Long-term Growth',
+      riskLevel: 'balanced',
+      suggestedCapital: null,
+      executionStyle: 'autonomous',
+      confidence: 0.95,
+    });
+  }
+  if (/Strategic Agent/i.test(system)) {
+    return JSON.stringify({ selectedStrategy: 'hold', action: 'hold', confidence: 0.7, reasoning: 'mock' });
+  }
+  if (/Yield Agent/i.test(system)) {
+    return JSON.stringify({ action: 'hold', yieldVenue: null, confidence: 0.7, reasoning: 'mock' });
+  }
+  if (/Balancer Agent/i.test(system)) {
+    return JSON.stringify({ action: 'hold', targetXlmPct: 50, targetUsdcPct: 50, confidence: 0.7, reasoning: 'mock' });
+  }
+  return JSON.stringify({ action: 'hold', confidence: 0.5, reasoning: 'mock' });
+}
+
 /** Tries every configured provider in priority order, returning the first successful raw
  *  completion. If `validate` is given and a provider's response fails it, that's treated as a
  *  malformed_response failure and the chain moves to the next provider (a valid response is not
@@ -265,6 +293,11 @@ export async function chatCompletionWithFallback(
   user: string,
   opts?: { validate?: (content: string) => boolean }
 ): Promise<ChatResult> {
+  if (process.env.LLM_MOCK) {
+    log('provider_mocked', { provider: 'mock' });
+    return { content: mockCompletion(system), provider: 'mock' };
+  }
+
   const configured = PROVIDERS.filter((p) => p.configured());
   if (configured.length === 0) {
     throw new AllProvidersFailedError(

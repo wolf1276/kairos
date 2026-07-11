@@ -437,13 +437,21 @@ test.describe.serial('Kairos live QA — Agent Creation end-to-end', () => {
     if (await approveBtn.isVisible({ timeout: 10_000 }).catch(() => false)) {
       await approveBtn.click({ timeout: 20_000 });
       // Real backend provisioning (Policy, Smart Wallet init, Delegation, Runtime, Memory,
-      // Benchmark, Scheduler, Agent) can take well over a minute — wait for the wizard's
-      // "Creating agent..." screen to close (real completion signal), not a fixed sleep.
-      // Timeout raised 120s -> 180s: a run that times out here but finishes moments after
-      // the harness gives up is what previously looked like "flaky E2E, solid backend" —
-      // the agent really was created, just after this assertion stopped watching.
-      await expect(page.locator('text=Creating agent...')).toHaveCount(0, { timeout: 180_000 });
+      // Benchmark, Scheduler, Agent) plus on-chain agent funding can take well over a minute —
+      // wait for the wizard's terminal Success step (its "Open Mission Control" button, which only
+      // renders once createdAgent is set), not a fixed sleep. Also race an error surfacing in the
+      // wizard so a genuine provisioning failure fails fast with its message instead of hanging the
+      // full timeout. (The previous `text=Creating agent...` check matched ASCII dots against the
+      // UI's real unicode ellipsis "Creating agent…", so it always found 0 elements and returned
+      // instantly — tearing the page down mid-provision so nothing ever persisted.)
+      const success = page.getByRole('button', { name: /Open Mission Control/i });
+      const wizardError = page.locator('[class*="text-error"], [role="alert"]').filter({ hasText: /fail|error|not approved|rejected/i });
+      await expect(success.or(wizardError).first()).toBeVisible({ timeout: 180_000 });
       await page.screenshot({ path: 'test-results/qa-12-creation-progress.png', fullPage: true });
+      if (!(await success.isVisible().catch(() => false))) {
+        const msg = await wizardError.first().textContent().catch(() => null);
+        throw new Error(`[QA] Agent creation failed in wizard: ${msg ?? 'unknown error'}`);
+      }
     } else {
       console.log('[QA] Approve & Create button never appeared after Continue clicks.');
       await page.screenshot({ path: 'test-results/qa-11b-stuck-after-continue.png', fullPage: true });
@@ -451,9 +459,10 @@ test.describe.serial('Kairos live QA — Agent Creation end-to-end', () => {
     }
 
     console.log('[QA] Console errors:', consoleErrors);
-    console.log('[QA] API responses:', JSON.stringify(responses, null, 2));
 
     const afterAgents = sqlite(`select count(*) from agents;`);
     console.log(`[QA] DB after: agents=${afterAgents} (before=${beforeAgents})`);
+    // The whole point of this test: a real agent row must actually exist afterward.
+    expect(Number(afterAgents)).toBe(Number(beforeAgents) + 1);
   });
 });
