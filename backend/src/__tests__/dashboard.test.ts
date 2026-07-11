@@ -56,7 +56,7 @@ let baseUrl: string;
 
 async function startApp(runtime?: AutonomousRuntime): Promise<void> {
   const app = express();
-  app.use('/api/dashboard', createDashboardRouter({ runtime }));
+  app.use('/api/dashboard', createDashboardRouter({ getRuntime: () => runtime ?? null }));
   await new Promise<void>((resolve) => {
     server = app.listen(0, () => resolve());
   });

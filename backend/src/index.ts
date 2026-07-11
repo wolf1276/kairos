@@ -17,7 +17,7 @@ import { buildReportBundle } from './benchmarkReports/index.js';
 import { createDevRouter } from './routes/dev.js';
 import { requireAuth, requireDev } from './authMiddleware.js';
 import { startScheduler } from './runner.js';
-import { initRuntime } from './runtime/runtimeSingleton.js';
+import { initRuntime, getRuntime } from './runtime/runtimeSingleton.js';
 import { startContextMonitor } from './agentContext/monitor.js';
 import { getPriceFeedService } from './priceFeed.js';
 import { getAllowedOrigin, getPort } from './config.js';
@@ -34,9 +34,11 @@ app.get('/health', (_req, res) => res.json({ ok: true }));
 // process/RAM and any recorded Decision Intelligence metrics still report real data.
 app.use('/api/monitoring', createMonitoringRouter());
 // Dashboard API (Phase 9) — status/health/metrics/lifecycle over the Autonomous Runtime, plus
-// per-agent memory/learning/history reads. No AutonomousRuntime is wired into this process yet,
-// so status/health/metrics report `null` and start/stop/pause/resume report 503.
-app.use('/api/dashboard', createDashboardRouter());
+// per-agent memory/learning/history reads. The runtime is bootstrapped asynchronously after
+// listen() (see initRuntime() below), so we pass the singleton accessor `getRuntime` (resolved
+// per-request) rather than a static instance — status/health/metrics report `null` and
+// start/stop/pause/resume report 503 only until that init completes.
+app.use('/api/dashboard', createDashboardRouter({ getRuntime }));
 // Benchmark API (Phase 10) — read-only latest/history/comparison/reports over Benchmark Core.
 app.use('/api/benchmark', createBenchmarkRouter({ buildReportBundle }));
 app.use('/api/auth', authRouter);

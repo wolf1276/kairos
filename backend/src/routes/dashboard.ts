@@ -13,9 +13,13 @@ import { computeLearningSnapshot, LearningSnapshotValidationError } from '../rea
 import { InvalidStateTransitionError, type AutonomousRuntime } from '../runtime/autonomousRuntime/index.js';
 
 export interface DashboardConfig {
-  /** Autonomous Runtime instance to report status/health/metrics from and control via
-   *  start/stop/pause/resume — omitted when no runtime is wired up yet. */
-  runtime?: AutonomousRuntime;
+  /** Resolver for the process-wide Autonomous Runtime to report status/health/metrics from and
+   *  control via start/stop/pause/resume. A resolver (not a static instance) because the runtime
+   *  is bootstrapped asynchronously after the HTTP server is already listening (see index.ts's
+   *  initRuntime()), so this router is constructed before the instance exists and must re-resolve
+   *  it per request. Returns null until the runtime is wired up / finished initializing, in which
+   *  case reads report null and start/stop/pause/resume report 503. */
+  getRuntime?: () => AutonomousRuntime | null;
 }
 
 function errorMessage(error: unknown): string {
@@ -33,13 +37,15 @@ function requireAgentId(req: { query: Record<string, unknown> }, res: { status: 
 
 export function createDashboardRouter(config: DashboardConfig = {}): Router {
   const router = Router();
-  const { runtime } = config;
+  const resolveRuntime = (): AutonomousRuntime | null => config.getRuntime?.() ?? null;
 
   router.get('/status', (_req, res) => {
+    const runtime = resolveRuntime();
     res.json({ success: true, status: runtime ? runtime.getState() : null });
   });
 
   router.get('/health', async (_req, res) => {
+    const runtime = resolveRuntime();
     if (!runtime) {
       res.json({ success: true, health: null });
       return;
@@ -48,6 +54,7 @@ export function createDashboardRouter(config: DashboardConfig = {}): Router {
   });
 
   router.get('/metrics', (_req, res) => {
+    const runtime = resolveRuntime();
     res.json({ success: true, metrics: runtime ? runtime.getHeartbeat() : null });
   });
 
@@ -87,6 +94,7 @@ export function createDashboardRouter(config: DashboardConfig = {}): Router {
   });
 
   router.post('/start', async (_req, res) => {
+    const runtime = resolveRuntime();
     if (!runtime) {
       res.status(503).json({ success: false, error: 'runtime not wired up' });
       return;
@@ -101,6 +109,7 @@ export function createDashboardRouter(config: DashboardConfig = {}): Router {
   });
 
   router.post('/stop', async (_req, res) => {
+    const runtime = resolveRuntime();
     if (!runtime) {
       res.status(503).json({ success: false, error: 'runtime not wired up' });
       return;
@@ -115,6 +124,7 @@ export function createDashboardRouter(config: DashboardConfig = {}): Router {
   });
 
   router.post('/pause', (_req, res) => {
+    const runtime = resolveRuntime();
     if (!runtime) {
       res.status(503).json({ success: false, error: 'runtime not wired up' });
       return;
@@ -129,6 +139,7 @@ export function createDashboardRouter(config: DashboardConfig = {}): Router {
   });
 
   router.post('/resume', (_req, res) => {
+    const runtime = resolveRuntime();
     if (!runtime) {
       res.status(503).json({ success: false, error: 'runtime not wired up' });
       return;
