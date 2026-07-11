@@ -62,6 +62,19 @@ describe("POST /api/connect/submit", () => {
     expect(data).toEqual({ success: true, status: "created", walletAddress: OWNER, smartWallet: "CSMART_WALLET" });
   });
 
+  it("Registry verified -> DB persist fails (e.g. DATABASE_URL unset) -> still success (registry is source of truth)", async () => {
+    registerOnChain.mockResolvedValueOnce(undefined);
+    lookupRegistry.mockResolvedValueOnce("CSMART_WALLET");
+    backendFetchMock.mockResolvedValueOnce({ ok: false, status: 503, data: { error: "Missing env var: DATABASE_URL" } });
+
+    const { POST } = await import("./route");
+    const res = await POST(req({ owner: OWNER, saltHex: "salt", signedEntryXdr: "xdr" }));
+    const data = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(data).toEqual({ success: true, status: "created", walletAddress: OWNER, smartWallet: "CSMART_WALLET" });
+  });
+
   it("Registry write failure -> Creation fails -> No false success", async () => {
     registerOnChain.mockRejectedValueOnce(new Error("registry tx failed"));
 

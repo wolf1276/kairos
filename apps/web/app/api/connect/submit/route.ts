@@ -29,7 +29,8 @@ export const POST = withOnboardingErrors(async (request: Request) => {
   // in that case registerOnChain/lookupRegistry are permanent no-ops, and requiring verification
   // would fail onboarding everywhere the registry simply isn't configured. Only enforce the
   // verified-write invariant where the registry actually exists.
-  if (getContractConfig().registry) {
+  const registryIsSourceOfTruth = !!getContractConfig().registry;
+  if (registryIsSourceOfTruth) {
     try {
       await registerOnChain(owner, deployed.address);
     } catch (err) {
@@ -57,16 +58,21 @@ export const POST = withOnboardingErrors(async (request: Request) => {
 
   const registerRes = await registerSmartWallet(authHeader, deployed.address);
   if (!registerRes.ok) {
-    // Registry entry is confirmed good — only the DB persistence step failed. Surface the
-    // deployed address so the caller can retry *just* that step via /api/connect/register
-    // instead of preparing/signing/submitting a brand new (and redundant) deployment.
-    return NextResponse.json(
-      {
-        error: registerRes.data.error || "Smart wallet deployed on-chain but failed to save — retry to re-link it",
-        smartWallet: deployed.address,
-      },
-      { status: registerRes.status }
-    );
+    // When the registry is the source of truth, the verified on-chain entry above is what
+    // /api/connect/check reads (and backfills the DB from) — so a DB persistence failure here is
+    // just a cold cache, not lost data. Don't fail onboarding on it (e.g. DATABASE_URL unset in
+    // prod). Without a registry, the DB is the only record, so its failure stays fatal: surface
+    // the deployed address for a retry of *just* the persist step via /api/connect/register.
+    if (!registryIsSourceOfTruth) {
+      return NextResponse.json(
+        {
+          error: registerRes.data.error || "Smart wallet deployed on-chain but failed to save — retry to re-link it",
+          smartWallet: deployed.address,
+        },
+        { status: registerRes.status }
+      );
+    }
+    console.warn("Smart wallet registered on-chain but DB cache write failed (non-fatal):", registerRes.data.error);
   }
 
   return NextResponse.json({ success: true, status: "created", walletAddress: owner, smartWallet: deployed.address });
