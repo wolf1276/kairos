@@ -18,9 +18,8 @@ Kairos deploys as two pieces: the agent backend (`backend/`) on Render, and the 
 | `TURNKEY_ORGANIZATION_ID` | Required | MPC key custody for agent private keys. |
 | `TURNKEY_API_PUBLIC_KEY` | Required | Set directly (not via credentials file) on Render. |
 | `TURNKEY_API_PRIVATE_KEY` | Required | Set directly (not via credentials file) on Render. |
-| `OPENROUTER_API_KEY` | Required | Default `REASONING_PROVIDER`; needed unless switched to another provider. |
-| `HUGGINGFACE_API_KEY` | Optional | Intent-parser failover chain — omit to skip this provider. |
-| `GEMINI_API_KEY` | Optional | Intent-parser failover chain — omit to skip this provider. |
+| `OPENROUTER_API_KEY` | Required | Default `REASONING_PROVIDER`; also primary provider in the LLM fallback chain (`llmProviders.ts`) — needed unless switched to another provider. |
+| `GEMINI_API_KEY` | Optional | LLM fallback chain — omit to skip this provider. |
 | `PORT`, `AGENTS_DB_PATH`, `DEV_ALLOWLIST`, `SCHEDULER_INTERVAL_MS`, `REASONING_PROVIDER` | Preset | Already set with working defaults in `render.yaml`. |
 
 The web service's SQLite DB (agents/trades/everything except smart wallets) needs at least Render's Starter (paid) plan for the Disk to persist — free tier wipes it on every redeploy/restart. `DATABASE_URL` (smart-wallet Postgres) persists regardless of plan.
@@ -44,6 +43,6 @@ Import the repo, set **Root Directory** to `apps/web/`, and deploy — the root 
 
 **Mainnet**: everything above, plus `NEXT_PUBLIC_MAINNET_USDC_ISSUER` (Vercel-only — no backend equivalent needed).
 
-**Always optional**: `HUGGINGFACE_API_KEY`, `GEMINI_API_KEY`, `REGISTRY_CONTRACT_ID`.
+**Always optional**: `GEMINI_API_KEY`, `REGISTRY_CONTRACT_ID`.
 
 See [`README.md`](./README.md#environment-variables) and root [`.env.example`](./.env.example) for local dev setup.
