@@ -719,14 +719,23 @@ export async function fetchAccountBalances(
     allowHttp: !horizonUrl.startsWith("https"),
   });
 
-  const account = await server.loadAccount(address);
-  return account.balances.map((b) => {
-    if (b.asset_type === "native") {
-      return { code: "XLM", balance: b.balance };
+  try {
+    const account = await server.loadAccount(address);
+    return account.balances.map((b) => {
+      if (b.asset_type === "native") {
+        return { code: "XLM", balance: b.balance };
+      }
+      const credit = b as { asset_code: string; asset_issuer: string; balance: string };
+      return { code: credit.asset_code, issuer: credit.asset_issuer, balance: credit.balance };
+    });
+  } catch (e) {
+    // An unfunded/not-yet-created account is a valid zero-balance state, not a fetch failure —
+    // Horizon 404s until the account receives its first payment.
+    if ((e as { response?: { status?: number } }).response?.status === 404) {
+      return [];
     }
-    const credit = b as { asset_code: string; asset_issuer: string; balance: string };
-    return { code: credit.asset_code, issuer: credit.asset_issuer, balance: credit.balance };
-  });
+    throw e;
+  }
 }
 
 export interface OrderBookQuote {
